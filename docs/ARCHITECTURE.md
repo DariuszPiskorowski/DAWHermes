@@ -1,4 +1,4 @@
-# DAWHermes Architecture (Milestone 0)
+# DAWHermes Architecture (Milestone 1)
 
 ## Why a new Windows repository
 
@@ -12,14 +12,14 @@ A direct Swift port would not satisfy the Windows-native tooling, deployment, an
 - CMake enables deterministic dependency pinning and build automation without requiring Projucer.
 - JUCE is pinned via FetchContent to immutable tag `8.0.13` to avoid moving-target dependency drift.
 
-## Milestone 0 module boundaries
+## Milestone 1 module boundaries
 
 The codebase is split into explicit layers:
 
 - `src/app` - application lifecycle, top-level window wiring, settings, logging bootstrap.
-- `src/core` - in-memory project and track model plus selection/controller state.
-- `src/ui` - JUCE views, menu bar, context menus, workspace layout, and dialog shells.
-- `src/hermes` - neutral Hermes contracts, command availability rules, option validation, stub engine.
+- `src/core` - in-memory project and track model plus selection/controller state and extracted deterministic layout geometry.
+- `src/ui` - JUCE views, menu bar, context menus, workspace rendering, and option dialogs.
+- `src/hermes` - neutral Hermes contracts, command availability rules, option validation, embedded Python engine, and connector boundaries.
 - `tests` - non-GUI behavioural and validation tests.
 - `scripts` - configure/build/test/install/uninstall automation for Windows.
 
@@ -34,16 +34,18 @@ This separation keeps Hermes integration swappable and testable without rewritin
 
 This mirrors expected desktop DAW ergonomics and avoids disruptive automation.
 
-## Hermes integration direction
+## Hermes integration in Milestone 1
 
-Milestone 0 uses `IHermesEngine` and `StubHermesEngine`.
+Milestone 1 keeps `IHermesEngine` as the UI boundary and introduces `EmbeddedHermesEngine` for real in-process drums extraction.
 
-- The UI calls a neutral interface.
-- The stub always returns an honest `notImplemented` result.
-- No fake MIDI is created.
-- No success is claimed for real processing.
+- The UI continues to call only the neutral interface.
+- Embedded Python uses pybind11::embed and CPython 3.11.
+- `midi-cleaner` drums extraction is called directly in-process.
+- Returned hit data is converted to DAWHermes MIDI notes in memory.
+- No user-visible intermediate MIDI files are written in DAWHermes for this workflow.
+- Non-M1 Hermes commands still return explicit not-implemented status.
 
-Future Hermes embedding will replace the stub inside the same boundary.
+`StubHermesEngine` remains in the codebase for tests and for explicit placeholder behavior.
 
 ## No HTTP/localhost architecture
 
@@ -59,22 +61,25 @@ The install script deploys a runnable Release app to `%LOCALAPPDATA%\DAWHermes\a
 
 No PowerShell or terminal launcher is used for normal user launch.
 
-## Current limitations (Milestone 0)
+## Current limitations (Milestone 1)
 
 Implemented now:
 
 - workspace shell and command surfaces;
-- project/track model operations;
-- Hermes option dialog shells and validation;
-- stub Hermes command invocation;
+- file-backed audio source assignment and minimal MIDI note storage in tracks;
+- extracted top-row-3-columns + full-width-bottom MIDI layout geometry;
+- embedded Hermes drums extraction and in-memory MIDI insertion;
+- transactional Hermes result insertion with rollback on validation failure;
+- single-operation Undo/Redo that removes/restores Hermes-generated tracks without re-running embedded analysis;
+- Hermes option dialogs and validation;
+- Composer Assistant safe connector boundary and settings/probe UI;
 - logging and local shortcut installation workflow.
 
 Not implemented now:
 
 - audio playback/recording/device setup;
 - MIDI import/playback/piano-roll editing;
-- real Hermes algorithms;
-- Python embedding;
+- Hermes bass/sync/BPM workflows;
 - AI APIs;
 - ACE exchange;
 - Cubase export.

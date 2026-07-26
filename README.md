@@ -6,18 +6,21 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 
 ## Current status
 
-Milestone 0 establishes the Windows-native application foundation.
+Milestone 1 extends the Windows-native foundation with first embedded Hermes processing.
 
 Currently implemented:
 
 - native JUCE Windows application;
-- basic DAW workspace shell;
-- audio and MIDI track models;
+- workspace layout with top 3-column work area plus full-width bottom MIDI panel;
+- audio and MIDI track models with file-backed audio source assignment;
 - track selection and deletion;
 - deliberate right-click context menus;
-- Hermes menu and option-dialog shells;
-- neutral Hermes engine interface;
-- honest stub implementation;
+- Hermes menu, option dialogs and validation;
+- neutral Hermes engine interface with embedded Python runtime implementation;
+- real Hermes workflow: Drums -> Make MIDI from WAV;
+- direct MIDI-note insertion into DAWHermes project model (no user-visible intermediate MIDI files);
+- single-operation Undo/Redo for inserted Hermes drum MIDI tracks without re-running analysis;
+- Composer Assistant connector boundary with safe settings and manual probe;
 - automated model and validation tests;
 - Release build scripts;
 - local installation and Windows shortcuts;
@@ -27,8 +30,9 @@ Not implemented yet:
 
 - audio playback or recording;
 - MIDI import, playback or editing;
-- real Hermes processing;
-- embedded Python runtime;
+- Hermes bass repair workflow;
+- Hermes synchronize MIDI with WAV workflow;
+- Hermes set/fix BPM workflow;
 - VST3 hosting;
 - AI model connection;
 - ACE Studio exchange;
@@ -39,9 +43,9 @@ Not implemented yet:
 Reference implementations:
 
 - `DariuszPiskorowski/DAW-create-example` - macOS DAW prototype and UI/function reference.
-- `DariuszPiskorowski/midi-cleaner` - current Hermes MIDI Fidelity Engine implementation.
+- `DariuszPiskorowski/midi-cleaner` - current Hermes MIDI Fidelity Engine implementation used by embedded drums extraction.
 
-These projects remain separate and unchanged during Milestone 0.
+These projects remain separate and unchanged during Milestone 1.
 
 ## Technology
 
@@ -73,8 +77,14 @@ Required:
 - Git;
 - CMake 3.22 or newer;
 - Visual Studio or Build Tools with Desktop development with C++;
+- CPython 3.11 (required for embedded Hermes build/runtime);
 - PowerShell;
 - internet access during the first JUCE dependency configuration.
+
+For embedded Hermes drums extraction, provide a local `midi-cleaner` clone by either:
+
+- setting environment variable `DAWHERMES_HERMES_REPO` to the clone path; or
+- keeping it at a discovered default path (`../midi-cleaner` from working dir, or `%USERPROFILE%\source\repos\midi-cleaner`).
 
 Configure:
 
@@ -135,7 +145,14 @@ Hermes
 └── Set / Fix BPM...
 ```
 
-Milestone 0 provides the interface and validation only. It does not claim to perform real Hermes processing.
+Milestone 1 provides real processing only for Drums -> Make MIDI from WAV. Other Hermes commands remain explicit placeholders.
+
+Composer Assistant connector defaults in Milestone 1:
+
+- disabled by default;
+- host `100.126.75.32`;
+- port `3456`;
+- no startup connection attempt.
 
 ## Architecture
 
