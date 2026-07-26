@@ -10,7 +10,7 @@ Cubase is a final production destination. Do not make Cubase-specific automation
 
 ## Current milestone
 
-The current scope is Milestone 1: structural UI layout parity (top 3 columns + full-width bottom MIDI panel), minimal file-backed audio tracks, embedded Hermes Python runtime wiring, first real Hermes workflow (Drums -> Make MIDI from WAV), direct in-memory MIDI insertion into DAWHermes project model, and a safe Composer Assistant connector boundary/settings UI.
+The current scope is Milestone 1.1: Milestone 1 functionality plus workspace panel splitters (drag + persistence + reset command), non-blocking Hermes drums execution, real grouped-track hierarchy for grouped drum output, and correct enabled-empty-layer handling for embedded drums extraction.
 
 Do not implement later milestones unless the user explicitly changes the scope.
 

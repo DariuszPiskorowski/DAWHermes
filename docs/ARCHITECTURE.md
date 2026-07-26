@@ -1,4 +1,4 @@
-# DAWHermes Architecture (Milestone 1)
+# DAWHermes Architecture (Milestone 1.1)
 
 ## Why a new Windows repository
 
@@ -34,7 +34,7 @@ This separation keeps Hermes integration swappable and testable without rewritin
 
 This mirrors expected desktop DAW ergonomics and avoids disruptive automation.
 
-## Hermes integration in Milestone 1
+## Hermes integration in Milestone 1.1
 
 Milestone 1 keeps `IHermesEngine` as the UI boundary and introduces `EmbeddedHermesEngine` for real in-process drums extraction.
 
@@ -43,6 +43,8 @@ Milestone 1 keeps `IHermesEngine` as the UI boundary and introduces `EmbeddedHer
 - `midi-cleaner` drums extraction is called directly in-process.
 - Returned hit data is converted to DAWHermes MIDI notes in memory.
 - No user-visible intermediate MIDI files are written in DAWHermes for this workflow.
+- Drums processing is run on a serialized background worker so the message thread remains responsive.
+- Project-model mutation still happens on the message thread when background processing completes.
 - Non-M1 Hermes commands still return explicit not-implemented status.
 
 `StubHermesEngine` remains in the codebase for tests and for explicit placeholder behavior.
@@ -68,9 +70,12 @@ Implemented now:
 - workspace shell and command surfaces;
 - file-backed audio source assignment and minimal MIDI note storage in tracks;
 - extracted top-row-3-columns + full-width-bottom MIDI layout geometry;
+- draggable splitter geometry with persisted layout state and reset command;
 - embedded Hermes drums extraction and in-memory MIDI insertion;
+- grouped multitrack insertion as a real hierarchy (group track + child MIDI tracks);
+- enabled-empty-layer aware insertion for drums extraction;
 - transactional Hermes result insertion with rollback on validation failure;
-- single-operation Undo/Redo that removes/restores Hermes-generated tracks without re-running embedded analysis;
+- single-operation Undo/Redo that removes/restores Hermes-generated tracks/groups without re-running embedded analysis;
 - Hermes option dialogs and validation;
 - Composer Assistant safe connector boundary and settings/probe UI;
 - logging and local shortcut installation workflow.

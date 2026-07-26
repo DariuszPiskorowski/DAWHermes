@@ -41,6 +41,9 @@ struct HermesTrackContext {
 
 struct HermesGeneratedMidiTrack {
     std::string trackName;
+    std::string semanticLayer;
+    bool enabledLayer { true };
+    bool emptyLayer { false };
     std::vector<core::MidiNote> notes;
 };
 
@@ -73,12 +76,14 @@ enum class HermesOperationStatus {
 struct HermesOperationResult {
     HermesOperationStatus status { HermesOperationStatus::notImplemented };
     std::string message;
+    HermesResultLayout resultLayout { HermesResultLayout::separateMidiTracks };
     std::vector<HermesGeneratedMidiTrack> generatedMidiTracks;
     double bpmUsed { 0.0 };
     std::vector<std::string> warnings;
 
     static HermesOperationResult success(
         std::string message = {},
+        HermesResultLayout resultLayout = HermesResultLayout::separateMidiTracks,
         std::vector<HermesGeneratedMidiTrack> generatedMidiTracks = {},
         double bpmUsed = 0.0,
         std::vector<std::string> warnings = {});

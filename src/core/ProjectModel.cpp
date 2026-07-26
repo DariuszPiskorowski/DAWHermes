@@ -1,30 +1,58 @@
 #include "core/ProjectModel.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <utility>
 
 namespace dawhermes::core {
 
-Track& ProjectModel::addTrack(TrackType type, std::string name)
+Track& ProjectModel::addTrack(TrackType type, std::string name, std::uint64_t parentTrackId)
 {
     if (name.empty()) {
         if (type == TrackType::audio) {
             name = "Audio Track " + std::to_string(nextAudioTrackNumber_++);
-        } else {
+        } else if (type == TrackType::midi) {
             name = "MIDI Track " + std::to_string(nextMidiTrackNumber_++);
+        } else {
+            name = "Group " + std::to_string(nextGroupTrackNumber_++);
         }
     }
 
-    tracks_.push_back(Track { nextTrackId_++, std::move(name), type });
-    return tracks_.back();
+    if (parentTrackId != 0) {
+        const auto* parent = findTrackById(parentTrackId);
+        if (parent == nullptr || parent->type != TrackType::group) {
+            parentTrackId = 0;
+        }
+    }
+
+    Track newTrack { nextTrackId_++, std::move(name), type, parentTrackId };
+
+    if (parentTrackId == 0) {
+        tracks_.push_back(std::move(newTrack));
+        return tracks_.back();
+    }
+
+    const auto insertionIndex = insertionIndexForParent(parentTrackId);
+    const auto insertIt = tracks_.begin() + static_cast<std::ptrdiff_t>(insertionIndex);
+    auto inserted = tracks_.insert(insertIt, std::move(newTrack));
+    return *inserted;
 }
 
 bool ProjectModel::removeTrackById(std::uint64_t id)
 {
+    const auto* existing = findTrackById(id);
+    if (existing == nullptr) {
+        return false;
+    }
+
     const auto previousSize = tracks_.size();
-    tracks_.erase(
-        std::remove_if(tracks_.begin(), tracks_.end(), [id](const Track& track) { return track.id == id; }),
-        tracks_.end());
+    tracks_.erase(std::remove_if(
+                     tracks_.begin(),
+                     tracks_.end(),
+                     [this, id](const Track& track) {
+                         return track.id == id || isDescendantOf(track, id);
+                     }),
+                 tracks_.end());
 
     return tracks_.size() != previousSize;
 }
@@ -99,6 +127,52 @@ bool ProjectModel::empty() const noexcept
 void ProjectModel::clear()
 {
     tracks_.clear();
+}
+
+bool ProjectModel::isDescendantOf(const Track& track, std::uint64_t ancestorTrackId) const
+{
+    if (ancestorTrackId == 0 || track.parentTrackId == 0) {
+        return false;
+    }
+
+    auto parentId = track.parentTrackId;
+    std::size_t loopGuard = 0;
+    while (parentId != 0 && loopGuard < tracks_.size()) {
+        if (parentId == ancestorTrackId) {
+            return true;
+        }
+
+        const auto* parentTrack = findTrackById(parentId);
+        if (parentTrack == nullptr || parentTrack->parentTrackId == parentId) {
+            return false;
+        }
+
+        parentId = parentTrack->parentTrackId;
+        ++loopGuard;
+    }
+
+    return false;
+}
+
+std::size_t ProjectModel::insertionIndexForParent(std::uint64_t parentTrackId) const
+{
+    const auto it = std::find_if(
+        tracks_.begin(), tracks_.end(), [parentTrackId](const Track& track) { return track.id == parentTrackId; });
+
+    if (it == tracks_.end()) {
+        return tracks_.size();
+    }
+
+    std::size_t index = static_cast<std::size_t>(std::distance(tracks_.begin(), it)) + 1;
+    while (index < tracks_.size()) {
+        if (!isDescendantOf(tracks_.at(index), parentTrackId)) {
+            break;
+        }
+
+        ++index;
+    }
+
+    return index;
 }
 
 }  // namespace dawhermes::core

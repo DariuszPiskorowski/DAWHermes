@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,11 @@ namespace dawhermes::hermes {
 
 struct AppliedHermesTrack {
     std::string displayName;
+    core::TrackType type { core::TrackType::midi };
+    std::string semanticLayer;
+    bool enabledLayer { true };
+    bool emptyLayer { false };
+    std::optional<std::size_t> parentTrackIndex;
     std::vector<core::MidiNote> notes;
 };
 
@@ -19,6 +25,7 @@ struct AppliedHermesResult {
     std::string groupId;
     std::vector<AppliedHermesTrack> tracks;
     std::vector<std::uint64_t> trackIds;
+    std::vector<std::uint64_t> midiTrackIds;
 };
 
 struct ApplyToProjectResult {

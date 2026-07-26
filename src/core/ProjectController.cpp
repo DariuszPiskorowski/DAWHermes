@@ -9,9 +9,9 @@ ProjectController::ProjectController(ProjectModel& project, SelectionState& sele
 {
 }
 
-Track& ProjectController::addTrack(TrackType type, std::string name)
+Track& ProjectController::addTrack(TrackType type, std::string name, std::uint64_t parentTrackId)
 {
-    return project_.addTrack(type, std::move(name));
+    return project_.addTrack(type, std::move(name), parentTrackId);
 }
 
 void ProjectController::selectTrack(std::uint64_t trackId)

@@ -207,6 +207,22 @@ MidiNote makeMidiNote(int pitch, int velocity, double startBeat, double duration
     return MidiNote { pitch, velocity, startBeat, durationBeats, channel };
 }
 
+HermesGeneratedMidiTrack makeGeneratedTrack(
+    std::string name,
+    std::vector<MidiNote> notes,
+    std::string semanticLayer = {},
+    bool enabledLayer = true,
+    bool emptyLayer = false)
+{
+    HermesGeneratedMidiTrack track;
+    track.trackName = std::move(name);
+    track.semanticLayer = std::move(semanticLayer);
+    track.enabledLayer = enabledLayer;
+    track.emptyLayer = emptyLayer;
+    track.notes = std::move(notes);
+    return track;
+}
+
 std::size_t countNotesOnTrack(const dawhermes::core::Track& track)
 {
     return track.midiNotes.size();
@@ -455,6 +471,55 @@ bool testMainLayoutGeometry()
     return true;
 }
 
+bool testPanelLayoutStateRoundTripAndClamping()
+{
+    dawhermes::core::MainPanelLayoutState state;
+    state.leftColumnRatio = 0.95;
+    state.rightColumnRatio = 0.90;
+    state.topRowRatio = -1.0;
+
+    const auto sanitized = dawhermes::core::sanitizeMainPanelLayoutState(state);
+    EXPECT_TRUE(sanitized.leftColumnRatio >= 0.12);
+    EXPECT_TRUE(sanitized.rightColumnRatio >= 0.12);
+    EXPECT_TRUE((sanitized.leftColumnRatio + sanitized.rightColumnRatio) <= 0.80 + 1e-9);
+    EXPECT_TRUE(sanitized.topRowRatio >= 0.35);
+
+    const auto serialized = dawhermes::core::serializeMainPanelLayoutState(state);
+    dawhermes::core::MainPanelLayoutState restored;
+    EXPECT_TRUE(dawhermes::core::deserializeMainPanelLayoutState(serialized, restored));
+    EXPECT_TRUE(std::abs(restored.leftColumnRatio - sanitized.leftColumnRatio) < 0.000001);
+    EXPECT_TRUE(std::abs(restored.rightColumnRatio - sanitized.rightColumnRatio) < 0.000001);
+    EXPECT_TRUE(std::abs(restored.topRowRatio - sanitized.topRowRatio) < 0.000001);
+
+    dawhermes::core::MainPanelLayoutState invalid;
+    EXPECT_TRUE(!dawhermes::core::deserializeMainPanelLayoutState("invalid-state", invalid));
+    return true;
+}
+
+bool testDeleteGroupTrackRemovesChildren()
+{
+    ProjectModel project;
+    SelectionState selection;
+    ProjectController controller(project, selection);
+
+    const auto groupId = controller.addTrack(TrackType::group, "Hermes Group").id;
+    const auto childAId = controller.addTrack(TrackType::midi, "Child A", groupId).id;
+    const auto childBId = controller.addTrack(TrackType::midi, "Child B", groupId).id;
+
+    const auto* childA = project.findTrackById(childAId);
+    const auto* childB = project.findTrackById(childBId);
+    EXPECT_TRUE(childA != nullptr);
+    EXPECT_TRUE(childB != nullptr);
+
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(3));
+    EXPECT_EQ(childA->parentTrackId, groupId);
+    EXPECT_EQ(childB->parentTrackId, groupId);
+
+    EXPECT_TRUE(controller.deleteTrackById(groupId));
+    EXPECT_TRUE(project.empty());
+    return true;
+}
+
 bool testStubEngineNotImplemented()
 {
     StubHermesEngine engine;
@@ -568,10 +633,11 @@ bool testSeparateLayoutCreatesSeparateMidiTracks()
 
     HermesOperationResult operation = HermesOperationResult::success(
         "ok",
+        HermesResultLayout::separateMidiTracks,
         std::vector<HermesGeneratedMidiTrack> {
-            HermesGeneratedMidiTrack { "Kick", { makeMidiNote(36, 100, 0.0, 0.25) } },
-            HermesGeneratedMidiTrack { "Snare", { makeMidiNote(38, 102, 1.0, 0.25) } },
-            HermesGeneratedMidiTrack { "Hat", { makeMidiNote(42, 95, 0.5, 0.125) } }
+            makeGeneratedTrack("Kick", { makeMidiNote(36, 100, 0.0, 0.25) }, "kick"),
+            makeGeneratedTrack("Snare", { makeMidiNote(38, 102, 1.0, 0.25) }, "snare"),
+            makeGeneratedTrack("Hat", { makeMidiNote(42, 95, 0.5, 0.125) }, "hat")
         },
         120.0,
         {});
@@ -620,9 +686,10 @@ bool testGroupedLayoutCreatesSharedProjectHierarchy()
 
     HermesOperationResult operation = HermesOperationResult::success(
         "ok",
+        HermesResultLayout::groupedMultitrack,
         std::vector<HermesGeneratedMidiTrack> {
-            HermesGeneratedMidiTrack { "Kick", { makeMidiNote(36, 100, 0.0, 0.25) } },
-            HermesGeneratedMidiTrack { "Snare", { makeMidiNote(38, 101, 0.5, 0.25) } }
+            makeGeneratedTrack("Kick", { makeMidiNote(36, 100, 0.0, 0.25) }, "kick"),
+            makeGeneratedTrack("Snare", { makeMidiNote(38, 101, 0.5, 0.25) }, "snare")
         },
         120.0,
         {});
@@ -636,14 +703,26 @@ bool testGroupedLayoutCreatesSharedProjectHierarchy()
         applied);
 
     EXPECT_TRUE(applyResult.ok);
-    EXPECT_EQ(applied.trackIds.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(applyResult.insertedTrackCount, static_cast<std::size_t>(2));
+    EXPECT_EQ(applied.trackIds.size(), static_cast<std::size_t>(3));
+    EXPECT_EQ(applied.midiTrackIds.size(), static_cast<std::size_t>(2));
 
-    const auto* first = project.findTrackById(applied.trackIds.at(0));
-    const auto* second = project.findTrackById(applied.trackIds.at(1));
-    EXPECT_TRUE(first != nullptr);
-    EXPECT_TRUE(second != nullptr);
-    EXPECT_EQ(first->generatedGroupId, second->generatedGroupId);
-    EXPECT_EQ(first->generatedGroupId, std::string("group-multitrack"));
+    const auto* groupTrack = project.findTrackById(applied.trackIds.at(0));
+    const auto* firstMidi = project.findTrackById(applied.trackIds.at(1));
+    const auto* secondMidi = project.findTrackById(applied.trackIds.at(2));
+
+    EXPECT_TRUE(groupTrack != nullptr);
+    EXPECT_TRUE(firstMidi != nullptr);
+    EXPECT_TRUE(secondMidi != nullptr);
+
+    EXPECT_EQ(groupTrack->type, TrackType::group);
+    EXPECT_EQ(firstMidi->type, TrackType::midi);
+    EXPECT_EQ(secondMidi->type, TrackType::midi);
+    EXPECT_EQ(firstMidi->parentTrackId, groupTrack->id);
+    EXPECT_EQ(secondMidi->parentTrackId, groupTrack->id);
+    EXPECT_EQ(groupTrack->generatedGroupId, std::string("group-multitrack"));
+    EXPECT_EQ(firstMidi->generatedGroupId, std::string("group-multitrack"));
+    EXPECT_EQ(secondMidi->generatedGroupId, std::string("group-multitrack"));
 
     std::error_code ec;
     std::filesystem::remove(wavFixture, ec);
@@ -669,14 +748,15 @@ bool testSingleTrackLayoutCreatesOneMidiTrack()
 
     HermesOperationResult operation = HermesOperationResult::success(
         "ok",
+        HermesResultLayout::singleDrumTrack,
         std::vector<HermesGeneratedMidiTrack> {
-            HermesGeneratedMidiTrack {
+            makeGeneratedTrack(
                 "Drums",
                 {
                     makeMidiNote(36, 100, 0.0, 0.25),
                     makeMidiNote(38, 100, 1.0, 0.25),
-                }
-            }
+                },
+                "drums")
         },
         120.0,
         {});
@@ -724,8 +804,9 @@ bool testFailureLeavesNoPartialProjectResult()
     const auto initialTrackCount = project.tracks().size();
     HermesOperationResult operation = HermesOperationResult::success(
         "ok",
+        HermesResultLayout::separateMidiTracks,
         std::vector<HermesGeneratedMidiTrack> {
-            HermesGeneratedMidiTrack { "Broken", { makeMidiNote(200, 100, 0.0, 0.25) } }
+            makeGeneratedTrack("Broken", { makeMidiNote(200, 100, 0.0, 0.25) }, "broken")
         },
         120.0,
         {});
@@ -741,6 +822,99 @@ bool testFailureLeavesNoPartialProjectResult()
     EXPECT_TRUE(!applyResult.ok);
     EXPECT_EQ(project.tracks().size(), initialTrackCount);
     EXPECT_TRUE(applied.trackIds.empty());
+
+    std::error_code ec;
+    std::filesystem::remove(wavFixture, ec);
+    return true;
+}
+
+bool testEnabledEmptyLayerCanCreateTrack()
+{
+    ProjectModel project;
+    SelectionState selection;
+    ProjectController controller(project, selection);
+
+    const auto wavFixture = createTempWavFixture("empty-enabled-layer");
+    const auto& source = controller.addTrack(TrackType::audio, "Empty Enabled Source");
+    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+
+    const dawhermes::hermes::HermesTrackContext context {
+        source.id,
+        source.name,
+        TrackType::audio,
+        wavFixture.string()
+    };
+
+    HermesOperationResult operation = HermesOperationResult::success(
+        "ok",
+        HermesResultLayout::separateMidiTracks,
+        std::vector<HermesGeneratedMidiTrack> {
+            makeGeneratedTrack("Hat", {}, "hat", true, true)
+        },
+        120.0,
+        {});
+
+    dawhermes::hermes::AppliedHermesResult applied;
+    const auto applyResult = dawhermes::hermes::applyHermesResultToProject(
+        context,
+        operation,
+        "group-empty-enabled",
+        controller,
+        applied);
+
+    EXPECT_TRUE(applyResult.ok);
+    EXPECT_EQ(applyResult.insertedTrackCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(applyResult.insertedNoteCount, static_cast<std::size_t>(0));
+    EXPECT_EQ(applied.trackIds.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(applied.midiTrackIds.size(), static_cast<std::size_t>(1));
+
+    const auto* generatedTrack = project.findTrackById(applied.trackIds.front());
+    EXPECT_TRUE(generatedTrack != nullptr);
+    EXPECT_EQ(generatedTrack->type, TrackType::midi);
+    EXPECT_EQ(generatedTrack->midiNotes.size(), static_cast<std::size_t>(0));
+
+    std::error_code ec;
+    std::filesystem::remove(wavFixture, ec);
+    return true;
+}
+
+bool testZeroNoteResultWithoutMeaningfulLayerIsRejected()
+{
+    ProjectModel project;
+    SelectionState selection;
+    ProjectController controller(project, selection);
+
+    const auto wavFixture = createTempWavFixture("empty-not-meaningful");
+    const auto& source = controller.addTrack(TrackType::audio, "Empty Rejected Source");
+    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+
+    const dawhermes::hermes::HermesTrackContext context {
+        source.id,
+        source.name,
+        TrackType::audio,
+        wavFixture.string()
+    };
+
+    HermesOperationResult operation = HermesOperationResult::success(
+        "ok",
+        HermesResultLayout::separateMidiTracks,
+        std::vector<HermesGeneratedMidiTrack> {
+            makeGeneratedTrack("DisabledEmpty", {}, "hat", false, true)
+        },
+        120.0,
+        {});
+
+    dawhermes::hermes::AppliedHermesResult applied;
+    const auto applyResult = dawhermes::hermes::applyHermesResultToProject(
+        context,
+        operation,
+        "group-empty-rejected",
+        controller,
+        applied);
+
+    EXPECT_TRUE(!applyResult.ok);
+    EXPECT_TRUE(applied.trackIds.empty());
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(1));
 
     std::error_code ec;
     std::filesystem::remove(wavFixture, ec);
@@ -766,21 +940,22 @@ bool testUndoRedoRestoresHermesResultWithoutReanalysis()
 
     HermesOperationResult operation = HermesOperationResult::success(
         "ok",
+        HermesResultLayout::groupedMultitrack,
         std::vector<HermesGeneratedMidiTrack> {
-            HermesGeneratedMidiTrack {
+            makeGeneratedTrack(
                 "Kick",
                 {
                     makeMidiNote(36, 100, 0.0, 0.25),
                     makeMidiNote(36, 97, 1.0, 0.25),
-                }
-            },
-            HermesGeneratedMidiTrack {
+                },
+                "kick"),
+            makeGeneratedTrack(
                 "Snare",
                 {
                     makeMidiNote(38, 103, 0.5, 0.25),
                     makeMidiNote(38, 99, 1.5, 0.25),
-                }
-            }
+                },
+                "snare")
         },
         120.0,
         {});
@@ -794,7 +969,7 @@ bool testUndoRedoRestoresHermesResultWithoutReanalysis()
         applied);
 
     EXPECT_TRUE(applyResult.ok);
-    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(3));
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(4));
 
     const auto expectedTrackCount = applied.tracks.size();
     const auto expectedNoteCount = dawhermes::hermes::countAppliedHermesNotes(applied);
@@ -803,7 +978,7 @@ bool testUndoRedoRestoresHermesResultWithoutReanalysis()
     EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(1));
 
     EXPECT_TRUE(dawhermes::hermes::redoAppliedHermesResult(controller, applied));
-    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(3));
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(4));
     EXPECT_EQ(applied.trackIds.size(), expectedTrackCount);
     EXPECT_EQ(dawhermes::hermes::countAppliedHermesNotes(applied), expectedNoteCount);
 
@@ -980,6 +1155,8 @@ int main()
         { "Drums enum validation", testDrumsEnumsValidation },
         { "Drums track context validation", testDrumsTrackContextValidation },
         { "Main layout geometry", testMainLayoutGeometry },
+        { "Panel layout state clamp/roundtrip", testPanelLayoutStateRoundTripAndClamping },
+        { "Delete group removes children", testDeleteGroupTrackRemovesChildren },
         { "Stub Hermes not implemented", testStubEngineNotImplemented },
         { "Hermes command enablement", testHermesCommandEnablementAudioVsMidi },
         { "MIDI note event validation", testMidiNoteEventValidation },
@@ -987,6 +1164,8 @@ int main()
         { "Grouped layout shared hierarchy", testGroupedLayoutCreatesSharedProjectHierarchy },
         { "Single layout creates one track", testSingleTrackLayoutCreatesOneMidiTrack },
         { "Failed apply leaves no partial result", testFailureLeavesNoPartialProjectResult },
+        { "Enabled empty layer can create track", testEnabledEmptyLayerCanCreateTrack },
+        { "Zero-note non-meaningful result rejected", testZeroNoteResultWithoutMeaningfulLayerIsRejected },
         { "Undo/redo restores Hermes result", testUndoRedoRestoresHermesResultWithoutReanalysis },
         { "Missing embedded runtime handled safely", testMissingEmbeddedRuntimeHandledSafely },
         { "Composer defaults and disabled probe", testComposerAssistantDefaultsAndDisabledProbe },

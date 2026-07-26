@@ -1,4 +1,4 @@
-# Hermes Embedding (Milestone 1)
+# Hermes Embedding (Milestone 1.1)
 
 Milestone 1 introduces in-process Hermes execution for the first real workflow:
 
@@ -12,6 +12,8 @@ DAWHermes keeps a neutral engine boundary (`IHermesEngine`) and now provides:
 - `StubHermesEngine` for non-implemented commands and test-safe fallback behavior.
 
 The UI still depends only on `IHermesEngine`.
+
+Milestone 1.1 executes Drums -> Make MIDI from WAV on a serialized background worker to avoid blocking the UI thread.
 
 ## Runtime stack
 
@@ -53,11 +55,16 @@ This allows reuse of the local midi-cleaner environment without spawning externa
 2. DAWHermes validates Hermes options and track context.
 3. Embedded Python calls `extract_drums_from_audio(...)` from `midi_cleaner.drums.extract_audio`.
 4. Returned per-hit report data is converted to DAWHermes MIDI notes in memory.
-5. New MIDI tracks are created directly in the DAW project model.
+5. Grouped multitrack results create a real group track with child MIDI tracks.
+6. New tracks are created directly in the DAW project model.
 
 Before insertion, DAWHermes validates generated MIDI events (pitch, velocity, start, duration, channel). If validation fails, no partial track insertion is kept.
 
 Inserted Hermes results are grouped as one logical operation so Undo removes the full generated set and Redo restores it without re-running embedded extraction.
+
+When `createEmptyEnabledLayers` is enabled in the drums options, enabled semantic layers with no notes can still be represented as empty MIDI tracks. Disabled empty layers are not created.
+
+When extraction returns zero notes and no meaningful enabled-empty layers, DAWHermes reports a validation-style failure instead of claiming success.
 
 No user-visible intermediate MIDI files are produced by DAWHermes in this workflow.
 

@@ -6,20 +6,25 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 
 ## Current status
 
-Milestone 1 extends the Windows-native foundation with first embedded Hermes processing.
+Milestone 1.1 hardens the Milestone 1 foundation with resizable workspace behavior and safer embedded Hermes integration.
 
 Currently implemented:
 
 - native JUCE Windows application;
 - workspace layout with top 3-column work area plus full-width bottom MIDI panel;
-- audio and MIDI track models with file-backed audio source assignment;
+- draggable workspace separators (left/center, center/right, top/bottom split);
+- persistent workspace panel sizes with View -> Reset Panel Layout;
+- audio, MIDI, and group track models with file-backed audio source assignment;
 - track selection and deletion;
 - deliberate right-click context menus;
 - Hermes menu, option dialogs and validation;
 - neutral Hermes engine interface with embedded Python runtime implementation;
 - real Hermes workflow: Drums -> Make MIDI from WAV;
+- serialized non-blocking background execution for Drums -> Make MIDI from WAV;
 - direct MIDI-note insertion into DAWHermes project model (no user-visible intermediate MIDI files);
-- single-operation Undo/Redo for inserted Hermes drum MIDI tracks without re-running analysis;
+- grouped multitrack drum output inserted as a real group track with child MIDI tracks;
+- enabled-empty-layer handling for drum extraction options (enabled empty layers can be created when requested);
+- single-operation Undo/Redo for inserted Hermes drum MIDI tracks and groups without re-running analysis;
 - Composer Assistant connector boundary with safe settings and manual probe;
 - automated model and validation tests;
 - Release build scripts;

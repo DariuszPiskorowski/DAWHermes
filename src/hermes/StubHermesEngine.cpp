@@ -10,6 +10,7 @@ constexpr auto kNotIntegratedMessage = "Hermes processing is not integrated for 
 
 HermesOperationResult HermesOperationResult::success(
     std::string message,
+    HermesResultLayout resultLayout,
     std::vector<HermesGeneratedMidiTrack> generatedMidiTracks,
     double bpmUsed,
     std::vector<std::string> warnings)
@@ -17,6 +18,7 @@ HermesOperationResult HermesOperationResult::success(
     HermesOperationResult result;
     result.status = HermesOperationStatus::success;
     result.message = std::move(message);
+    result.resultLayout = resultLayout;
     result.generatedMidiTracks = std::move(generatedMidiTracks);
     result.bpmUsed = bpmUsed;
     result.warnings = std::move(warnings);

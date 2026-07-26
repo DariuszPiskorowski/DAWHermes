@@ -10,7 +10,7 @@ namespace dawhermes::core {
 
 class ProjectModel {
 public:
-    Track& addTrack(TrackType type, std::string name = {});
+    Track& addTrack(TrackType type, std::string name = {}, std::uint64_t parentTrackId = 0);
     bool removeTrackById(std::uint64_t id);
     bool setAudioSourcePath(std::uint64_t id, std::string audioSourcePath);
     bool replaceMidiNotes(std::uint64_t id, std::vector<MidiNote> midiNotes);
@@ -24,10 +24,14 @@ public:
     void clear();
 
 private:
+    bool isDescendantOf(const Track& track, std::uint64_t ancestorTrackId) const;
+    std::size_t insertionIndexForParent(std::uint64_t parentTrackId) const;
+
     std::vector<Track> tracks_;
     std::uint64_t nextTrackId_ { 1 };
     std::uint64_t nextAudioTrackNumber_ { 1 };
     std::uint64_t nextMidiTrackNumber_ { 1 };
+    std::uint64_t nextGroupTrackNumber_ { 1 };
 };
 
 }  // namespace dawhermes::core

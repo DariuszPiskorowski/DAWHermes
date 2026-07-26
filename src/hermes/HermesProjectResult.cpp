@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -16,6 +17,11 @@ std::string buildTargetTrackName(const HermesTrackContext& sourceContext, const 
     }
 
     return sourceContext.trackName + " - " + generatedTrack.trackName;
+}
+
+std::string buildGroupTrackName(const HermesTrackContext& sourceContext)
+{
+    return sourceContext.trackName + " - Drums Group";
 }
 
 void rollbackCreatedTracks(core::ProjectController& projectController, const std::vector<std::uint64_t>& trackIds)
@@ -81,7 +87,12 @@ ApplyToProjectResult applyHermesResultToProject(
     }
 
     std::size_t totalNotes = 0;
+    bool hasMeaningfulEmptyEnabledLayer = false;
     for (const auto& generatedTrack : operationResult.generatedMidiTracks) {
+        if (generatedTrack.enabledLayer && (generatedTrack.emptyLayer || generatedTrack.notes.empty())) {
+            hasMeaningfulEmptyEnabledLayer = true;
+        }
+
         for (const auto& note : generatedTrack.notes) {
             std::string reason;
             if (!isValidMidiNoteEvent(note, reason)) {
@@ -97,7 +108,7 @@ ApplyToProjectResult applyHermesResultToProject(
         }
     }
 
-    if (totalNotes == 0) {
+    if (totalNotes == 0 && !hasMeaningfulEmptyEnabledLayer) {
         return ApplyToProjectResult {
             false,
             "Embedded Hermes returned success but no MIDI notes were generated.",
@@ -106,14 +117,37 @@ ApplyToProjectResult applyHermesResultToProject(
         };
     }
 
+    const bool createGroupHierarchy = operationResult.resultLayout == HermesResultLayout::groupedMultitrack;
+
     std::vector<AppliedHermesTrack> createdTrackSnapshots;
     std::vector<std::uint64_t> createdTrackIds;
-    createdTrackSnapshots.reserve(operationResult.generatedMidiTracks.size());
-    createdTrackIds.reserve(operationResult.generatedMidiTracks.size());
+    std::vector<std::uint64_t> createdMidiTrackIds;
+    createdTrackSnapshots.reserve(operationResult.generatedMidiTracks.size() + (createGroupHierarchy ? 1 : 0));
+    createdTrackIds.reserve(operationResult.generatedMidiTracks.size() + (createGroupHierarchy ? 1 : 0));
+    createdMidiTrackIds.reserve(operationResult.generatedMidiTracks.size());
+
+    std::optional<std::size_t> groupTrackSnapshotIndex;
+    std::uint64_t parentGroupTrackId = 0;
+
+    if (createGroupHierarchy) {
+        const auto groupName = buildGroupTrackName(sourceContext);
+        const auto& groupTrack = projectController.addTrack(core::TrackType::group, groupName);
+
+        if (!projectController.setGeneratedGroupId(groupTrack.id, groupId)) {
+            rollbackCreatedTracks(projectController, createdTrackIds);
+            return ApplyToProjectResult { false, "Failed to assign Hermes group metadata to group track.", 0, 0 };
+        }
+
+        parentGroupTrackId = groupTrack.id;
+        createdTrackIds.push_back(groupTrack.id);
+        createdTrackSnapshots.push_back(
+            AppliedHermesTrack { groupName, core::TrackType::group, "group", true, false, std::nullopt, {} });
+        groupTrackSnapshotIndex = createdTrackSnapshots.size() - 1;
+    }
 
     for (const auto& generatedTrack : operationResult.generatedMidiTracks) {
         const auto displayName = buildTargetTrackName(sourceContext, generatedTrack);
-        const auto& midiTrack = projectController.addTrack(core::TrackType::midi, displayName);
+        const auto& midiTrack = projectController.addTrack(core::TrackType::midi, displayName, parentGroupTrackId);
 
         if (!projectController.replaceMidiNotesOnTrack(midiTrack.id, generatedTrack.notes)) {
             rollbackCreatedTracks(projectController, createdTrackIds);
@@ -126,17 +160,26 @@ ApplyToProjectResult applyHermesResultToProject(
         }
 
         createdTrackIds.push_back(midiTrack.id);
-        createdTrackSnapshots.push_back(AppliedHermesTrack { displayName, generatedTrack.notes });
+        createdMidiTrackIds.push_back(midiTrack.id);
+        createdTrackSnapshots.push_back(AppliedHermesTrack {
+            displayName,
+            core::TrackType::midi,
+            generatedTrack.semanticLayer,
+            generatedTrack.enabledLayer,
+            generatedTrack.emptyLayer || generatedTrack.notes.empty(),
+            groupTrackSnapshotIndex,
+            generatedTrack.notes });
     }
 
     appliedResult.groupId = groupId;
     appliedResult.tracks = std::move(createdTrackSnapshots);
     appliedResult.trackIds = std::move(createdTrackIds);
+    appliedResult.midiTrackIds = std::move(createdMidiTrackIds);
 
     return ApplyToProjectResult {
         true,
         "Hermes MIDI tracks inserted into project model.",
-        appliedResult.tracks.size(),
+        appliedResult.midiTrackIds.size(),
         totalNotes
     };
 }
@@ -162,25 +205,39 @@ bool redoAppliedHermesResult(core::ProjectController& projectController, Applied
     }
 
     std::vector<std::uint64_t> recreatedTrackIds;
+    std::vector<std::uint64_t> recreatedMidiTrackIds;
     recreatedTrackIds.reserve(appliedResult.tracks.size());
+    recreatedMidiTrackIds.reserve(appliedResult.tracks.size());
 
     for (const auto& storedTrack : appliedResult.tracks) {
-        const auto& midiTrack = projectController.addTrack(core::TrackType::midi, storedTrack.displayName);
+        std::uint64_t parentTrackId = 0;
+        if (storedTrack.parentTrackIndex.has_value()
+            && storedTrack.parentTrackIndex.value() < recreatedTrackIds.size()) {
+            parentTrackId = recreatedTrackIds.at(storedTrack.parentTrackIndex.value());
+        }
 
-        if (!projectController.replaceMidiNotesOnTrack(midiTrack.id, storedTrack.notes)) {
+        const auto& createdTrack =
+            projectController.addTrack(storedTrack.type, storedTrack.displayName, parentTrackId);
+
+        if (storedTrack.type == core::TrackType::midi
+            && !projectController.replaceMidiNotesOnTrack(createdTrack.id, storedTrack.notes)) {
             rollbackCreatedTracks(projectController, recreatedTrackIds);
             return false;
         }
 
-        if (!projectController.setGeneratedGroupId(midiTrack.id, appliedResult.groupId)) {
+        if (!projectController.setGeneratedGroupId(createdTrack.id, appliedResult.groupId)) {
             rollbackCreatedTracks(projectController, recreatedTrackIds);
             return false;
         }
 
-        recreatedTrackIds.push_back(midiTrack.id);
+        recreatedTrackIds.push_back(createdTrack.id);
+        if (storedTrack.type == core::TrackType::midi) {
+            recreatedMidiTrackIds.push_back(createdTrack.id);
+        }
     }
 
     appliedResult.trackIds = std::move(recreatedTrackIds);
+    appliedResult.midiTrackIds = std::move(recreatedMidiTrackIds);
     return true;
 }
 

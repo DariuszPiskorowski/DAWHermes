@@ -1,4 +1,4 @@
-# UI Reference Map (Milestone 1)
+# UI Reference Map (Milestone 1.1)
 
 This document captures the structural UI alignment applied in Milestone 1.
 
@@ -24,9 +24,21 @@ Milestone 1 layout in DAWHermes is now organized as:
 
 This matches the requested "top 3 columns + bottom full-width MIDI" structure.
 
+## Resizable workspace splitters
+
+Milestone 1.1 adds three draggable separators inside the workspace area:
+
+1. left/center column separator;
+2. center/right column separator;
+3. top-row/bottom-row separator.
+
+Panel ratios are persisted to user settings and restored on launch.
+
+`View -> Reset Panel Layout` restores default ratios.
+
 ## Deterministic geometry extraction
 
-Layout geometry is extracted into `core/MainLayoutGeometry` and consumed by `ui/MainComponent`.
+Layout geometry and panel-state sanitization are extracted into `core/MainLayoutGeometry` and consumed by `ui/MainComponent`.
 
 Benefits:
 

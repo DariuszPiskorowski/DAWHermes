@@ -1,11 +1,12 @@
 #include "ui/MainComponent.h"
 
+#include <algorithm>
 #include <exception>
 #include <filesystem>
+#include <thread>
 #include <utility>
 
 #include "app/AppLogger.h"
-#include "core/MainLayoutGeometry.h"
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/HermesValidation.h"
 #include "ui/HermesDialogs.h"
@@ -16,7 +17,16 @@ namespace {
 
 juce::String trackTypeLabel(core::TrackType type)
 {
-    return type == core::TrackType::audio ? "Audio" : "MIDI";
+    switch (type) {
+    case core::TrackType::audio:
+        return "Audio";
+    case core::TrackType::midi:
+        return "MIDI";
+    case core::TrackType::group:
+        return "Group";
+    default:
+        return "Unknown";
+    }
 }
 
 juce::String basenameForPath(const std::string& path)
@@ -38,12 +48,33 @@ juce::String describeTrack(const core::Track& track)
         } else {
             line << "  (" << basenameForPath(track.audioSourcePath) << ")";
         }
-    } else {
+    } else if (track.type == core::TrackType::midi) {
         line << "  (notes: " << static_cast<int>(track.midiNotes.size()) << ")";
+    } else {
+        line << "  (folder)";
     }
 
     return line;
 }
+
+int trackDepth(const core::ProjectModel& project, const core::Track& track)
+{
+    int depth = 0;
+    auto parentTrackId = track.parentTrackId;
+    while (parentTrackId != 0 && depth < 32) {
+        const auto* parent = project.findTrackById(parentTrackId);
+        if (parent == nullptr || parent->parentTrackId == parentTrackId) {
+            break;
+        }
+
+        ++depth;
+        parentTrackId = parent->parentTrackId;
+    }
+
+    return depth;
+}
+
+constexpr const char* kPanelLayoutSettingsKey = "layout.panelStateV1";
 
 juce::String buildHermesGroupId()
 {
@@ -76,6 +107,8 @@ MainComponent::MainComponent(
         juce::ApplicationProperties& applicationProperties)
         : hermesEngine_(hermesEngine),
             applicationProperties_(applicationProperties),
+    panelLayoutState_(core::defaultMainPanelLayoutState()),
+    dragStartPanelLayoutState_(core::defaultMainPanelLayoutState()),
       projectController_(projectModel_, selectionState_),
       menuBar_(this)
 {
@@ -127,23 +160,41 @@ MainComponent::MainComponent(
     statusLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffc7ccd4));
     addAndMakeVisible(statusLabel_);
 
+    loadPanelLayoutState();
     loadComposerSettings();
     updateStatusForSelection();
 }
 
 MainComponent::~MainComponent()
 {
+    finishDrumsWorkerThread();
+    savePanelLayoutState();
     trackList_.setModel(nullptr);
 }
 
 void MainComponent::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour(0xff15181d));
+
+    const auto paintSplitter = [this, &g](const core::IntRect& rect, ActiveSplitter splitter) {
+        if (rect.width <= 0 || rect.height <= 0) {
+            return;
+        }
+
+        const auto isActive = activeSplitter_ == splitter;
+        g.setColour(isActive ? juce::Colour(0xff5f7b98) : juce::Colour(0xff2b323a));
+        g.fillRect(rect.x, rect.y, rect.width, rect.height);
+    };
+
+    paintSplitter(lastLayout_.leftVerticalSplitter, ActiveSplitter::leftVertical);
+    paintSplitter(lastLayout_.rightVerticalSplitter, ActiveSplitter::rightVertical);
+    paintSplitter(lastLayout_.horizontalSplitter, ActiveSplitter::horizontal);
 }
 
 void MainComponent::resized()
 {
-    const auto layout = core::computeMainLayoutGeometry(getWidth(), getHeight());
+    lastLayout_ = core::computeMainLayoutGeometry(getWidth(), getHeight(), panelLayoutState_);
+    const auto& layout = lastLayout_;
 
     menuBar_.setBounds(layout.menuBar.x, layout.menuBar.y, layout.menuBar.width, layout.menuBar.height);
     transportLabel_.setBounds(
@@ -171,9 +222,55 @@ void MainComponent::resized()
     statusLabel_.setBounds(layout.statusBar.x, layout.statusBar.y, layout.statusBar.width, layout.statusBar.height);
 }
 
+void MainComponent::mouseMove(const juce::MouseEvent& event)
+{
+    if (activeSplitter_ == ActiveSplitter::none) {
+        updateCursorForSplitters(event.getPosition());
+    }
+}
+
+void MainComponent::mouseExit(const juce::MouseEvent&)
+{
+    if (activeSplitter_ == ActiveSplitter::none) {
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+    }
+}
+
+void MainComponent::mouseDown(const juce::MouseEvent& event)
+{
+    activeSplitter_ = splitterAt(event.getPosition());
+    if (activeSplitter_ == ActiveSplitter::none) {
+        return;
+    }
+
+    dragStartPosition_ = event.getPosition();
+    dragStartLayout_ = lastLayout_;
+    dragStartPanelLayoutState_ = panelLayoutState_;
+}
+
+void MainComponent::mouseDrag(const juce::MouseEvent& event)
+{
+    if (activeSplitter_ == ActiveSplitter::none) {
+        return;
+    }
+
+    applySplitterDrag(event.getPosition());
+}
+
+void MainComponent::mouseUp(const juce::MouseEvent& event)
+{
+    if (activeSplitter_ == ActiveSplitter::none) {
+        return;
+    }
+
+    savePanelLayoutState();
+    activeSplitter_ = ActiveSplitter::none;
+    updateCursorForSplitters(event.getPosition());
+}
+
 juce::StringArray MainComponent::getMenuBarNames()
 {
-    return { "File", "Edit", "Track", "Tools", "Help" };
+    return { "File", "Edit", "View", "Track", "Tools", "Help" };
 }
 
 juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce::String&)
@@ -191,19 +288,22 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(commandRedo, "Redo", canRedo());
         break;
     case 2:
+        menu.addItem(commandResetPanelLayout, "Reset Panel Layout");
+        break;
+    case 3:
         menu.addItem(commandAddAudioTrack, "Add Audio Track");
         menu.addItem(commandAddMidiTrack, "Add MIDI Track");
         menu.addItem(commandAssignAudioFile, "Assign WAV Source to Selected Audio Track...");
         menu.addSeparator();
         menu.addItem(commandDeleteSelectedTrack, "Delete Selected Track", projectController_.canDeleteSelectedTrack());
         break;
-    case 3:
+    case 4:
         menu.addSubMenu("Hermes", buildHermesMenu());
         menu.addSeparator();
         menu.addItem(commandComposerAssistantSettings, "Composer Assistant Connector Settings...");
         menu.addItem(commandComposerAssistantProbe, "Test Composer Assistant Connection");
         break;
-    case 4:
+    case 5:
         menu.addItem(commandAbout, "About DAWHermes");
         break;
     default:
@@ -240,6 +340,8 @@ void MainComponent::paintListBoxItem(
 
     const auto& track = projectModel_.tracks().at(static_cast<std::size_t>(rowNumber));
     const bool selected = selectionState_.isSelected(track.id);
+    const auto depth = trackDepth(projectModel_, track);
+    const auto indentation = depth * 16;
 
     g.fillAll(selected ? juce::Colour(0xff2f5f9a)
                        : ((rowNumber % 2 == 0) ? juce::Colour(0xff252a31) : juce::Colour(0xff21262d)));
@@ -247,9 +349,9 @@ void MainComponent::paintListBoxItem(
     g.setColour(juce::Colours::white);
     g.drawText(
         describeTrack(track),
-        8,
+        8 + indentation,
         0,
-        width - 16,
+        std::max(0, width - 16 - indentation),
         height,
         juce::Justification::centredLeft,
         true);
@@ -300,6 +402,9 @@ void MainComponent::executeCommand(int commandId)
         case commandRedo:
             runRedo();
             break;
+        case commandResetPanelLayout:
+            runResetPanelLayout();
+            break;
         case commandHermesDrumsMakeMidi:
             runHermesDrumsMakeMidi();
             break;
@@ -342,18 +447,144 @@ void MainComponent::executeCommand(int commandId)
     }
 }
 
+MainComponent::ActiveSplitter MainComponent::splitterAt(juce::Point<int> position) const
+{
+    const auto point = juce::Point<float>(static_cast<float>(position.x), static_cast<float>(position.y));
+
+    const auto inRect = [point](const core::IntRect& rect) {
+        if (rect.width <= 0 || rect.height <= 0) {
+            return false;
+        }
+
+        return juce::Rectangle<float>(
+                   static_cast<float>(rect.x),
+                   static_cast<float>(rect.y),
+                   static_cast<float>(rect.width),
+                   static_cast<float>(rect.height))
+            .contains(point);
+    };
+
+    if (inRect(lastLayout_.leftVerticalSplitter)) {
+        return ActiveSplitter::leftVertical;
+    }
+
+    if (inRect(lastLayout_.rightVerticalSplitter)) {
+        return ActiveSplitter::rightVertical;
+    }
+
+    if (inRect(lastLayout_.horizontalSplitter)) {
+        return ActiveSplitter::horizontal;
+    }
+
+    return ActiveSplitter::none;
+}
+
+void MainComponent::updateCursorForSplitters(juce::Point<int> position)
+{
+    const auto splitter = splitterAt(position);
+    switch (splitter) {
+    case ActiveSplitter::leftVertical:
+    case ActiveSplitter::rightVertical:
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+        break;
+    case ActiveSplitter::horizontal:
+        setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+        break;
+    case ActiveSplitter::none:
+    default:
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+        break;
+    }
+}
+
+void MainComponent::applySplitterDrag(juce::Point<int> position)
+{
+    auto updated = dragStartPanelLayoutState_;
+
+    const auto totalTopWidth =
+        dragStartLayout_.trackList.width + dragStartLayout_.timeline.width + dragStartLayout_.aiAssistant.width;
+    const auto topRowHeight = std::max(
+        dragStartLayout_.trackList.height,
+        std::max(dragStartLayout_.timeline.height, dragStartLayout_.aiAssistant.height));
+    const auto totalHeight = topRowHeight + dragStartLayout_.midiEditor.height;
+
+    if ((activeSplitter_ == ActiveSplitter::leftVertical || activeSplitter_ == ActiveSplitter::rightVertical)
+        && totalTopWidth > 0) {
+        const auto deltaX = position.x - dragStartPosition_.x;
+        if (activeSplitter_ == ActiveSplitter::leftVertical) {
+            const auto leftWidth = dragStartLayout_.trackList.width + deltaX;
+            updated.leftColumnRatio = static_cast<double>(leftWidth) / static_cast<double>(totalTopWidth);
+        } else {
+            const auto rightWidth = dragStartLayout_.aiAssistant.width - deltaX;
+            updated.rightColumnRatio = static_cast<double>(rightWidth) / static_cast<double>(totalTopWidth);
+        }
+    }
+
+    if (activeSplitter_ == ActiveSplitter::horizontal && totalHeight > 0) {
+        const auto deltaY = position.y - dragStartPosition_.y;
+        const auto updatedTopHeight = topRowHeight + deltaY;
+        updated.topRowRatio = static_cast<double>(updatedTopHeight) / static_cast<double>(totalHeight);
+    }
+
+    panelLayoutState_ = core::sanitizeMainPanelLayoutState(updated);
+    resized();
+    repaint();
+}
+
+void MainComponent::loadPanelLayoutState()
+{
+    panelLayoutState_ = core::defaultMainPanelLayoutState();
+
+    if (auto* settings = applicationProperties_.getUserSettings()) {
+        const auto serialized = settings->getValue(kPanelLayoutSettingsKey);
+        core::MainPanelLayoutState restored;
+        if (serialized.isNotEmpty() && core::deserializeMainPanelLayoutState(serialized.toStdString(), restored)) {
+            panelLayoutState_ = restored;
+        }
+    }
+
+    panelLayoutState_ = core::sanitizeMainPanelLayoutState(panelLayoutState_);
+}
+
+void MainComponent::savePanelLayoutState() const
+{
+    if (auto* settings = applicationProperties_.getUserSettings()) {
+        settings->setValue(
+            kPanelLayoutSettingsKey,
+            juce::String(core::serializeMainPanelLayoutState(panelLayoutState_)));
+        settings->saveIfNeeded();
+    }
+}
+
+bool MainComponent::isDrumsJobRunning() const
+{
+    return drumsJobRunning_.load();
+}
+
+void MainComponent::finishDrumsWorkerThread()
+{
+    if (drumsWorker_.joinable()) {
+        drumsWorker_.join();
+    }
+}
+
 juce::PopupMenu MainComponent::buildHermesMenu() const
 {
     juce::PopupMenu hermesMenu;
 
     juce::PopupMenu drumsSubMenu;
-    addHermesMenuItem(
-        drumsSubMenu,
-        commandHermesDrumsMakeMidi,
-        "Make MIDI from WAV...",
-        hermes::HermesCommand::drumsMakeMidiFromWav,
-        projectModel_,
-        selectionState_);
+    if (isDrumsJobRunning()) {
+        drumsSubMenu.addItem(commandHermesDrumsMakeMidi, "Make MIDI from WAV... (processing in background)", false);
+    } else {
+        addHermesMenuItem(
+            drumsSubMenu,
+            commandHermesDrumsMakeMidi,
+            "Make MIDI from WAV...",
+            hermes::HermesCommand::drumsMakeMidiFromWav,
+            projectModel_,
+            selectionState_);
+    }
+
     addHermesMenuItem(
         drumsSubMenu,
         commandHermesDrumMapping,
@@ -462,8 +693,10 @@ void MainComponent::updateStatusForSelection()
             } else {
                 status << " | WAV source: " << basenameForPath(track->audioSourcePath);
             }
-        } else {
+        } else if (track->type == core::TrackType::midi) {
             status << " | MIDI notes: " << static_cast<int>(track->midiNotes.size());
+        } else {
+            status << " | Group folder";
         }
     }
 
@@ -476,6 +709,10 @@ void MainComponent::updateStatusForSelection()
         syncAvailability);
     if (!syncReason.empty()) {
         status << "  |  " << syncReason;
+    }
+
+    if (isDrumsJobRunning()) {
+        status << "  |  Hermes drums processing is running in background.";
     }
 
     statusLabel_.setText(status, juce::dontSendNotification);
@@ -544,6 +781,11 @@ void MainComponent::runHermesDrumsMakeMidi()
 {
     app::AppLogger::log("Hermes command selected: Drums -> Make MIDI from WAV");
 
+    if (isDrumsJobRunning()) {
+        showValidationError(this, "Hermes drums processing is already running.");
+        return;
+    }
+
     const auto availability = hermes::getHermesCommandAvailability(
         hermes::HermesCommand::drumsMakeMidiFromWav,
         projectModel_,
@@ -600,21 +842,65 @@ void MainComponent::runHermesDrumsMakeMidi()
         + ", mapping=" + juce::String(static_cast<int>(options->targetMapping)));
     app::AppLogger::log("Embedded Hermes runtime initialization requested.");
 
-    const auto startMs = juce::Time::getMillisecondCounterHiRes();
+    finishDrumsWorkerThread();
+    drumsJobRunning_.store(true);
+    menuBar_.repaint();
+    statusLabel_.setText("Hermes drums processing is running in background...", juce::dontSendNotification);
 
-    const auto result = hermesEngine_.drumsMakeMidiFromWav(context.value(), options.value());
-    const auto durationMs = juce::Time::getMillisecondCounterHiRes() - startMs;
+    const auto requestContext = context.value();
+    const auto requestOptions = options.value();
+    auto* engine = &hermesEngine_;
+    const auto safeThis = juce::Component::SafePointer<MainComponent>(this);
 
-    if (!result.isSuccess()) {
+    try {
+        drumsWorker_ = std::thread([safeThis, requestContext, requestOptions, engine]() {
+            MainComponent::DrumsJobCompletion completion;
+            completion.context = requestContext;
+            completion.options = requestOptions;
+
+            const auto startMs = juce::Time::getMillisecondCounterHiRes();
+            try {
+                completion.result = engine->drumsMakeMidiFromWav(requestContext, requestOptions);
+            } catch (const std::exception& ex) {
+                completion.result = hermes::HermesOperationResult::unavailable(
+                    std::string("Embedded Hermes execution failed: ") + ex.what());
+            } catch (...) {
+                completion.result = hermes::HermesOperationResult::unavailable(
+                    "Embedded Hermes execution failed: unknown exception.");
+            }
+
+            completion.durationMs = juce::Time::getMillisecondCounterHiRes() - startMs;
+
+            juce::MessageManager::callAsync([safeThis, completion = std::move(completion)]() mutable {
+                if (auto* owner = safeThis.getComponent()) {
+                    owner->completeDrumsMakeMidi(std::move(completion));
+                }
+            });
+        });
+    } catch (...) {
+        drumsJobRunning_.store(false);
+        menuBar_.repaint();
+        statusLabel_.setText("Failed to start Hermes background processing.", juce::dontSendNotification);
+        throw;
+    }
+}
+
+void MainComponent::completeDrumsMakeMidi(DrumsJobCompletion completion)
+{
+    finishDrumsWorkerThread();
+    drumsJobRunning_.store(false);
+    menuBar_.repaint();
+
+    if (!completion.result.isSuccess()) {
         app::AppLogger::log(
-            "Embedded Hermes processing failure after " + juce::String(durationMs, 2) + " ms: "
-            + juce::String(result.message));
+            "Embedded Hermes processing failure after " + juce::String(completion.durationMs, 2) + " ms: "
+            + juce::String(completion.result.message));
         showHermesOperationMessage(
             this,
             "Hermes Drums",
-            juce::String(result.message),
+            juce::String(completion.result.message),
             juce::AlertWindow::WarningIcon);
-        statusLabel_.setText(result.message, juce::dontSendNotification);
+        updateStatusForSelection();
         return;
     }
 
@@ -623,15 +909,15 @@ void MainComponent::runHermesDrumsMakeMidi()
     hermes::AppliedHermesResult appliedResult;
     const auto groupId = buildHermesGroupId().toStdString();
     const auto applyResult = hermes::applyHermesResultToProject(
-        context.value(),
-        result,
+        completion.context,
+        completion.result,
         groupId,
         projectController_,
         appliedResult);
 
     if (!applyResult.ok) {
         app::AppLogger::log(
-            "Project insertion failure after " + juce::String(durationMs, 2) + " ms: "
+            "Project insertion failure after " + juce::String(completion.durationMs, 2) + " ms: "
             + juce::String(applyResult.message));
         showHermesOperationMessage(
             this,
@@ -645,7 +931,9 @@ void MainComponent::runHermesDrumsMakeMidi()
     undoResult_ = appliedResult;
     redoResult_.reset();
 
-    if (!appliedResult.trackIds.empty()) {
+    if (!appliedResult.midiTrackIds.empty()) {
+        projectController_.selectTrack(appliedResult.midiTrackIds.front());
+    } else if (!appliedResult.trackIds.empty()) {
         projectController_.selectTrack(appliedResult.trackIds.front());
     }
 
@@ -655,24 +943,24 @@ void MainComponent::runHermesDrumsMakeMidi()
     juce::String status = juce::String("Inserted ") + juce::String(static_cast<int>(applyResult.insertedNoteCount))
         + " MIDI notes into " + juce::String(static_cast<int>(applyResult.insertedTrackCount))
         + " track(s).";
-    if (!result.message.empty()) {
-        status << " " << result.message;
+    if (!completion.result.message.empty()) {
+        status << " " << completion.result.message;
     }
-    if (!result.warnings.empty()) {
-        status << " (warnings: " << static_cast<int>(result.warnings.size()) << ")";
+    if (!completion.result.warnings.empty()) {
+        status << " (warnings: " << static_cast<int>(completion.result.warnings.size()) << ")";
     }
 
     statusLabel_.setText(status, juce::dontSendNotification);
 
     app::AppLogger::log(
-        "Embedded Hermes processing completion: duration_ms=" + juce::String(durationMs, 2)
+        "Embedded Hermes processing completion: duration_ms=" + juce::String(completion.durationMs, 2)
         + ", generated_layers=" + juce::String(static_cast<int>(applyResult.insertedTrackCount))
         + ", generated_notes=" + juce::String(static_cast<int>(applyResult.insertedNoteCount))
-        + ", warnings=" + juce::String(static_cast<int>(result.warnings.size())));
+        + ", warnings=" + juce::String(static_cast<int>(completion.result.warnings.size())));
 
-    if (!result.warnings.empty()) {
+    if (!completion.result.warnings.empty()) {
         juce::String warningMessage;
-        for (const auto& warning : result.warnings) {
+        for (const auto& warning : completion.result.warnings) {
             app::AppLogger::log("Hermes warning: " + juce::String(warning));
             warningMessage << "- " << warning << "\n";
         }
@@ -806,6 +1094,11 @@ void MainComponent::runHermesSetFixBpm()
 
 void MainComponent::runUndo()
 {
+    if (isDrumsJobRunning()) {
+        statusLabel_.setText("Wait for Hermes drums processing to finish before undo.", juce::dontSendNotification);
+        return;
+    }
+
     if (!canUndo()) {
         statusLabel_.setText("Nothing to undo.", juce::dontSendNotification);
         return;
@@ -835,6 +1128,11 @@ void MainComponent::runUndo()
 
 void MainComponent::runRedo()
 {
+    if (isDrumsJobRunning()) {
+        statusLabel_.setText("Wait for Hermes drums processing to finish before redo.", juce::dontSendNotification);
+        return;
+    }
+
     if (!canRedo()) {
         statusLabel_.setText("Nothing to redo.", juce::dontSendNotification);
         return;
@@ -847,7 +1145,9 @@ void MainComponent::runRedo()
         return;
     }
 
-    if (!redoResult.trackIds.empty()) {
+    if (!redoResult.midiTrackIds.empty()) {
+        projectController_.selectTrack(redoResult.midiTrackIds.front());
+    } else if (!redoResult.trackIds.empty()) {
         projectController_.selectTrack(redoResult.trackIds.front());
     }
 
@@ -865,6 +1165,16 @@ void MainComponent::runRedo()
         + " note(s) without re-running Hermes analysis.";
     statusLabel_.setText(status, juce::dontSendNotification);
     app::AppLogger::log(status);
+}
+
+void MainComponent::runResetPanelLayout()
+{
+    panelLayoutState_ = core::defaultMainPanelLayoutState();
+    panelLayoutState_ = core::sanitizeMainPanelLayoutState(panelLayoutState_);
+    savePanelLayoutState();
+    resized();
+    repaint();
+    statusLabel_.setText("Panel layout reset to defaults.", juce::dontSendNotification);
 }
 
 bool MainComponent::canUndo() const
@@ -935,6 +1245,11 @@ void MainComponent::saveComposerSettings() const
 
 void MainComponent::resetProject()
 {
+    if (isDrumsJobRunning()) {
+        statusLabel_.setText("Wait for Hermes drums processing to finish before creating a new project.", juce::dontSendNotification);
+        return;
+    }
+
     projectModel_.clear();
     projectController_.clearSelection();
     undoResult_.reset();

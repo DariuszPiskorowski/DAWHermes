@@ -45,9 +45,78 @@ def _coerce_track_name(hit):
     return "Drums"
 
 
+def _ordered_semantic_layers(report):
+    ordered = []
+
+    layer_target_notes = dict(getattr(report, "layer_target_notes", {}) or {})
+    layer_track_names = dict(getattr(report, "layer_track_names", {}) or {})
+    layer_counts = dict(getattr(report, "layer_counts", {}) or {})
+
+    for layer_name in layer_target_notes.keys():
+        name = str(layer_name)
+        if name not in ordered:
+            ordered.append(name)
+
+    for layer_name in layer_track_names.keys():
+        name = str(layer_name)
+        if name not in ordered:
+            ordered.append(name)
+
+    for layer_name in layer_counts.keys():
+        name = str(layer_name)
+        if name not in ordered:
+            ordered.append(name)
+
+    return ordered
+
+
+def _collect_layer_notes(report, channel):
+    grouped = {}
+    for hit in report.per_hit_summary:
+        if not bool(getattr(hit, "accepted", False)):
+            continue
+        if bool(getattr(hit, "suppressed", False)):
+            continue
+
+        onset = getattr(hit, "accepted_onset_sec", None)
+        if onset is None:
+            onset = getattr(hit, "onset_sec", None)
+        if onset is None:
+            continue
+
+        layer_name = str(getattr(hit, "semantic_layer", "") or "")
+        if not layer_name:
+            layer_name = str(getattr(hit, "layer_name", "") or "unknown")
+
+        class_name = str(getattr(hit, "class_name", "unknown"))
+        duration_sec = float(_CLASS_DURATIONS_SEC.get(class_name, 0.10))
+        track_name = _coerce_track_name(hit)
+
+        if layer_name not in grouped:
+            grouped[layer_name] = {
+                "track_name": track_name,
+                "notes": [],
+            }
+
+        grouped[layer_name]["notes"].append(
+            {
+                "pitch": int(getattr(hit, "target_note", 36)),
+                "velocity": int(getattr(hit, "velocity", 100)),
+                "start_sec": float(onset),
+                "duration_sec": duration_sec,
+                "channel": int(channel),
+            }
+        )
+
+    return grouped
+
+
 def dawhermes_extract_drums(wav_path: str, options: dict):
     try:
         output_layout = str(options.get("output_layout", "separate-files"))
+        write_empty_layers = bool(options.get("write_empty_layers", False))
+        channel = int(options.get("channel", 10))
+
         params = AudioDrumExtractionParameters(
             output_file=None,
             target_map=str(options["target_map"]),
@@ -55,7 +124,7 @@ def dawhermes_extract_drums(wav_path: str, options: dict):
             profile=str(options["profile"]),
             detection_mode=str(options["detection_mode"]),
             c1_midi_note=int(options["c1_midi_note"]),
-            write_empty_layers=bool(options.get("write_empty_layers", False)),
+            write_empty_layers=write_empty_layers,
             dry_run=True,
         )
 
@@ -63,49 +132,68 @@ def dawhermes_extract_drums(wav_path: str, options: dict):
 
         single_track = output_layout == "single-track"
         aggregate_name = str(options.get("single_track_name", "Drums"))
-        grouped = {}
-        for hit in report.per_hit_summary:
-            if not bool(getattr(hit, "accepted", False)):
-                continue
-            if bool(getattr(hit, "suppressed", False)):
-                continue
 
-            onset = getattr(hit, "accepted_onset_sec", None)
-            if onset is None:
-                onset = getattr(hit, "onset_sec", None)
-            if onset is None:
-                continue
+        layer_track_names = {
+            str(name): str(track)
+            for name, track in dict(getattr(report, "layer_track_names", {}) or {}).items()
+        }
+        disabled_layers = {
+            str(item) for item in (getattr(report, "disabled_layers", []) or [])
+        }
 
-            class_name = str(getattr(hit, "class_name", "unknown"))
-            duration_sec = float(_CLASS_DURATIONS_SEC.get(class_name, 0.10))
-
-            track_name = aggregate_name if single_track else _coerce_track_name(hit)
-            grouped.setdefault(track_name, []).append(
-                {
-                    "pitch": int(getattr(hit, "target_note", 36)),
-                    "velocity": int(getattr(hit, "velocity", 100)),
-                    "start_sec": float(onset),
-                    "duration_sec": duration_sec,
-                    "channel": int(options.get("channel", 10)),
-                }
-            )
-
-        track_order = list(getattr(report, "track_order", []) or [])
-        if single_track:
-            ordered_names = [aggregate_name]
-        elif track_order:
-            ordered_names = [name for name in track_order if name in grouped]
-            for name in grouped:
-                if name not in ordered_names:
-                    ordered_names.append(name)
-        else:
-            ordered_names = list(grouped.keys())
+        grouped = _collect_layer_notes(report, channel)
+        ordered_layers = _ordered_semantic_layers(report)
+        for layer_name in grouped.keys():
+            if layer_name not in ordered_layers:
+                ordered_layers.append(layer_name)
 
         tracks = []
-        for name in ordered_names:
-            notes = grouped.get(name, [])
-            notes.sort(key=lambda item: (item["start_sec"], item["pitch"], item["velocity"]))
-            tracks.append({"name": name, "notes": notes})
+        if single_track:
+            all_notes = []
+            for layer_name in ordered_layers:
+                entry = grouped.get(layer_name)
+                if entry:
+                    all_notes.extend(entry["notes"])
+
+            all_notes.sort(key=lambda item: (item["start_sec"], item["pitch"], item["velocity"]))
+            if all_notes:
+                tracks.append(
+                    {
+                        "name": aggregate_name,
+                        "semantic_layer": "drums",
+                        "enabled": True,
+                        "empty": False,
+                        "notes": all_notes,
+                    }
+                )
+        else:
+            for layer_name in ordered_layers:
+                entry = grouped.get(layer_name)
+                track_name = layer_track_names.get(layer_name, layer_name)
+                notes = []
+                if entry:
+                    track_name = str(entry.get("track_name") or track_name)
+                    notes = list(entry.get("notes") or [])
+
+                notes.sort(key=lambda item: (item["start_sec"], item["pitch"], item["velocity"]))
+
+                enabled = layer_name not in disabled_layers
+                include = bool(notes)
+                if not include and write_empty_layers and enabled:
+                    include = True
+
+                if not include:
+                    continue
+
+                tracks.append(
+                    {
+                        "name": track_name,
+                        "semantic_layer": layer_name,
+                        "enabled": enabled,
+                        "empty": len(notes) == 0,
+                        "notes": notes,
+                    }
+                )
 
         accepted_onsets = int(getattr(report, "accepted_onset_count", 0))
         return {
@@ -299,6 +387,21 @@ HermesOperationResult EmbeddedHermesEngine::drumsMakeMidiFromWav(
             const auto trackDict = trackObject.cast<py::dict>();
             HermesGeneratedMidiTrack generatedTrack;
             generatedTrack.trackName = trackDict["name"].cast<std::string>();
+            generatedTrack.semanticLayer = generatedTrack.trackName;
+            generatedTrack.enabledLayer = true;
+            generatedTrack.emptyLayer = false;
+
+            if (trackDict.contains(py::str("semantic_layer"))) {
+                generatedTrack.semanticLayer = trackDict["semantic_layer"].cast<std::string>();
+            }
+
+            if (trackDict.contains(py::str("enabled"))) {
+                generatedTrack.enabledLayer = trackDict["enabled"].cast<bool>();
+            }
+
+            if (trackDict.contains(py::str("empty"))) {
+                generatedTrack.emptyLayer = trackDict["empty"].cast<bool>();
+            }
 
             const auto notes = trackDict["notes"].cast<py::list>();
             generatedTrack.notes.reserve(notes.size());
@@ -317,6 +420,10 @@ HermesOperationResult EmbeddedHermesEngine::drumsMakeMidiFromWav(
                 generatedTrack.notes.push_back(midiNote);
             }
 
+            if (generatedTrack.notes.empty()) {
+                generatedTrack.emptyLayer = true;
+            }
+
             totalNotes += generatedTrack.notes.size();
             generated.push_back(std::move(generatedTrack));
         }
@@ -330,6 +437,7 @@ HermesOperationResult EmbeddedHermesEngine::drumsMakeMidiFromWav(
 
         return HermesOperationResult::success(
             buildGroupsMessage(generated.size(), totalNotes),
+            options.resultLayout,
             std::move(generated),
             bpmUsed,
             std::move(warnings));

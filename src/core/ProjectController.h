@@ -13,7 +13,7 @@ class ProjectController {
 public:
     ProjectController(ProjectModel& project, SelectionState& selection);
 
-    Track& addTrack(TrackType type, std::string name = {});
+    Track& addTrack(TrackType type, std::string name = {}, std::uint64_t parentTrackId = 0);
 
     void selectTrack(std::uint64_t trackId);
     void clearSelection();

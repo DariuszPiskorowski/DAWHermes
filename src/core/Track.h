@@ -8,7 +8,8 @@ namespace dawhermes::core {
 
 enum class TrackType {
     audio,
-    midi
+    midi,
+    group
 };
 
 struct MidiNote {
@@ -23,6 +24,7 @@ struct Track {
     std::uint64_t id{};
     std::string name;
     TrackType type { TrackType::audio };
+    std::uint64_t parentTrackId { 0 };
     std::string audioSourcePath;
     std::vector<MidiNote> midiNotes;
     std::string generatedGroupId;

@@ -58,7 +58,21 @@ std::optional<double> parseDoubleStrict(const juce::String& text)
 
 juce::String contextLine(const hermes::HermesTrackContext& context)
 {
-    const auto type = context.trackType == core::TrackType::audio ? "Audio" : "MIDI";
+    juce::String type = "Unknown";
+    switch (context.trackType) {
+    case core::TrackType::audio:
+        type = "Audio";
+        break;
+    case core::TrackType::midi:
+        type = "MIDI";
+        break;
+    case core::TrackType::group:
+        type = "Group";
+        break;
+    default:
+        break;
+    }
+
     return "Selected track: " + juce::String(context.trackName) + " (" + type + ")";
 }
 
