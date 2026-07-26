@@ -1,8 +1,11 @@
 #include "ui/MainComponent.h"
 
 #include <exception>
+#include <filesystem>
+#include <utility>
 
 #include "app/AppLogger.h"
+#include "core/MainLayoutGeometry.h"
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/HermesValidation.h"
 #include "ui/HermesDialogs.h"
@@ -14,6 +17,37 @@ namespace {
 juce::String trackTypeLabel(core::TrackType type)
 {
     return type == core::TrackType::audio ? "Audio" : "MIDI";
+}
+
+juce::String basenameForPath(const std::string& path)
+{
+    if (path.empty()) {
+        return {};
+    }
+
+    const std::filesystem::path fsPath(path);
+    return juce::String(fsPath.filename().string());
+}
+
+juce::String describeTrack(const core::Track& track)
+{
+    juce::String line = juce::String(track.name) + "  [" + trackTypeLabel(track.type) + "]";
+    if (track.type == core::TrackType::audio) {
+        if (track.audioSourcePath.empty()) {
+            line << "  (No WAV source)";
+        } else {
+            line << "  (" << basenameForPath(track.audioSourcePath) << ")";
+        }
+    } else {
+        line << "  (notes: " << static_cast<int>(track.midiNotes.size()) << ")";
+    }
+
+    return line;
+}
+
+juce::String buildHermesGroupId()
+{
+    return juce::String("hermes-") + juce::Uuid().toString();
 }
 
 void addHermesMenuItem(
@@ -37,8 +71,11 @@ void addHermesMenuItem(
 
 }  // namespace
 
-MainComponent::MainComponent(hermes::IHermesEngine& hermesEngine)
-    : hermesEngine_(hermesEngine),
+MainComponent::MainComponent(
+        hermes::IHermesEngine& hermesEngine,
+        juce::ApplicationProperties& applicationProperties)
+        : hermesEngine_(hermesEngine),
+            applicationProperties_(applicationProperties),
       projectController_(projectModel_, selectionState_),
       menuBar_(this)
 {
@@ -47,7 +84,7 @@ MainComponent::MainComponent(hermes::IHermesEngine& hermesEngine)
     addAndMakeVisible(menuBar_);
 
     transportLabel_.setText(
-        "Transport (Milestone 0 placeholder)  |  Play / Stop / Record unavailable",
+        "Transport (Milestone 1 placeholder)  |  Play / Stop / Record unavailable",
         juce::dontSendNotification);
     transportLabel_.setJustificationType(juce::Justification::centredLeft);
     transportLabel_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff2b323b));
@@ -90,6 +127,7 @@ MainComponent::MainComponent(hermes::IHermesEngine& hermesEngine)
     statusLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffc7ccd4));
     addAndMakeVisible(statusLabel_);
 
+    loadComposerSettings();
     updateStatusForSelection();
 }
 
@@ -105,26 +143,32 @@ void MainComponent::paint(juce::Graphics& g)
 
 void MainComponent::resized()
 {
-    auto area = getLocalBounds().reduced(6);
+    const auto layout = core::computeMainLayoutGeometry(getWidth(), getHeight());
 
-    menuBar_.setBounds(area.removeFromTop(28));
-
-    auto transportArea = area.removeFromTop(40);
-    transportLabel_.setBounds(transportArea.reduced(0, 4));
-
-    statusLabel_.setBounds(area.removeFromBottom(24));
-
-    auto rightArea = area.removeFromRight(280).reduced(4);
-    aiAssistantLabel_.setBounds(rightArea);
-
-    auto leftArea = area.removeFromLeft(260).reduced(4);
-    tracksHeaderLabel_.setBounds(leftArea.removeFromTop(28));
-    trackList_.setBounds(leftArea);
-
-    auto bottomCenter = area.removeFromBottom(180).reduced(4);
-    midiEditorLabel_.setBounds(bottomCenter);
-
-    timelineLabel_.setBounds(area.reduced(4));
+    menuBar_.setBounds(layout.menuBar.x, layout.menuBar.y, layout.menuBar.width, layout.menuBar.height);
+    transportLabel_.setBounds(
+        layout.transportBar.x,
+        layout.transportBar.y,
+        layout.transportBar.width,
+        layout.transportBar.height);
+    tracksHeaderLabel_.setBounds(
+        layout.tracksHeader.x,
+        layout.tracksHeader.y,
+        layout.tracksHeader.width,
+        layout.tracksHeader.height);
+    trackList_.setBounds(layout.trackList.x, layout.trackList.y, layout.trackList.width, layout.trackList.height);
+    timelineLabel_.setBounds(layout.timeline.x, layout.timeline.y, layout.timeline.width, layout.timeline.height);
+    aiAssistantLabel_.setBounds(
+        layout.aiAssistant.x,
+        layout.aiAssistant.y,
+        layout.aiAssistant.width,
+        layout.aiAssistant.height);
+    midiEditorLabel_.setBounds(
+        layout.midiEditor.x,
+        layout.midiEditor.y,
+        layout.midiEditor.width,
+        layout.midiEditor.height);
+    statusLabel_.setBounds(layout.statusBar.x, layout.statusBar.y, layout.statusBar.width, layout.statusBar.height);
 }
 
 juce::StringArray MainComponent::getMenuBarNames()
@@ -143,17 +187,21 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(commandExit, "Exit");
         break;
     case 1:
-        menu.addItem(commandUndo, "Undo", false);
-        menu.addItem(commandRedo, "Redo", false);
+        menu.addItem(commandUndo, "Undo", canUndo());
+        menu.addItem(commandRedo, "Redo", canRedo());
         break;
     case 2:
         menu.addItem(commandAddAudioTrack, "Add Audio Track");
         menu.addItem(commandAddMidiTrack, "Add MIDI Track");
+        menu.addItem(commandAssignAudioFile, "Assign WAV Source to Selected Audio Track...");
         menu.addSeparator();
         menu.addItem(commandDeleteSelectedTrack, "Delete Selected Track", projectController_.canDeleteSelectedTrack());
         break;
     case 3:
         menu.addSubMenu("Hermes", buildHermesMenu());
+        menu.addSeparator();
+        menu.addItem(commandComposerAssistantSettings, "Composer Assistant Connector Settings...");
+        menu.addItem(commandComposerAssistantProbe, "Test Composer Assistant Connection");
         break;
     case 4:
         menu.addItem(commandAbout, "About DAWHermes");
@@ -198,7 +246,7 @@ void MainComponent::paintListBoxItem(
 
     g.setColour(juce::Colours::white);
     g.drawText(
-        juce::String(track.name) + "  [" + trackTypeLabel(track.type) + "]",
+        describeTrack(track),
         8,
         0,
         width - 16,
@@ -240,8 +288,17 @@ void MainComponent::executeCommand(int commandId)
         case commandAddMidiTrack:
             addMidiTrack();
             break;
+        case commandAssignAudioFile:
+            assignAudioFileToSelectedTrack();
+            break;
         case commandDeleteSelectedTrack:
             deleteSelectedTrack();
+            break;
+        case commandUndo:
+            runUndo();
+            break;
+        case commandRedo:
+            runRedo();
             break;
         case commandHermesDrumsMakeMidi:
             runHermesDrumsMakeMidi();
@@ -257,6 +314,12 @@ void MainComponent::executeCommand(int commandId)
             break;
         case commandHermesSetFixBpm:
             runHermesSetFixBpm();
+            break;
+        case commandComposerAssistantSettings:
+            runComposerAssistantSettings();
+            break;
+        case commandComposerAssistantProbe:
+            runComposerAssistantProbe();
             break;
         case commandAbout:
             showAbout();
@@ -333,6 +396,10 @@ juce::PopupMenu MainComponent::buildHermesMenu() const
 juce::PopupMenu MainComponent::buildTrackContextMenu() const
 {
     juce::PopupMenu menu;
+    const auto track = selectedTrack();
+    const bool isSelectedAudio = track.has_value() && track->type == core::TrackType::audio;
+    menu.addItem(commandAssignAudioFile, "Assign WAV Source...", isSelectedAudio);
+    menu.addSeparator();
     menu.addItem(commandDeleteSelectedTrack, "Delete Selected Track", projectController_.canDeleteSelectedTrack());
     menu.addSeparator();
     menu.addSubMenu("Hermes", buildHermesMenu());
@@ -361,7 +428,7 @@ std::optional<hermes::HermesTrackContext> MainComponent::selectedTrackContext() 
         return std::nullopt;
     }
 
-    return hermes::HermesTrackContext { track->id, track->name, track->type };
+    return hermes::HermesTrackContext { track->id, track->name, track->type, track->audioSourcePath };
 }
 
 void MainComponent::showTrackContextMenu()
@@ -389,6 +456,15 @@ void MainComponent::updateStatusForSelection()
     auto status = juce::String("No track selected.");
     if (const auto track = selectedTrack(); track.has_value()) {
         status = "Selected: " + juce::String(track->name) + " (" + trackTypeLabel(track->type) + ")";
+        if (track->type == core::TrackType::audio) {
+            if (track->audioSourcePath.empty()) {
+                status << " | WAV source: not assigned";
+            } else {
+                status << " | WAV source: " << basenameForPath(track->audioSourcePath);
+            }
+        } else {
+            status << " | MIDI notes: " << static_cast<int>(track->midiNotes.size());
+        }
     }
 
     const auto syncAvailability = hermes::getHermesCommandAvailability(
@@ -417,6 +493,38 @@ void MainComponent::addMidiTrack()
 {
     const auto& track = projectController_.addTrack(core::TrackType::midi);
     projectController_.selectTrack(track.id);
+    refreshTrackView();
+    updateStatusForSelection();
+}
+
+void MainComponent::assignAudioFileToSelectedTrack()
+{
+    const auto track = selectedTrack();
+    if (!track.has_value() || track->type != core::TrackType::audio) {
+        showValidationError(this, "Select an audio track before assigning a WAV source file.");
+        return;
+    }
+
+    juce::FileChooser chooser(
+        "Select WAV source file",
+        {},
+        "*.wav;*.wave");
+
+    if (!chooser.browseForFileToOpen()) {
+        return;
+    }
+
+    const auto selectedFile = chooser.getResult();
+    if (!selectedFile.existsAsFile()) {
+        showValidationError(this, "Selected file does not exist.");
+        return;
+    }
+
+    if (!projectController_.assignAudioSourceToTrack(track->id, selectedFile.getFullPathName().toStdString())) {
+        showValidationError(this, "Unable to assign WAV source to selected track.");
+        return;
+    }
+
     refreshTrackView();
     updateStatusForSelection();
 }
@@ -457,6 +565,21 @@ void MainComponent::runHermesDrumsMakeMidi()
         return;
     }
 
+    const auto sourceFile = juce::File(context->audioSourcePath);
+    if (!sourceFile.existsAsFile()) {
+        const auto message = "Selected WAV source file does not exist: " + context->audioSourcePath;
+        app::AppLogger::log("Validation failure: " + juce::String(message));
+        showValidationError(this, message);
+        return;
+    }
+
+    const auto contextValidation = hermes::validateTrackContextForDrums(context.value());
+    if (!contextValidation.ok) {
+        showValidationError(this, contextValidation.message);
+        updateStatusForSelection();
+        return;
+    }
+
     const auto options = showDrumsMakeMidiDialog(this);
     if (!options.has_value()) {
         return;
@@ -469,9 +592,97 @@ void MainComponent::runHermesDrumsMakeMidi()
         return;
     }
 
+    app::AppLogger::log(
+        "Embedded Hermes processing start: source=" + juce::String(context->audioSourcePath)
+        + ", profile=" + juce::String(static_cast<int>(options->profile))
+        + ", detection=" + juce::String(static_cast<int>(options->detectionMode))
+        + ", layout=" + juce::String(static_cast<int>(options->resultLayout))
+        + ", mapping=" + juce::String(static_cast<int>(options->targetMapping)));
+    app::AppLogger::log("Embedded Hermes runtime initialization requested.");
+
+    const auto startMs = juce::Time::getMillisecondCounterHiRes();
+
     const auto result = hermesEngine_.drumsMakeMidiFromWav(context.value(), options.value());
-    showMilestoneNotIntegratedMessage(this, result.message);
-    statusLabel_.setText(result.message, juce::dontSendNotification);
+    const auto durationMs = juce::Time::getMillisecondCounterHiRes() - startMs;
+
+    if (!result.isSuccess()) {
+        app::AppLogger::log(
+            "Embedded Hermes processing failure after " + juce::String(durationMs, 2) + " ms: "
+            + juce::String(result.message));
+        showHermesOperationMessage(
+            this,
+            "Hermes Drums",
+            juce::String(result.message),
+            juce::AlertWindow::WarningIcon);
+        statusLabel_.setText(result.message, juce::dontSendNotification);
+        return;
+    }
+
+    app::AppLogger::log("Embedded Hermes runtime initialization result: ready.");
+
+    hermes::AppliedHermesResult appliedResult;
+    const auto groupId = buildHermesGroupId().toStdString();
+    const auto applyResult = hermes::applyHermesResultToProject(
+        context.value(),
+        result,
+        groupId,
+        projectController_,
+        appliedResult);
+
+    if (!applyResult.ok) {
+        app::AppLogger::log(
+            "Project insertion failure after " + juce::String(durationMs, 2) + " ms: "
+            + juce::String(applyResult.message));
+        showHermesOperationMessage(
+            this,
+            "Hermes Drums",
+            juce::String(applyResult.message),
+            juce::AlertWindow::WarningIcon);
+        statusLabel_.setText(applyResult.message, juce::dontSendNotification);
+        return;
+    }
+
+    undoResult_ = appliedResult;
+    redoResult_.reset();
+
+    if (!appliedResult.trackIds.empty()) {
+        projectController_.selectTrack(appliedResult.trackIds.front());
+    }
+
+    refreshTrackView();
+    updateStatusForSelection();
+
+    juce::String status = juce::String("Inserted ") + juce::String(static_cast<int>(applyResult.insertedNoteCount))
+        + " MIDI notes into " + juce::String(static_cast<int>(applyResult.insertedTrackCount))
+        + " track(s).";
+    if (!result.message.empty()) {
+        status << " " << result.message;
+    }
+    if (!result.warnings.empty()) {
+        status << " (warnings: " << static_cast<int>(result.warnings.size()) << ")";
+    }
+
+    statusLabel_.setText(status, juce::dontSendNotification);
+
+    app::AppLogger::log(
+        "Embedded Hermes processing completion: duration_ms=" + juce::String(durationMs, 2)
+        + ", generated_layers=" + juce::String(static_cast<int>(applyResult.insertedTrackCount))
+        + ", generated_notes=" + juce::String(static_cast<int>(applyResult.insertedNoteCount))
+        + ", warnings=" + juce::String(static_cast<int>(result.warnings.size())));
+
+    if (!result.warnings.empty()) {
+        juce::String warningMessage;
+        for (const auto& warning : result.warnings) {
+            app::AppLogger::log("Hermes warning: " + juce::String(warning));
+            warningMessage << "- " << warning << "\n";
+        }
+
+        showHermesOperationMessage(
+            this,
+            "Hermes Drums Warnings",
+            warningMessage.trimEnd(),
+            juce::AlertWindow::InfoIcon);
+    }
 }
 
 void MainComponent::runHermesDrumMapping()
@@ -482,7 +693,7 @@ void MainComponent::runHermesDrumMapping()
         juce::AlertWindow::showMessageBox(
             juce::AlertWindow::InfoIcon,
             "DAWHermes",
-            "Drum mapping was applied to the Milestone 0 UI shell only. Processing integration is pending.");
+            "Drum mapping changes were applied to the UI mapping shell. Full custom-map bridge is scheduled for a later milestone.");
     }
 }
 
@@ -593,10 +804,141 @@ void MainComponent::runHermesSetFixBpm()
     statusLabel_.setText(result.message, juce::dontSendNotification);
 }
 
+void MainComponent::runUndo()
+{
+    if (!canUndo()) {
+        statusLabel_.setText("Nothing to undo.", juce::dontSendNotification);
+        return;
+    }
+
+    auto resultToUndo = undoResult_.value();
+    if (!hermes::undoAppliedHermesResult(projectController_, resultToUndo)) {
+        app::AppLogger::log("Undo failed for last Hermes result.");
+        statusLabel_.setText("Undo failed: generated Hermes tracks were already modified.", juce::dontSendNotification);
+        return;
+    }
+
+    const auto removedTrackCount = resultToUndo.tracks.size();
+    const auto removedNoteCount = hermes::countAppliedHermesNotes(resultToUndo);
+
+    redoResult_ = std::move(resultToUndo);
+    undoResult_.reset();
+
+    refreshTrackView();
+    updateStatusForSelection();
+
+    const auto status = juce::String("Undo removed ") + juce::String(static_cast<int>(removedTrackCount))
+        + " Hermes track(s) and " + juce::String(static_cast<int>(removedNoteCount)) + " note(s).";
+    statusLabel_.setText(status, juce::dontSendNotification);
+    app::AppLogger::log(status);
+}
+
+void MainComponent::runRedo()
+{
+    if (!canRedo()) {
+        statusLabel_.setText("Nothing to redo.", juce::dontSendNotification);
+        return;
+    }
+
+    auto redoResult = redoResult_.value();
+    if (!hermes::redoAppliedHermesResult(projectController_, redoResult)) {
+        app::AppLogger::log("Redo failed for last Hermes result.");
+        statusLabel_.setText("Redo failed: unable to restore Hermes result.", juce::dontSendNotification);
+        return;
+    }
+
+    if (!redoResult.trackIds.empty()) {
+        projectController_.selectTrack(redoResult.trackIds.front());
+    }
+
+    const auto restoredTrackCount = redoResult.tracks.size();
+    const auto restoredNoteCount = hermes::countAppliedHermesNotes(redoResult);
+
+    undoResult_ = std::move(redoResult);
+    redoResult_.reset();
+
+    refreshTrackView();
+    updateStatusForSelection();
+
+    const auto status = juce::String("Redo restored ") + juce::String(static_cast<int>(restoredTrackCount))
+        + " Hermes track(s) and " + juce::String(static_cast<int>(restoredNoteCount))
+        + " note(s) without re-running Hermes analysis.";
+    statusLabel_.setText(status, juce::dontSendNotification);
+    app::AppLogger::log(status);
+}
+
+bool MainComponent::canUndo() const
+{
+    return undoResult_.has_value() && !undoResult_->trackIds.empty();
+}
+
+bool MainComponent::canRedo() const
+{
+    return redoResult_.has_value() && !redoResult_->tracks.empty();
+}
+
+void MainComponent::runComposerAssistantSettings()
+{
+    const auto updatedSettings = showComposerAssistantSettingsDialog(this, composerSettings_);
+    if (!updatedSettings.has_value()) {
+        return;
+    }
+
+    const auto validation = composerConnector_.validateSettings(updatedSettings.value());
+    if (!validation.ok) {
+        showValidationError(this, validation.message);
+        return;
+    }
+
+    composerSettings_ = updatedSettings.value();
+    saveComposerSettings();
+    statusLabel_.setText("Composer Assistant connector settings saved.", juce::dontSendNotification);
+}
+
+void MainComponent::runComposerAssistantProbe()
+{
+    const auto result = composerConnector_.probe(composerSettings_);
+    showHermesOperationMessage(
+        this,
+        "Composer Assistant Probe",
+        juce::String(result.message),
+        result.ok ? juce::AlertWindow::InfoIcon : juce::AlertWindow::WarningIcon);
+    statusLabel_.setText(result.message, juce::dontSendNotification);
+}
+
+void MainComponent::loadComposerSettings()
+{
+    composerSettings_ = composerConnector_.defaultSettings();
+
+    if (auto* settings = applicationProperties_.getUserSettings()) {
+        composerSettings_.enabled = settings->getBoolValue("composer.enabled", composerSettings_.enabled);
+        composerSettings_.host = settings->getValue("composer.host", composerSettings_.host).toStdString();
+        composerSettings_.port = settings->getIntValue("composer.port", composerSettings_.port);
+        composerSettings_.timeoutMs = settings->getIntValue("composer.timeoutMs", composerSettings_.timeoutMs);
+        composerSettings_.requireLoopbackHost = settings->getBoolValue(
+            "composer.requireLoopbackHost",
+            composerSettings_.requireLoopbackHost);
+    }
+}
+
+void MainComponent::saveComposerSettings() const
+{
+    if (auto* settings = applicationProperties_.getUserSettings()) {
+        settings->setValue("composer.enabled", composerSettings_.enabled);
+        settings->setValue("composer.host", juce::String(composerSettings_.host));
+        settings->setValue("composer.port", composerSettings_.port);
+        settings->setValue("composer.timeoutMs", composerSettings_.timeoutMs);
+        settings->setValue("composer.requireLoopbackHost", composerSettings_.requireLoopbackHost);
+        settings->saveIfNeeded();
+    }
+}
+
 void MainComponent::resetProject()
 {
     projectModel_.clear();
     projectController_.clearSelection();
+    undoResult_.reset();
+    redoResult_.reset();
     refreshTrackView();
     updateStatusForSelection();
 }
@@ -606,7 +948,7 @@ void MainComponent::showAbout()
     juce::AlertWindow::showMessageBox(
         juce::AlertWindow::InfoIcon,
         "About DAWHermes",
-        "DAWHermes Milestone 0\nNative Windows DAW foundation with Hermes UI shell.");
+    "DAWHermes Milestone 1\nNative Windows DAW shell with embedded Hermes drums extraction.");
 }
 
 }  // namespace dawhermes::ui

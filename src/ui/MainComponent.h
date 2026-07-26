@@ -5,7 +5,9 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "core/ProjectController.h"
+#include "hermes/ComposerAssistantConnector.h"
 #include "hermes/IHermesEngine.h"
+#include "hermes/HermesProjectResult.h"
 
 namespace dawhermes::ui {
 
@@ -13,7 +15,9 @@ class MainComponent final : public juce::Component,
                             private juce::MenuBarModel,
                             private juce::ListBoxModel {
 public:
-    explicit MainComponent(hermes::IHermesEngine& hermesEngine);
+    MainComponent(
+        hermes::IHermesEngine& hermesEngine,
+        juce::ApplicationProperties& applicationProperties);
     ~MainComponent() override;
 
     void resized() override;
@@ -27,13 +31,16 @@ private:
         commandRedo,
         commandAddAudioTrack,
         commandAddMidiTrack,
+        commandAssignAudioFile,
         commandDeleteSelectedTrack,
         commandAbout,
         commandHermesDrumsMakeMidi,
         commandHermesDrumMapping,
         commandHermesBassRepair,
         commandHermesSynchronize,
-        commandHermesSetFixBpm
+        commandHermesSetFixBpm,
+        commandComposerAssistantSettings,
+        commandComposerAssistantProbe
     };
 
     juce::StringArray getMenuBarNames() override;
@@ -63,6 +70,7 @@ private:
 
     void addAudioTrack();
     void addMidiTrack();
+    void assignAudioFileToSelectedTrack();
     void deleteSelectedTrack();
 
     void runHermesDrumsMakeMidi();
@@ -70,11 +78,26 @@ private:
     void runHermesBassRepair();
     void runHermesSynchronize();
     void runHermesSetFixBpm();
+    void runUndo();
+    void runRedo();
+    void runComposerAssistantSettings();
+    void runComposerAssistantProbe();
+
+    bool canUndo() const;
+    bool canRedo() const;
+
+    void loadComposerSettings();
+    void saveComposerSettings() const;
 
     void resetProject();
     void showAbout();
 
     hermes::IHermesEngine& hermesEngine_;
+    juce::ApplicationProperties& applicationProperties_;
+    hermes::ComposerAssistantConnector composerConnector_;
+    hermes::ComposerAssistantSettings composerSettings_;
+    std::optional<hermes::AppliedHermesResult> undoResult_;
+    std::optional<hermes::AppliedHermesResult> redoResult_;
 
     core::ProjectModel projectModel_;
     core::SelectionState selectionState_;

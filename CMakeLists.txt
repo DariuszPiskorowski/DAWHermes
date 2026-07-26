@@ -17,6 +17,9 @@ set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 set(JUCE_BUILD_EXAMPLES OFF CACHE BOOL "Disable JUCE examples" FORCE)
 set(JUCE_BUILD_EXTRAS OFF CACHE BOOL "Disable JUCE extras" FORCE)
 set(JUCE_ENABLE_MODULE_SOURCE_GROUPS ON)
+set(PYBIND11_FINDPYTHON ON)
+
+find_package(Python3 3.11 EXACT COMPONENTS Interpreter Development REQUIRED)
 
 FetchContent_Declare(
   juce
@@ -26,9 +29,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(juce)
 
+FetchContent_Declare(
+  pybind11
+  GIT_REPOSITORY https://github.com/pybind/pybind11.git
+  GIT_TAG v3.0.4
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(pybind11)
+
 add_library(dawhermes_core
   src/core/ProjectModel.cpp
   src/core/ProjectController.cpp
+  src/core/MainLayoutGeometry.cpp
 )
 target_include_directories(dawhermes_core PUBLIC src)
 set_project_warnings(dawhermes_core)
@@ -37,9 +49,21 @@ add_library(dawhermes_hermes
   src/hermes/HermesValidation.cpp
   src/hermes/StubHermesEngine.cpp
   src/hermes/HermesCommandAvailability.cpp
+  src/hermes/EmbeddedHermesEngine.cpp
+  src/hermes/HermesProjectResult.cpp
+  src/hermes/ComposerAssistantConnector.cpp
 )
 target_include_directories(dawhermes_hermes PUBLIC src)
-target_link_libraries(dawhermes_hermes PUBLIC dawhermes_core)
+target_link_libraries(
+  dawhermes_hermes
+  PUBLIC
+    dawhermes_core
+  PRIVATE
+    pybind11::embed
+    Python3::Python)
+if(WIN32)
+  target_link_libraries(dawhermes_hermes PRIVATE ws2_32)
+endif()
 set_project_warnings(dawhermes_hermes)
 
 add_library(dawhermes_ui

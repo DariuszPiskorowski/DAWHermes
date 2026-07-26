@@ -1,6 +1,7 @@
 #include "hermes/HermesValidation.h"
 
 #include <cmath>
+#include <filesystem>
 
 namespace dawhermes::hermes {
 
@@ -85,6 +86,25 @@ ValidationResult validateBpmOptions(const HermesBpmOptions& options)
 
     if (options.bpm <= 0.0) {
         return ValidationResult::fail("BPM must be greater than zero.");
+    }
+
+    return ValidationResult::pass();
+}
+
+ValidationResult validateTrackContextForDrums(const HermesTrackContext& context)
+{
+    if (context.trackType != core::TrackType::audio) {
+        return ValidationResult::fail("Drums extraction requires an audio track.");
+    }
+
+    if (context.audioSourcePath.empty()) {
+        return ValidationResult::fail("Selected audio track has no assigned WAV source file.");
+    }
+
+    std::error_code ec;
+    const auto sourcePath = std::filesystem::path(context.audioSourcePath);
+    if (!std::filesystem::exists(sourcePath, ec) || !std::filesystem::is_regular_file(sourcePath, ec)) {
+        return ValidationResult::fail("Selected WAV source file does not exist.");
     }
 
     return ValidationResult::pass();

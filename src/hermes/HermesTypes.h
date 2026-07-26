@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "core/Track.h"
 
@@ -35,6 +36,12 @@ struct HermesTrackContext {
     std::uint64_t trackId{};
     std::string trackName;
     core::TrackType trackType { core::TrackType::audio };
+    std::string audioSourcePath;
+};
+
+struct HermesGeneratedMidiTrack {
+    std::string trackName;
+    std::vector<core::MidiNote> notes;
 };
 
 struct HermesDrumsOptions {
@@ -66,8 +73,15 @@ enum class HermesOperationStatus {
 struct HermesOperationResult {
     HermesOperationStatus status { HermesOperationStatus::notImplemented };
     std::string message;
+    std::vector<HermesGeneratedMidiTrack> generatedMidiTracks;
+    double bpmUsed { 0.0 };
+    std::vector<std::string> warnings;
 
-    static HermesOperationResult success(std::string message = {});
+    static HermesOperationResult success(
+        std::string message = {},
+        std::vector<HermesGeneratedMidiTrack> generatedMidiTracks = {},
+        double bpmUsed = 0.0,
+        std::vector<std::string> warnings = {});
     static HermesOperationResult notImplemented(std::string message = {});
     static HermesOperationResult invalidInput(std::string message = {});
     static HermesOperationResult unavailable(std::string message = {});
@@ -86,6 +100,7 @@ enum class HermesCommand {
 enum class HermesCommandAvailability {
     enabled,
     requiresAudioTrack,
+    requiresAudioFile,
     requiresMidiTrack,
     requiresAudioAndMidi
 };

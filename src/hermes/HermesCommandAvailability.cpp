@@ -34,8 +34,12 @@ HermesCommandAvailability getHermesCommandAvailability(
     switch (command) {
     case HermesCommand::drumsMakeMidiFromWav:
     case HermesCommand::bassMakeRepairMidiFromWav:
-        return track->type == core::TrackType::audio ? HermesCommandAvailability::enabled
-                                                      : HermesCommandAvailability::requiresAudioTrack;
+        if (track->type != core::TrackType::audio) {
+            return HermesCommandAvailability::requiresAudioTrack;
+        }
+
+        return track->audioSourcePath.empty() ? HermesCommandAvailability::requiresAudioFile
+                                              : HermesCommandAvailability::enabled;
     case HermesCommand::setFixBpm:
         return track->type == core::TrackType::midi ? HermesCommandAvailability::enabled
                                                      : HermesCommandAvailability::requiresMidiTrack;
@@ -57,11 +61,13 @@ std::string describeAvailability(HermesCommand command, HermesCommandAvailabilit
     switch (availability) {
     case HermesCommandAvailability::requiresAudioTrack:
         return "Requires a selected audio track.";
+    case HermesCommandAvailability::requiresAudioFile:
+        return "Selected audio track requires an assigned WAV source file.";
     case HermesCommandAvailability::requiresMidiTrack:
         return "Requires a selected MIDI track.";
     case HermesCommandAvailability::requiresAudioAndMidi:
         if (command == HermesCommand::synchronizeMidiWithWav) {
-            return "Requires both audio and MIDI selections; multi-selection is not available in Milestone 0.";
+            return "Requires both audio and MIDI selections; multi-selection is not available in Milestone 1.";
         }
 
         return "Required source track selection is not available.";

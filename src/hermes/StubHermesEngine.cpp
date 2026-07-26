@@ -5,12 +5,22 @@
 namespace dawhermes::hermes {
 
 namespace {
-constexpr auto kNotIntegratedMessage = "Hermes processing is not integrated in Milestone 0.";
+constexpr auto kNotIntegratedMessage = "Hermes processing is not integrated for this command.";
 }
 
-HermesOperationResult HermesOperationResult::success(std::string message)
+HermesOperationResult HermesOperationResult::success(
+    std::string message,
+    std::vector<HermesGeneratedMidiTrack> generatedMidiTracks,
+    double bpmUsed,
+    std::vector<std::string> warnings)
 {
-    return HermesOperationResult { HermesOperationStatus::success, std::move(message) };
+    HermesOperationResult result;
+    result.status = HermesOperationStatus::success;
+    result.message = std::move(message);
+    result.generatedMidiTracks = std::move(generatedMidiTracks);
+    result.bpmUsed = bpmUsed;
+    result.warnings = std::move(warnings);
+    return result;
 }
 
 HermesOperationResult HermesOperationResult::notImplemented(std::string message)

@@ -12,6 +12,9 @@ class ProjectModel {
 public:
     Track& addTrack(TrackType type, std::string name = {});
     bool removeTrackById(std::uint64_t id);
+    bool setAudioSourcePath(std::uint64_t id, std::string audioSourcePath);
+    bool replaceMidiNotes(std::uint64_t id, std::vector<MidiNote> midiNotes);
+    bool setGeneratedGroupId(std::uint64_t id, std::string groupId);
 
     Track* findTrackById(std::uint64_t id);
     const Track* findTrackById(std::uint64_t id) const;

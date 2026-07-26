@@ -20,7 +20,7 @@ MainWindow::MainWindow(
     setResizable(true, true);
     setResizeLimits(1024, 640, 3840, 2160);
 
-    setContentOwned(new ui::MainComponent(hermesEngine), true);
+    setContentOwned(new ui::MainComponent(hermesEngine, applicationProperties_), true);
 
     if (auto* settings = applicationProperties_.getUserSettings()) {
         const auto state = settings->getValue("windowState");

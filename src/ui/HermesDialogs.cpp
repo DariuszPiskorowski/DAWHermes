@@ -62,27 +62,97 @@ juce::String contextLine(const hermes::HermesTrackContext& context)
     return "Selected track: " + juce::String(context.trackName) + " (" + type + ")";
 }
 
+juce::String boolToOnOff(bool value)
+{
+    return value ? "Enabled" : "Disabled";
+}
+
 }  // namespace
+
+void showHermesOperationMessage(
+    juce::Component*,
+    const juce::String& title,
+    const juce::String& message,
+    juce::AlertWindow::AlertIconType icon)
+{
+    juce::AlertWindow::showMessageBox(icon, title, message);
+}
 
 void showMilestoneNotIntegratedMessage(juce::Component*, const juce::String& details)
 {
-    auto message = juce::String("Hermes processing is not integrated in Milestone 0.");
+    auto message = juce::String("This Hermes command is not yet integrated in Milestone 1.");
     if (details.isNotEmpty()) {
         message << "\n\n" << details;
     }
 
-    juce::AlertWindow::showMessageBox(
-        juce::AlertWindow::InfoIcon,
-        "DAWHermes",
-        message);
+    showHermesOperationMessage(nullptr, "DAWHermes", message, juce::AlertWindow::InfoIcon);
 }
 
 void showValidationError(juce::Component*, const juce::String& message)
 {
-    juce::AlertWindow::showMessageBox(
-        juce::AlertWindow::WarningIcon,
-        "Validation error",
-        message);
+    showHermesOperationMessage(nullptr, "Validation error", message, juce::AlertWindow::WarningIcon);
+}
+
+std::optional<hermes::ComposerAssistantSettings> showComposerAssistantSettingsDialog(
+    juce::Component*,
+    const hermes::ComposerAssistantSettings& initialSettings)
+{
+    while (true) {
+        juce::AlertWindow dialog(
+            "Composer Assistant Connector",
+            "Configure optional compatibility connector for legacy Composer Assistant XML-RPC service.",
+            juce::AlertWindow::NoIcon);
+
+        dialog.addTextEditor("host", juce::String(initialSettings.host), "Host");
+        dialog.addTextEditor("port", juce::String(initialSettings.port), "Port");
+        dialog.addTextEditor("timeout", juce::String(initialSettings.timeoutMs), "Timeout (ms)");
+
+        auto enabledToggle = std::make_unique<juce::ToggleButton>(
+            juce::String("Connector status: ") + boolToOnOff(initialSettings.enabled));
+        enabledToggle->setToggleState(initialSettings.enabled, juce::dontSendNotification);
+        enabledToggle->onClick = [button = enabledToggle.get()] {
+            button->setButtonText(juce::String("Connector status: ") + boolToOnOff(button->getToggleState()));
+        };
+
+        auto loopbackToggle = std::make_unique<juce::ToggleButton>(
+            juce::String("Safety mode (loopback only): ") + boolToOnOff(initialSettings.requireLoopbackHost));
+        loopbackToggle->setToggleState(initialSettings.requireLoopbackHost, juce::dontSendNotification);
+        loopbackToggle->onClick = [button = loopbackToggle.get()] {
+            button->setButtonText(
+                juce::String("Safety mode (loopback only): ") + boolToOnOff(button->getToggleState()));
+        };
+
+        dialog.addCustomComponent(enabledToggle.get());
+        dialog.addCustomComponent(loopbackToggle.get());
+
+        dialog.addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        dialog.addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+
+        if (dialog.runModalLoop() != 1) {
+            return std::nullopt;
+        }
+
+        const auto parsedPort = parseIntStrict(dialog.getTextEditorContents("port"));
+        if (!parsedPort.has_value()) {
+            showValidationError(nullptr, "Port must be an integer in range 1..65535.");
+            continue;
+        }
+
+        const auto parsedTimeout = parseIntStrict(dialog.getTextEditorContents("timeout"));
+        if (!parsedTimeout.has_value()) {
+            showValidationError(nullptr, "Timeout must be an integer in milliseconds.");
+            continue;
+        }
+
+        hermes::ComposerAssistantSettings settings;
+        settings.enabled = enabledToggle->getToggleState();
+        settings.requireLoopbackHost = loopbackToggle->getToggleState();
+        settings.host = dialog.getTextEditorContents("host").trim().toStdString();
+        settings.port = parsedPort.value();
+        settings.timeoutMs = parsedTimeout.value();
+
+        return settings;
+    }
 }
 
 std::optional<hermes::HermesDrumsOptions> showDrumsMakeMidiDialog(juce::Component*)

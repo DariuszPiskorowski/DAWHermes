@@ -6,7 +6,7 @@
 
 #include "app/AppLogger.h"
 #include "app/MainWindow.h"
-#include "hermes/StubHermesEngine.h"
+#include "hermes/EmbeddedHermesEngine.h"
 
 namespace dawhermes::app {
 
@@ -40,7 +40,7 @@ void MainApplication::initialise(const juce::String&)
     AppLogger::initialise(getApplicationVersion());
 
     try {
-        hermesEngine_ = std::make_unique<hermes::StubHermesEngine>();
+        hermesEngine_ = std::make_unique<hermes::EmbeddedHermesEngine>();
         mainWindow_ = std::make_unique<MainWindow>(
             getApplicationName(),
             appProperties_,

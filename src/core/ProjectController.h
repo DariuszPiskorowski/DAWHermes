@@ -21,6 +21,11 @@ public:
     bool deleteSelectedTrack();
     bool deleteTrackById(std::uint64_t trackId);
 
+    bool assignAudioSourceToTrack(std::uint64_t trackId, std::string audioSourcePath);
+    bool assignAudioSourceToSelectedTrack(std::string audioSourcePath);
+    bool replaceMidiNotesOnTrack(std::uint64_t trackId, std::vector<MidiNote> midiNotes);
+    bool setGeneratedGroupId(std::uint64_t trackId, std::string groupId);
+
     bool canDeleteSelectedTrack() const;
     std::optional<std::uint64_t> selectedTrackId() const;
 

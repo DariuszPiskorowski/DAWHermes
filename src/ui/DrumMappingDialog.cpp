@@ -15,7 +15,7 @@ DrumMappingDialog::DrumMappingDialog()
 {
     setOpaque(true);
 
-    titleLabel_.setText("Drum Mapping (Milestone 0 shell)", juce::dontSendNotification);
+    titleLabel_.setText("Drum Mapping (Milestone 1 shell)", juce::dontSendNotification);
     titleLabel_.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(titleLabel_);
 

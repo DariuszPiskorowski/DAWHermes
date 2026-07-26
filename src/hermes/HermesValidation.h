@@ -21,5 +21,6 @@ bool isValidTargetMapping(HermesTargetMapping value);
 
 ValidationResult validateDrumsOptions(const HermesDrumsOptions& options);
 ValidationResult validateBpmOptions(const HermesBpmOptions& options);
+ValidationResult validateTrackContextForDrums(const HermesTrackContext& context);
 
 }  // namespace dawhermes::hermes
