@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,12 +41,20 @@ struct HermesTrackContext {
     std::string audioSourcePath;
 };
 
+struct HermesAudioMidiPairContext {
+    HermesTrackContext audioTrack;
+    HermesTrackContext midiTrack;
+    std::vector<core::MidiNote> midiNotes;
+    core::MidiSourceMetadata midiSourceMetadata;
+};
+
 struct HermesGeneratedMidiTrack {
     std::string trackName;
     std::string semanticLayer;
     bool enabledLayer { true };
     bool emptyLayer { false };
     std::vector<core::MidiNote> notes;
+    std::optional<core::MidiSourceMetadata> midiSourceMetadata;
 };
 
 struct HermesDrumsOptions {
@@ -57,9 +67,22 @@ struct HermesDrumsOptions {
 };
 
 struct HermesBassOptions {
+    std::string resultTrackName;
+};
+
+enum class HermesSyncRole {
+    bass,
+    drums,
+    synth,
+    guitar,
+    other
 };
 
 struct HermesSyncOptions {
+    HermesSyncRole role { HermesSyncRole::other };
+    bool preserveTempoMap { true };
+    std::optional<double> bpmOverride;
+    std::string resultTrackName;
 };
 
 struct HermesBpmOptions {
@@ -73,12 +96,39 @@ enum class HermesOperationStatus {
     unavailable
 };
 
+enum class HermesOperationKind {
+    drumsExtraction,
+    bassRepair,
+    midiWavSynchronization
+};
+
+struct HermesOperationStatistics {
+    std::size_t inputNoteCount { 0 };
+    std::size_t outputNoteCount { 0 };
+    std::size_t mergedCount { 0 };
+    std::size_t insertedCount { 0 };
+    std::size_t splitCount { 0 };
+    std::size_t removedOrMutedCount { 0 };
+    std::size_t alignedCount { 0 };
+    std::size_t keepOriginalCount { 0 };
+    std::size_t reviewTimingCount { 0 };
+    std::size_t noAudioEvidenceCount { 0 };
+};
+
 struct HermesOperationResult {
     HermesOperationStatus status { HermesOperationStatus::notImplemented };
     std::string message;
+    HermesOperationKind operationKind { HermesOperationKind::drumsExtraction };
+    std::uint64_t sourceAudioTrackId { 0 };
+    std::uint64_t sourceMidiTrackId { 0 };
+    std::string resultName;
     HermesResultLayout resultLayout { HermesResultLayout::separateMidiTracks };
     std::vector<HermesGeneratedMidiTrack> generatedMidiTracks;
+    int ticksPerQuarterNote { 960 };
+    std::vector<core::MidiTempoEvent> tempoMap;
+    HermesOperationStatistics statistics;
     double bpmUsed { 0.0 };
+    double durationMs { 0.0 };
     std::vector<std::string> warnings;
 
     static HermesOperationResult success(
@@ -86,7 +136,8 @@ struct HermesOperationResult {
         HermesResultLayout resultLayout = HermesResultLayout::separateMidiTracks,
         std::vector<HermesGeneratedMidiTrack> generatedMidiTracks = {},
         double bpmUsed = 0.0,
-        std::vector<std::string> warnings = {});
+        std::vector<std::string> warnings = {},
+        HermesOperationKind operationKind = HermesOperationKind::drumsExtraction);
     static HermesOperationResult notImplemented(std::string message = {});
     static HermesOperationResult invalidInput(std::string message = {});
     static HermesOperationResult unavailable(std::string message = {});

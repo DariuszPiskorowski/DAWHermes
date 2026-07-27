@@ -8,8 +8,7 @@ namespace dawhermes::app {
 
 MainWindow::MainWindow(
     juce::String name,
-    juce::ApplicationProperties& applicationProperties,
-    hermes::IHermesEngine& hermesEngine)
+    juce::ApplicationProperties& applicationProperties)
     : juce::DocumentWindow(
           std::move(name),
           juce::Colours::black,
@@ -20,7 +19,7 @@ MainWindow::MainWindow(
     setResizable(true, true);
     setResizeLimits(1024, 640, 3840, 2160);
 
-    setContentOwned(new ui::MainComponent(hermesEngine, applicationProperties_), true);
+    setContentOwned(new ui::MainComponent(applicationProperties_), true);
 
     if (auto* settings = applicationProperties_.getUserSettings()) {
         const auto state = settings->getValue("windowState");

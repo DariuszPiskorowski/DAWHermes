@@ -79,6 +79,28 @@ bool ProjectModel::replaceMidiNotes(std::uint64_t id, std::vector<MidiNote> midi
     return true;
 }
 
+bool ProjectModel::setMidiSourceMetadata(std::uint64_t id, MidiSourceMetadata metadata)
+{
+    auto* track = findTrackById(id);
+    if (track == nullptr || track->type != TrackType::midi) {
+        return false;
+    }
+
+    track->midiSourceMetadata = std::move(metadata);
+    return true;
+}
+
+bool ProjectModel::clearMidiSourceMetadata(std::uint64_t id)
+{
+    auto* track = findTrackById(id);
+    if (track == nullptr || track->type != TrackType::midi) {
+        return false;
+    }
+
+    track->midiSourceMetadata.reset();
+    return true;
+}
+
 bool ProjectModel::setGeneratedGroupId(std::uint64_t id, std::string groupId)
 {
     auto* track = findTrackById(id);

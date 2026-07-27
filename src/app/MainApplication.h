@@ -5,7 +5,6 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "app/MainWindow.h"
-#include "hermes/IHermesEngine.h"
 
 namespace dawhermes::app {
 
@@ -26,7 +25,6 @@ public:
 
 private:
     juce::ApplicationProperties appProperties_;
-    std::unique_ptr<hermes::IHermesEngine> hermesEngine_;
     std::unique_ptr<MainWindow> mainWindow_;
 };
 

@@ -19,9 +19,17 @@ struct AppliedHermesTrack {
     bool emptyLayer { false };
     std::optional<std::size_t> parentTrackIndex;
     std::vector<core::MidiNote> notes;
+    std::optional<core::MidiSourceMetadata> midiSourceMetadata;
 };
 
 struct AppliedHermesResult {
+    HermesOperationKind operationKind { HermesOperationKind::drumsExtraction };
+    std::uint64_t sourceAudioTrackId { 0 };
+    std::uint64_t sourceMidiTrackId { 0 };
+    std::string resultName;
+    double durationMs { 0.0 };
+    HermesOperationStatistics statistics;
+    std::vector<std::string> warnings;
     std::string groupId;
     std::vector<AppliedHermesTrack> tracks;
     std::vector<std::uint64_t> trackIds;

@@ -1,6 +1,7 @@
 #include "ui/HermesDialogs.h"
 
 #include <cmath>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -74,6 +75,15 @@ juce::String contextLine(const hermes::HermesTrackContext& context)
     }
 
     return "Selected track: " + juce::String(context.trackName) + " (" + type + ")";
+}
+
+juce::String pairContextLine(const hermes::HermesAudioMidiPairContext& context)
+{
+    const auto wavName = std::filesystem::path(context.audioTrack.audioSourcePath).filename().string();
+    return "Reference WAV: " + juce::String(context.audioTrack.trackName)
+        + " (" + juce::String(wavName) + ")"
+        + "\nMIDI candidate: " + juce::String(context.midiTrack.trackName)
+        + " (notes: " + juce::String(static_cast<int>(context.midiNotes.size())) + ")";
 }
 
 juce::String boolToOnOff(bool value)
@@ -328,30 +338,122 @@ std::optional<hermes::HermesBpmOptions> showSetFixBpmDialog(
     }
 }
 
-bool showBassRepairDialog(juce::Component*, const hermes::HermesTrackContext& context)
+std::optional<hermes::HermesBassOptions> showBassRepairDialog(
+    juce::Component*,
+    const hermes::HermesAudioMidiPairContext& context)
 {
-    juce::AlertWindow dialog(
-        "Hermes - Bass - Make / Repair MIDI from WAV",
-        contextLine(context),
-        juce::AlertWindow::NoIcon);
+    while (true) {
+        juce::AlertWindow dialog(
+            "Hermes - Bass - Repair MIDI against WAV",
+            pairContextLine(context) + "\nResult: Create repaired MIDI copy",
+            juce::AlertWindow::NoIcon);
 
-    dialog.addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-    dialog.addButton("Run", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        dialog.addTextEditor(
+            "resultTrackName",
+            juce::String(context.midiTrack.trackName) + " - Hermes Bass Repaired",
+            "Result track name");
 
-    return dialog.runModalLoop() == 1;
+        dialog.addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        dialog.addButton("Run", 1, juce::KeyPress(juce::KeyPress::returnKey));
+
+        if (dialog.runModalLoop() != 1) {
+            return std::nullopt;
+        }
+
+        hermes::HermesBassOptions options;
+        options.resultTrackName = dialog.getTextEditorContents("resultTrackName").trim().toStdString();
+        if (options.resultTrackName.empty()) {
+            options.resultTrackName = context.midiTrack.trackName + " - Hermes Bass Repaired";
+        }
+
+        const auto validation = hermes::validateBassOptions(options);
+        if (!validation.ok) {
+            showValidationError(nullptr, validation.message);
+            continue;
+        }
+
+        return options;
+    }
 }
 
-bool showSynchronizeDialog(juce::Component*, const hermes::HermesTrackContext& context)
+std::optional<hermes::HermesSyncOptions> showSynchronizeDialog(
+    juce::Component*,
+    const hermes::HermesAudioMidiPairContext& context)
 {
-    juce::AlertWindow dialog(
-        "Hermes - Synchronize MIDI with WAV",
-        contextLine(context),
-        juce::AlertWindow::NoIcon);
+    while (true) {
+        juce::AlertWindow dialog(
+            "Hermes - Synchronize MIDI with WAV",
+            pairContextLine(context),
+            juce::AlertWindow::NoIcon);
 
-    dialog.addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-    dialog.addButton("Run", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        dialog.addComboBox(
+            "role",
+            { "Bass", "Drums", "Synth", "Guitar", "Other" });
+        dialog.getComboBoxComponent("role")->setSelectedItemIndex(0);
 
-    return dialog.runModalLoop() == 1;
+        auto preserveTempoToggle = std::make_unique<juce::ToggleButton>("Preserve tempo map from source MIDI");
+        preserveTempoToggle->setToggleState(true, juce::dontSendNotification);
+        dialog.addCustomComponent(preserveTempoToggle.get());
+
+        dialog.addTextEditor("bpmOverride", "120", "BPM override (when tempo preservation is disabled)");
+        dialog.addTextEditor(
+            "resultTrackName",
+            juce::String(context.midiTrack.trackName) + " - Hermes Synced",
+            "Result track name");
+
+        dialog.addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        dialog.addButton("Run", 1, juce::KeyPress(juce::KeyPress::returnKey));
+
+        if (dialog.runModalLoop() != 1) {
+            return std::nullopt;
+        }
+
+        hermes::HermesSyncOptions options;
+        switch (dialog.getComboBoxComponent("role")->getSelectedItemIndex()) {
+        case 0:
+            options.role = hermes::HermesSyncRole::bass;
+            break;
+        case 1:
+            options.role = hermes::HermesSyncRole::drums;
+            break;
+        case 2:
+            options.role = hermes::HermesSyncRole::synth;
+            break;
+        case 3:
+            options.role = hermes::HermesSyncRole::guitar;
+            break;
+        case 4:
+        default:
+            options.role = hermes::HermesSyncRole::other;
+            break;
+        }
+
+        options.preserveTempoMap = preserveTempoToggle->getToggleState();
+        options.resultTrackName = dialog.getTextEditorContents("resultTrackName").trim().toStdString();
+        if (options.resultTrackName.empty()) {
+            options.resultTrackName = context.midiTrack.trackName + " - Hermes Synced";
+        }
+
+        if (!options.preserveTempoMap) {
+            const auto bpmOverride = parseDoubleStrict(dialog.getTextEditorContents("bpmOverride"));
+            if (!bpmOverride.has_value()) {
+                showValidationError(nullptr, "BPM override must be a positive finite number.");
+                continue;
+            }
+
+            options.bpmOverride = bpmOverride.value();
+        } else {
+            options.bpmOverride.reset();
+        }
+
+        const auto validation = hermes::validateSyncOptions(options);
+        if (!validation.ok) {
+            showValidationError(nullptr, validation.message);
+            continue;
+        }
+
+        return options;
+    }
 }
 
 bool showDrumMappingDialog(juce::Component* parent)

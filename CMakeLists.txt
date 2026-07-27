@@ -50,6 +50,8 @@ add_library(dawhermes_hermes
   src/hermes/StubHermesEngine.cpp
   src/hermes/HermesCommandAvailability.cpp
   src/hermes/EmbeddedHermesEngine.cpp
+  src/hermes/HermesJobRunner.cpp
+  src/hermes/HermesCache.cpp
   src/hermes/HermesProjectResult.cpp
   src/hermes/ComposerAssistantConnector.cpp
 )
@@ -68,6 +70,7 @@ set_project_warnings(dawhermes_hermes)
 
 add_library(dawhermes_ui
   src/ui/MainComponent.cpp
+  src/ui/MidiImportParser.cpp
   src/ui/HermesDialogs.cpp
   src/ui/DrumMappingDialog.cpp
   src/app/MainWindow.cpp
@@ -77,7 +80,7 @@ add_library(dawhermes_ui
 target_include_directories(dawhermes_ui PUBLIC src)
 target_link_libraries(dawhermes_ui
   PUBLIC dawhermes_core dawhermes_hermes
-  PRIVATE juce::juce_gui_extra)
+  PRIVATE juce::juce_gui_extra juce::juce_audio_formats)
 target_compile_definitions(
   dawhermes_ui
   PRIVATE
@@ -110,8 +113,9 @@ set_project_warnings(DAWHermes)
 
 add_executable(DAWHermesTests
   tests/test_main.cpp
+  src/ui/MidiImportParser.cpp
 )
-target_link_libraries(DAWHermesTests PRIVATE dawhermes_core dawhermes_hermes)
+target_link_libraries(DAWHermesTests PRIVATE dawhermes_core dawhermes_hermes juce::juce_audio_formats)
 set_project_warnings(DAWHermesTests)
 
 add_test(NAME DAWHermesTests COMMAND DAWHermesTests)

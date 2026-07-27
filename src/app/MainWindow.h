@@ -2,8 +2,6 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
-#include "hermes/IHermesEngine.h"
-
 namespace dawhermes::ui {
 class MainComponent;
 }
@@ -14,8 +12,7 @@ class MainWindow final : public juce::DocumentWindow {
 public:
     MainWindow(
         juce::String name,
-        juce::ApplicationProperties& applicationProperties,
-        hermes::IHermesEngine& hermesEngine);
+        juce::ApplicationProperties& applicationProperties);
 
     ~MainWindow() override;
 

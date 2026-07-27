@@ -12,6 +12,14 @@ namespace {
 
 std::string buildTargetTrackName(const HermesTrackContext& sourceContext, const HermesGeneratedMidiTrack& generatedTrack)
 {
+    if (generatedTrack.semanticLayer == "bass_repair" || generatedTrack.semanticLayer == "midi_sync") {
+        if (!generatedTrack.trackName.empty()) {
+            return generatedTrack.trackName;
+        }
+
+        return sourceContext.trackName + " - Hermes Result";
+    }
+
     if (generatedTrack.trackName.empty()) {
         return sourceContext.trackName + " - Drums";
     }
@@ -72,6 +80,13 @@ ApplyToProjectResult applyHermesResultToProject(
     AppliedHermesResult& appliedResult)
 {
     appliedResult = AppliedHermesResult {};
+    appliedResult.operationKind = operationResult.operationKind;
+    appliedResult.sourceAudioTrackId = operationResult.sourceAudioTrackId;
+    appliedResult.sourceMidiTrackId = operationResult.sourceMidiTrackId;
+    appliedResult.resultName = operationResult.resultName;
+    appliedResult.durationMs = operationResult.durationMs;
+    appliedResult.statistics = operationResult.statistics;
+    appliedResult.warnings = operationResult.warnings;
 
     if (!operationResult.isSuccess()) {
         return ApplyToProjectResult { false, "Hermes operation did not succeed.", 0, 0 };
@@ -161,6 +176,10 @@ ApplyToProjectResult applyHermesResultToProject(
 
         createdTrackIds.push_back(midiTrack.id);
         createdMidiTrackIds.push_back(midiTrack.id);
+        if (generatedTrack.midiSourceMetadata.has_value()) {
+            projectController.setMidiSourceMetadata(midiTrack.id, generatedTrack.midiSourceMetadata.value());
+        }
+
         createdTrackSnapshots.push_back(AppliedHermesTrack {
             displayName,
             core::TrackType::midi,
@@ -168,7 +187,8 @@ ApplyToProjectResult applyHermesResultToProject(
             generatedTrack.enabledLayer,
             generatedTrack.emptyLayer || generatedTrack.notes.empty(),
             groupTrackSnapshotIndex,
-            generatedTrack.notes });
+            generatedTrack.notes,
+            generatedTrack.midiSourceMetadata });
     }
 
     appliedResult.groupId = groupId;
@@ -223,6 +243,13 @@ bool redoAppliedHermesResult(core::ProjectController& projectController, Applied
             && !projectController.replaceMidiNotesOnTrack(createdTrack.id, storedTrack.notes)) {
             rollbackCreatedTracks(projectController, recreatedTrackIds);
             return false;
+        }
+
+        if (storedTrack.type == core::TrackType::midi && storedTrack.midiSourceMetadata.has_value()) {
+            if (!projectController.setMidiSourceMetadata(createdTrack.id, storedTrack.midiSourceMetadata.value())) {
+                rollbackCreatedTracks(projectController, recreatedTrackIds);
+                return false;
+            }
         }
 
         if (!projectController.setGeneratedGroupId(createdTrack.id, appliedResult.groupId)) {

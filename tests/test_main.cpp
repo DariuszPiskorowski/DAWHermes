@@ -1,14 +1,22 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <optional>
+#include <set>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/MainLayoutGeometry.h"
@@ -19,10 +27,13 @@
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/ComposerAssistantConnector.h"
 #include "hermes/EmbeddedHermesEngine.h"
+#include "hermes/HermesCache.h"
+#include "hermes/HermesJobRunner.h"
 #include "hermes/HermesProjectResult.h"
 #include "hermes/HermesTypes.h"
 #include "hermes/HermesValidation.h"
 #include "hermes/StubHermesEngine.h"
+#include "ui/MidiImportParser.h"
 
 namespace {
 
@@ -55,10 +66,61 @@ using dawhermes::hermes::HermesDrumsProfile;
 using dawhermes::hermes::HermesResultLayout;
 using dawhermes::hermes::HermesDetectionMode;
 using dawhermes::hermes::HermesBpmOptions;
+using dawhermes::hermes::HermesBassOptions;
 using dawhermes::hermes::HermesGeneratedMidiTrack;
 using dawhermes::hermes::HermesOperationResult;
 using dawhermes::hermes::HermesOperationStatus;
+using dawhermes::hermes::HermesSyncOptions;
+using dawhermes::hermes::HermesSyncRole;
 using dawhermes::hermes::StubHermesEngine;
+
+MidiNote makeMidiNote(int pitch, int velocity, double startBeat, double durationBeats, int channel = 10);
+HermesGeneratedMidiTrack makeGeneratedTrack(
+    std::string name,
+    std::vector<MidiNote> notes,
+    std::string semanticLayer = {},
+    bool enabledLayer = true,
+    bool emptyLayer = false);
+
+class FakeHermesEngine final : public dawhermes::hermes::IHermesEngine {
+public:
+    HermesOperationResult drumsMakeMidiFromWav(
+        const dawhermes::hermes::HermesTrackContext&,
+        const dawhermes::hermes::HermesDrumsOptions&) override
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        return HermesOperationResult::success(
+            "fake drums",
+            HermesResultLayout::singleDrumTrack,
+            std::vector<HermesGeneratedMidiTrack> {
+                makeGeneratedTrack("Fake", { makeMidiNote(36, 100, 0.0, 0.25) }, "drums")
+            },
+            120.0,
+            {},
+            dawhermes::hermes::HermesOperationKind::drumsExtraction);
+    }
+
+    HermesOperationResult bassMakeOrRepairMidiFromWav(
+        const dawhermes::hermes::HermesAudioMidiPairContext&,
+        const dawhermes::hermes::HermesBassOptions&) override
+    {
+        return HermesOperationResult::notImplemented();
+    }
+
+    HermesOperationResult synchronizeMidiWithWav(
+        const dawhermes::hermes::HermesAudioMidiPairContext&,
+        const dawhermes::hermes::HermesSyncOptions&) override
+    {
+        return HermesOperationResult::notImplemented();
+    }
+
+    HermesOperationResult setOrFixBpm(
+        const dawhermes::hermes::HermesTrackContext&,
+        const dawhermes::hermes::HermesBpmOptions&) override
+    {
+        return HermesOperationResult::notImplemented();
+    }
+};
 
 std::filesystem::path createTempWavFixture(const std::string& stem)
 {
@@ -202,7 +264,7 @@ struct CurrentDirectoryGuard {
     std::filesystem::path originalPath;
 };
 
-MidiNote makeMidiNote(int pitch, int velocity, double startBeat, double durationBeats, int channel = 10)
+MidiNote makeMidiNote(int pitch, int velocity, double startBeat, double durationBeats, int channel)
 {
     return MidiNote { pitch, velocity, startBeat, durationBeats, channel };
 }
@@ -210,9 +272,9 @@ MidiNote makeMidiNote(int pitch, int velocity, double startBeat, double duration
 HermesGeneratedMidiTrack makeGeneratedTrack(
     std::string name,
     std::vector<MidiNote> notes,
-    std::string semanticLayer = {},
-    bool enabledLayer = true,
-    bool emptyLayer = false)
+    std::string semanticLayer,
+    bool enabledLayer,
+    bool emptyLayer)
 {
     HermesGeneratedMidiTrack track;
     track.trackName = std::move(name);
@@ -300,6 +362,28 @@ bool testSelectionState()
     EXPECT_TRUE(selection.isSelected(42));
 
     selection.clear();
+    EXPECT_TRUE(!selection.hasSelection());
+    return true;
+}
+
+bool testSelectionStateMultiToggle()
+{
+    SelectionState selection;
+
+    selection.selectTrack(100);
+    selection.toggleTrack(200);
+    EXPECT_TRUE(selection.hasSelection());
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(selection.isSelected(100));
+    EXPECT_TRUE(selection.isSelected(200));
+    EXPECT_EQ(selection.selectedTrackId().value_or(0), static_cast<std::uint64_t>(200));
+
+    selection.toggleTrack(200);
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(selection.isSelected(100));
+    EXPECT_EQ(selection.selectedTrackId().value_or(0), static_cast<std::uint64_t>(100));
+
+    selection.toggleTrack(100);
     EXPECT_TRUE(!selection.hasSelection());
     return true;
 }
@@ -537,6 +621,7 @@ bool testHermesCommandEnablementAudioVsMidi()
     ProjectModel project;
     SelectionState selection;
     ProjectController controller(project, selection);
+    const auto wavFixture = createTempWavFixture("command-availability");
 
     const auto& audio = controller.addTrack(TrackType::audio);
     controller.selectTrack(audio.id);
@@ -548,7 +633,7 @@ bool testHermesCommandEnablementAudioVsMidi()
             selection),
         HermesCommandAvailability::requiresAudioFile);
 
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(audio.id, "C:/tmp/drums.wav"));
+    EXPECT_TRUE(controller.assignAudioSourceToTrack(audio.id, wavFixture.string()));
 
     EXPECT_EQ(
         dawhermes::hermes::getHermesCommandAvailability(
@@ -588,6 +673,153 @@ bool testHermesCommandEnablementAudioVsMidi()
             selection),
         HermesCommandAvailability::requiresAudioAndMidi);
 
+    std::error_code ec;
+    std::filesystem::remove(wavFixture, ec);
+
+    return true;
+}
+
+bool testHermesCommandEnablementValidAudioMidiPair()
+{
+    ProjectModel project;
+    SelectionState selection;
+    ProjectController controller(project, selection);
+    const auto wavFixture = createTempWavFixture("pair-enable");
+
+    const auto audioId = controller.addTrack(TrackType::audio, "Audio Pair").id;
+    const auto midiId = controller.addTrack(TrackType::midi, "MIDI Pair").id;
+
+    EXPECT_TRUE(controller.assignAudioSourceToTrack(audioId, wavFixture.string()));
+    EXPECT_TRUE(controller.replaceMidiNotesOnTrack(
+        midiId,
+        { makeMidiNote(40, 100, 0.0, 0.5) }));
+
+    controller.selectTrack(audioId);
+    controller.toggleTrackSelection(midiId);
+
+    EXPECT_EQ(
+        dawhermes::hermes::getHermesCommandAvailability(
+            HermesCommand::bassMakeRepairMidiFromWav,
+            project,
+            selection),
+        HermesCommandAvailability::enabled);
+
+    EXPECT_EQ(
+        dawhermes::hermes::getHermesCommandAvailability(
+            HermesCommand::synchronizeMidiWithWav,
+            project,
+            selection),
+        HermesCommandAvailability::enabled);
+
+    std::error_code ec;
+    std::filesystem::remove(wavFixture, ec);
+
+    return true;
+}
+
+bool testValidateAudioMidiPairContext()
+{
+    const auto wavFixture = createTempWavFixture("pair-context");
+
+    dawhermes::hermes::HermesAudioMidiPairContext context;
+    context.audioTrack = { 1, "Audio", TrackType::audio, wavFixture.string() };
+    context.midiTrack = { 2, "MIDI", TrackType::midi, {} };
+    context.midiNotes = { makeMidiNote(40, 100, 0.0, 0.5) };
+    context.midiSourceMetadata.ticksPerQuarterNote = 960;
+    context.midiSourceMetadata.tempoMap = { dawhermes::core::MidiTempoEvent {} };
+
+    EXPECT_TRUE(dawhermes::hermes::validateTrackContextForAudioMidiPair(context).ok);
+
+    auto invalid = context;
+    invalid.midiNotes.clear();
+    EXPECT_TRUE(!dawhermes::hermes::validateTrackContextForAudioMidiPair(invalid).ok);
+
+    invalid = context;
+    invalid.midiSourceMetadata.ticksPerQuarterNote = 0;
+    EXPECT_TRUE(!dawhermes::hermes::validateTrackContextForAudioMidiPair(invalid).ok);
+
+    std::error_code ec;
+    std::filesystem::remove(wavFixture, ec);
+    return true;
+}
+
+bool testHermesCacheCreateAndClear()
+{
+    const auto tempRoot = std::filesystem::temp_directory_path() / "dawhermes-cache-test";
+    std::filesystem::create_directories(tempRoot);
+
+    EnvironmentGuard localAppDataGuard("LOCALAPPDATA");
+    setEnvironment("LOCALAPPDATA", tempRoot.string());
+
+    std::string error;
+    const auto firstJobDir = dawhermes::hermes::createHermesJobDirectory("unit_test", error);
+    EXPECT_TRUE(error.empty());
+    EXPECT_TRUE(!firstJobDir.empty());
+    EXPECT_TRUE(std::filesystem::exists(firstJobDir));
+
+    const auto secondJobDir = dawhermes::hermes::createHermesJobDirectory("unit_test", error);
+    EXPECT_TRUE(error.empty());
+    EXPECT_TRUE(std::filesystem::exists(secondJobDir));
+
+    const auto removed = dawhermes::hermes::clearHermesCache(error);
+    EXPECT_TRUE(error.empty());
+    EXPECT_TRUE(removed >= static_cast<std::size_t>(2));
+
+    std::error_code ec;
+    std::filesystem::remove_all(tempRoot, ec);
+    return true;
+}
+
+bool testHermesJobRunnerSerializesJobs()
+{
+    dawhermes::hermes::HermesJobRunner runner([]() {
+        return std::make_unique<FakeHermesEngine>();
+    });
+
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool firstCompleted = false;
+    bool firstSucceeded = false;
+    bool secondCompleted = false;
+
+    dawhermes::hermes::HermesJobRequest firstRequest;
+    firstRequest.kind = dawhermes::hermes::HermesOperationKind::drumsExtraction;
+
+    std::string submitError;
+    EXPECT_TRUE(runner.submit(
+        firstRequest,
+        [&](dawhermes::hermes::HermesJobResult result) {
+            std::lock_guard<std::mutex> lock(mutex);
+            firstSucceeded = result.operationResult.isSuccess();
+            firstCompleted = true;
+            condition.notify_all();
+        },
+        submitError));
+
+    dawhermes::hermes::HermesJobRequest secondRequest;
+    secondRequest.kind = dawhermes::hermes::HermesOperationKind::drumsExtraction;
+
+    std::string busyError;
+    EXPECT_TRUE(!runner.submit(
+        secondRequest,
+        [&](dawhermes::hermes::HermesJobResult) {
+            std::lock_guard<std::mutex> lock(mutex);
+            secondCompleted = true;
+            condition.notify_all();
+        },
+        busyError));
+    EXPECT_TRUE(!busyError.empty());
+
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        condition.wait_for(lock, std::chrono::seconds(3), [&]() { return firstCompleted; });
+    }
+
+    EXPECT_TRUE(firstCompleted);
+    EXPECT_TRUE(firstSucceeded);
+    EXPECT_TRUE(!secondCompleted);
+
+    runner.stop();
     return true;
 }
 
@@ -1132,10 +1364,798 @@ bool testEmbeddedHermesStructuredResultAndInsertion()
     return true;
 }
 
+std::string normalizePathString(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    const auto absolute = std::filesystem::absolute(path, ec);
+    const auto normalized = (ec ? path : absolute).lexically_normal();
+    return normalized.generic_string();
+}
+
+bool isExistingFile(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    return std::filesystem::exists(path, ec) && std::filesystem::is_regular_file(path, ec);
+}
+
+std::string jsonEscape(const std::string& value)
+{
+    std::ostringstream escaped;
+    for (unsigned char ch : value) {
+        switch (ch) {
+        case '"':
+            escaped << "\\\"";
+            break;
+        case '\\':
+            escaped << "\\\\";
+            break;
+        case '\b':
+            escaped << "\\b";
+            break;
+        case '\f':
+            escaped << "\\f";
+            break;
+        case '\n':
+            escaped << "\\n";
+            break;
+        case '\r':
+            escaped << "\\r";
+            break;
+        case '\t':
+            escaped << "\\t";
+            break;
+        default:
+            if (ch < 0x20) {
+                escaped << "\\u"
+                        << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(ch)
+                        << std::dec << std::setfill(' ');
+            } else {
+                escaped << static_cast<char>(ch);
+            }
+            break;
+        }
+    }
+
+    return escaped.str();
+}
+
+std::string quoted(const std::string& value)
+{
+    return "\"" + jsonEscape(value) + "\"";
+}
+
+std::string jsonBool(bool value)
+{
+    return value ? "true" : "false";
+}
+
+std::string formatDouble(double value, int precision = 6)
+{
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(precision) << value;
+    return out.str();
+}
+
+std::string jsonIntArray(const std::vector<int>& values)
+{
+    std::ostringstream out;
+    out << "[";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+
+        out << values.at(i);
+    }
+    out << "]";
+    return out.str();
+}
+
+std::string jsonStringArray(const std::vector<std::string>& values)
+{
+    std::ostringstream out;
+    out << "[";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+
+        out << quoted(values.at(i));
+    }
+    out << "]";
+    return out.str();
+}
+
+const char* operationStatusToString(HermesOperationStatus status)
+{
+    switch (status) {
+    case HermesOperationStatus::success:
+        return "success";
+    case HermesOperationStatus::notImplemented:
+        return "notImplemented";
+    case HermesOperationStatus::invalidInput:
+        return "invalidInput";
+    case HermesOperationStatus::unavailable:
+        return "unavailable";
+    default:
+        return "unknown";
+    }
+}
+
+bool tempoMapsEquivalent(
+    const std::vector<dawhermes::core::MidiTempoEvent>& left,
+    const std::vector<dawhermes::core::MidiTempoEvent>& right)
+{
+    if (left.size() != right.size()) {
+        return false;
+    }
+
+    constexpr double epsilon = 1.0e-9;
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto& l = left.at(i);
+        const auto& r = right.at(i);
+        if (std::abs(l.beatPosition - r.beatPosition) > epsilon) {
+            return false;
+        }
+
+        if (l.microsecondsPerQuarterNote != r.microsecondsPerQuarterNote) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+struct RealAssetInputs {
+    std::filesystem::path bassMidi;
+    std::filesystem::path bassWav;
+    std::filesystem::path drumMidi;
+    std::filesystem::path drumWav;
+    std::filesystem::path synthMidi;
+    std::filesystem::path synthWav;
+    std::filesystem::path reportPath;
+};
+
+struct ParsedMidiAsset {
+    std::filesystem::path filePath;
+    dawhermes::ui::MidiImportDocument document;
+    dawhermes::ui::MidiImportTrackCandidate selectedTrack;
+    dawhermes::core::MidiSourceMetadata selectedMetadata;
+};
+
+struct OperationExecution {
+    HermesOperationResult result;
+    double wallClockDurationMs { 0.0 };
+    std::size_t generatedNoteCount { 0 };
+    bool hasZeroNoteTrack { false };
+};
+
+void printRealAssetsUsage()
+{
+    std::cout
+        << "Usage: DAWHermesTests --m2-real-assets "
+        << "--bass-midi <path> --bass-wav <path> "
+        << "--drum-midi <path> --drum-wav <path> "
+        << "--synth-midi <path> --synth-wav <path> "
+        << "[--report <path>]\n";
+}
+
+std::optional<RealAssetInputs> parseRealAssetInputs(int argc, char* argv[], std::string& error)
+{
+    error.clear();
+
+    std::map<std::string, std::string> raw;
+    for (int argIndex = 2; argIndex < argc; ++argIndex) {
+        const std::string key(argv[argIndex]);
+        if (key == "--help") {
+            error = "__help__";
+            return std::nullopt;
+        }
+
+        if (key.rfind("--", 0) != 0) {
+            error = "Unexpected argument: " + key;
+            return std::nullopt;
+        }
+
+        if (argIndex + 1 >= argc) {
+            error = "Missing value for argument: " + key;
+            return std::nullopt;
+        }
+
+        raw[key] = argv[++argIndex];
+    }
+
+    RealAssetInputs inputs;
+    const auto parseRequiredPath = [&](const std::string& key, std::filesystem::path& output) {
+        const auto valueIt = raw.find(key);
+        if (valueIt == raw.end()) {
+            error = "Missing required argument: " + key;
+            return false;
+        }
+
+        output = std::filesystem::path(valueIt->second).lexically_normal();
+        if (!isExistingFile(output)) {
+            error = "Required file was not found: " + key + " => " + output.string();
+            return false;
+        }
+
+        return true;
+    };
+
+    if (!parseRequiredPath("--bass-midi", inputs.bassMidi)
+        || !parseRequiredPath("--bass-wav", inputs.bassWav)
+        || !parseRequiredPath("--drum-midi", inputs.drumMidi)
+        || !parseRequiredPath("--drum-wav", inputs.drumWav)
+        || !parseRequiredPath("--synth-midi", inputs.synthMidi)
+        || !parseRequiredPath("--synth-wav", inputs.synthWav)) {
+        return std::nullopt;
+    }
+
+    const auto reportIt = raw.find("--report");
+    if (reportIt != raw.end()) {
+        inputs.reportPath = std::filesystem::path(reportIt->second).lexically_normal();
+    } else {
+        inputs.reportPath = std::filesystem::path("build") / "m2-real-assets-report.json";
+    }
+
+    inputs.bassMidi = std::filesystem::absolute(inputs.bassMidi).lexically_normal();
+    inputs.bassWav = std::filesystem::absolute(inputs.bassWav).lexically_normal();
+    inputs.drumMidi = std::filesystem::absolute(inputs.drumMidi).lexically_normal();
+    inputs.drumWav = std::filesystem::absolute(inputs.drumWav).lexically_normal();
+    inputs.synthMidi = std::filesystem::absolute(inputs.synthMidi).lexically_normal();
+    inputs.synthWav = std::filesystem::absolute(inputs.synthWav).lexically_normal();
+    inputs.reportPath = std::filesystem::absolute(inputs.reportPath).lexically_normal();
+
+    return inputs;
+}
+
+std::optional<ParsedMidiAsset> parseMidiAsset(const std::filesystem::path& filePath, std::string& error)
+{
+    std::string parseError;
+    const auto parsed = dawhermes::ui::parseMidiImportDocument(filePath, parseError);
+    if (!parsed.has_value()) {
+        error = parseError.empty() ? "Failed to parse MIDI file." : parseError;
+        return std::nullopt;
+    }
+
+    if (parsed->noteBearingTracks.empty()) {
+        error = "MIDI file contained no note-bearing tracks.";
+        return std::nullopt;
+    }
+
+    ParsedMidiAsset asset;
+    asset.filePath = filePath;
+    asset.document = *parsed;
+    asset.selectedTrack = asset.document.noteBearingTracks.front();
+    asset.selectedMetadata = dawhermes::ui::makeImportedMidiSourceMetadata(asset.document, asset.selectedTrack);
+    return asset;
+}
+
+std::optional<dawhermes::ui::WavFileInspection> parseWavAsset(
+    const std::filesystem::path& filePath,
+    std::string& error)
+{
+    return dawhermes::ui::inspectWavFile(filePath, error);
+}
+
+std::set<std::string> collectHermesCacheDirectories(const std::filesystem::path& cacheRoot)
+{
+    std::set<std::string> directories;
+    std::error_code ec;
+    if (!std::filesystem::exists(cacheRoot, ec) || ec) {
+        return directories;
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(cacheRoot, ec)) {
+        if (ec) {
+            break;
+        }
+
+        if (!entry.is_directory()) {
+            continue;
+        }
+
+        directories.insert(normalizePathString(entry.path()));
+    }
+
+    return directories;
+}
+
+dawhermes::hermes::HermesTrackContext makeAudioContext(
+    std::uint64_t trackId,
+    const std::string& trackName,
+    const std::filesystem::path& audioPath)
+{
+    dawhermes::hermes::HermesTrackContext context;
+    context.trackId = trackId;
+    context.trackName = trackName;
+    context.trackType = TrackType::audio;
+    context.audioSourcePath = normalizePathString(audioPath);
+    return context;
+}
+
+dawhermes::hermes::HermesAudioMidiPairContext makePairContext(
+    std::uint64_t audioTrackId,
+    const std::string& audioTrackName,
+    const std::filesystem::path& audioPath,
+    std::uint64_t midiTrackId,
+    const std::string& midiTrackName,
+    const ParsedMidiAsset& midiAsset)
+{
+    dawhermes::hermes::HermesAudioMidiPairContext context;
+    context.audioTrack = makeAudioContext(audioTrackId, audioTrackName, audioPath);
+    context.midiTrack.trackId = midiTrackId;
+    context.midiTrack.trackName = midiTrackName;
+    context.midiTrack.trackType = TrackType::midi;
+    context.midiNotes = midiAsset.selectedTrack.notes;
+    context.midiSourceMetadata = midiAsset.selectedMetadata;
+    return context;
+}
+
+std::size_t countGeneratedNotes(const HermesOperationResult& result)
+{
+    std::size_t count = 0;
+    for (const auto& track : result.generatedMidiTracks) {
+        count += track.notes.size();
+    }
+
+    return count;
+}
+
+bool hasZeroNoteGeneratedTrack(const HermesOperationResult& result)
+{
+    for (const auto& track : result.generatedMidiTracks) {
+        if (track.notes.empty()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+template <typename OperationCallable>
+OperationExecution executeTimedOperation(OperationCallable&& callable)
+{
+    const auto start = std::chrono::steady_clock::now();
+    auto result = callable();
+    const auto end = std::chrono::steady_clock::now();
+
+    OperationExecution execution;
+    execution.wallClockDurationMs =
+        static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
+    execution.generatedNoteCount = countGeneratedNotes(result);
+    execution.hasZeroNoteTrack = hasZeroNoteGeneratedTrack(result);
+    execution.result = std::move(result);
+    return execution;
+}
+
+bool generatedMetadataLineageMatches(const OperationExecution& execution, const ParsedMidiAsset& sourceMidi)
+{
+    if (!execution.result.isSuccess() || execution.result.generatedMidiTracks.empty()) {
+        return false;
+    }
+
+    const auto expectedSourcePath = normalizePathString(sourceMidi.filePath);
+    for (const auto& generatedTrack : execution.result.generatedMidiTracks) {
+        if (!generatedTrack.midiSourceMetadata.has_value()) {
+            return false;
+        }
+
+        const auto& metadata = generatedTrack.midiSourceMetadata.value();
+        if (normalizePathString(std::filesystem::path(metadata.sourceFilePath)) != expectedSourcePath) {
+            return false;
+        }
+
+        if (metadata.sourceFileName != sourceMidi.selectedMetadata.sourceFileName) {
+            return false;
+        }
+
+        if (metadata.sourceTrackIndex != sourceMidi.selectedMetadata.sourceTrackIndex) {
+            return false;
+        }
+
+        if (metadata.ticksPerQuarterNote != sourceMidi.selectedMetadata.ticksPerQuarterNote) {
+            return false;
+        }
+
+        if (metadata.noteCount == 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::vector<std::string> collectNewDirectories(
+    const std::set<std::string>& before,
+    const std::set<std::string>& after)
+{
+    std::vector<std::string> created;
+    for (const auto& path : after) {
+        if (before.find(path) == before.end()) {
+            created.push_back(path);
+        }
+    }
+
+    return created;
+}
+
+std::string serializeMidiAssetReport(const ParsedMidiAsset& asset)
+{
+    std::ostringstream out;
+    out << "{";
+    out << "\"sourcePath\": " << quoted(normalizePathString(asset.filePath)) << ", ";
+    out << "\"sourceFileName\": " << quoted(asset.document.sourceFileName) << ", ";
+    out << "\"midiFileType\": " << asset.document.midiFileType << ", ";
+    out << "\"ticksPerQuarterNote\": " << asset.document.ticksPerQuarterNote << ", ";
+    out << "\"totalSourceTrackCount\": " << asset.document.totalSourceTrackCount << ", ";
+    out << "\"noteBearingTrackCount\": " << asset.document.noteBearingTracks.size() << ", ";
+    out << "\"selectedTrackIndex\": " << asset.selectedTrack.sourceTrackIndex << ", ";
+    out << "\"selectedTrackName\": " << quoted(asset.selectedTrack.sourceTrackName) << ", ";
+    out << "\"selectedTrackNoteCount\": " << asset.selectedTrack.notes.size() << ", ";
+    out << "\"selectedTrackChannels\": " << jsonIntArray(asset.selectedTrack.channelsUsed) << ", ";
+    out << "\"selectedTrackDurationBeats\": " << formatDouble(asset.selectedTrack.approximateDurationBeats) << ", ";
+    out << "\"documentDurationBeats\": " << formatDouble(asset.document.approximateDurationBeats) << ", ";
+    out << "\"tempoEventCount\": " << asset.document.tempoMap.size();
+    out << "}";
+    return out.str();
+}
+
+std::string serializeWavInspectionReport(
+    const std::filesystem::path& wavPath,
+    const dawhermes::ui::WavFileInspection& inspection)
+{
+    std::ostringstream out;
+    out << "{";
+    out << "\"sourcePath\": " << quoted(normalizePathString(wavPath)) << ", ";
+    out << "\"sampleRate\": " << formatDouble(inspection.sampleRate, 2) << ", ";
+    out << "\"channelCount\": " << inspection.channelCount << ", ";
+    out << "\"bitsPerSample\": " << inspection.bitsPerSample << ", ";
+    out << "\"durationSeconds\": " << formatDouble(inspection.durationSeconds, 6) << ", ";
+    out << "\"fileSizeBytes\": " << inspection.fileSizeBytes;
+    out << "}";
+    return out.str();
+}
+
+std::string serializeOperationStatistics(const dawhermes::hermes::HermesOperationStatistics& statistics)
+{
+    std::ostringstream out;
+    out << "{";
+    out << "\"inputNoteCount\": " << statistics.inputNoteCount << ", ";
+    out << "\"outputNoteCount\": " << statistics.outputNoteCount << ", ";
+    out << "\"mergedCount\": " << statistics.mergedCount << ", ";
+    out << "\"insertedCount\": " << statistics.insertedCount << ", ";
+    out << "\"splitCount\": " << statistics.splitCount << ", ";
+    out << "\"removedOrMutedCount\": " << statistics.removedOrMutedCount << ", ";
+    out << "\"alignedCount\": " << statistics.alignedCount << ", ";
+    out << "\"keepOriginalCount\": " << statistics.keepOriginalCount << ", ";
+    out << "\"reviewTimingCount\": " << statistics.reviewTimingCount << ", ";
+    out << "\"noAudioEvidenceCount\": " << statistics.noAudioEvidenceCount;
+    out << "}";
+    return out.str();
+}
+
+std::string serializeGeneratedTrackSummaries(const HermesOperationResult& result)
+{
+    std::ostringstream out;
+    out << "[";
+    for (std::size_t i = 0; i < result.generatedMidiTracks.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+
+        const auto& track = result.generatedMidiTracks.at(i);
+        out << "{";
+        out << "\"trackName\": " << quoted(track.trackName) << ", ";
+        out << "\"semanticLayer\": " << quoted(track.semanticLayer) << ", ";
+        out << "\"enabledLayer\": " << jsonBool(track.enabledLayer) << ", ";
+        out << "\"emptyLayer\": " << jsonBool(track.emptyLayer) << ", ";
+        out << "\"noteCount\": " << track.notes.size() << ", ";
+        out << "\"hasSourceMetadata\": " << jsonBool(track.midiSourceMetadata.has_value());
+        out << "}";
+    }
+    out << "]";
+    return out.str();
+}
+
+std::string serializeOperationReport(
+    const OperationExecution& execution,
+    bool tempoPreserved,
+    bool lineageMatches)
+{
+    std::vector<std::string> warnings = execution.result.warnings;
+
+    std::ostringstream out;
+    out << "{";
+    out << "\"status\": " << quoted(operationStatusToString(execution.result.status)) << ", ";
+    out << "\"message\": " << quoted(execution.result.message) << ", ";
+    out << "\"wallClockDurationMs\": " << formatDouble(execution.wallClockDurationMs, 3) << ", ";
+    out << "\"engineDurationMs\": " << formatDouble(execution.result.durationMs, 3) << ", ";
+    out << "\"generatedTrackCount\": " << execution.result.generatedMidiTracks.size() << ", ";
+    out << "\"generatedNoteCount\": " << execution.generatedNoteCount << ", ";
+    out << "\"hasZeroNoteTrack\": " << jsonBool(execution.hasZeroNoteTrack) << ", ";
+    out << "\"ticksPerQuarterNote\": " << execution.result.ticksPerQuarterNote << ", ";
+    out << "\"tempoEventCount\": " << execution.result.tempoMap.size() << ", ";
+    out << "\"tempoPreserved\": " << jsonBool(tempoPreserved) << ", ";
+    out << "\"metadataLineageMatchesSource\": " << jsonBool(lineageMatches) << ", ";
+    out << "\"warnings\": " << jsonStringArray(warnings) << ", ";
+    out << "\"statistics\": " << serializeOperationStatistics(execution.result.statistics) << ", ";
+    out << "\"generatedTracks\": " << serializeGeneratedTrackSummaries(execution.result);
+    out << "}";
+    return out.str();
+}
+
+bool writeReportFile(const std::filesystem::path& filePath, const std::string& report, std::string& error)
+{
+    error.clear();
+
+    std::error_code ec;
+    const auto parent = filePath.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            error = "Failed to create report directory: " + parent.string();
+            return false;
+        }
+    }
+
+    std::ofstream out(filePath, std::ios::out | std::ios::trunc);
+    if (!out.good()) {
+        error = "Failed to open report file for writing: " + filePath.string();
+        return false;
+    }
+
+    out << report;
+    out.close();
+    return true;
+}
+
+int runM2RealAssetsMode(int argc, char* argv[])
+{
+    std::string parseError;
+    const auto parsedInputs = parseRealAssetInputs(argc, argv, parseError);
+    if (!parsedInputs.has_value()) {
+        if (parseError == "__help__") {
+            printRealAssetsUsage();
+            return 0;
+        }
+
+        std::cerr << parseError << "\n";
+        printRealAssetsUsage();
+        return 2;
+    }
+
+    const auto inputs = parsedInputs.value();
+
+    std::string error;
+    const auto bassMidi = parseMidiAsset(inputs.bassMidi, error);
+    if (!bassMidi.has_value()) {
+        std::cerr << "Bass MIDI parse failed: " << error << "\n";
+        return 3;
+    }
+
+    const auto drumMidi = parseMidiAsset(inputs.drumMidi, error);
+    if (!drumMidi.has_value()) {
+        std::cerr << "Drum MIDI parse failed: " << error << "\n";
+        return 3;
+    }
+
+    const auto synthMidi = parseMidiAsset(inputs.synthMidi, error);
+    if (!synthMidi.has_value()) {
+        std::cerr << "Synth MIDI parse failed: " << error << "\n";
+        return 3;
+    }
+
+    const auto bassWavInspection = parseWavAsset(inputs.bassWav, error);
+    if (!bassWavInspection.has_value()) {
+        std::cerr << "Bass WAV inspection failed: " << error << "\n";
+        return 3;
+    }
+
+    const auto drumWavInspection = parseWavAsset(inputs.drumWav, error);
+    if (!drumWavInspection.has_value()) {
+        std::cerr << "Drum WAV inspection failed: " << error << "\n";
+        return 3;
+    }
+
+    const auto synthWavInspection = parseWavAsset(inputs.synthWav, error);
+    if (!synthWavInspection.has_value()) {
+        std::cerr << "Synth WAV inspection failed: " << error << "\n";
+        return 3;
+    }
+
+    auto bassPair = makePairContext(21, "Bass Audio", inputs.bassWav, 22, "Bass MIDI", bassMidi.value());
+    auto synthPair = makePairContext(31, "Synth Audio", inputs.synthWav, 32, "Synth MIDI", synthMidi.value());
+    const auto drumsContext = makeAudioContext(11, "Drum Audio", inputs.drumWav);
+
+    const auto bassPairValidation = dawhermes::hermes::validateTrackContextForAudioMidiPair(bassPair);
+    if (!bassPairValidation.ok) {
+        std::cerr << "Bass pair validation failed: " << bassPairValidation.message << "\n";
+        return 4;
+    }
+
+    const auto synthPairValidation = dawhermes::hermes::validateTrackContextForAudioMidiPair(synthPair);
+    if (!synthPairValidation.ok) {
+        std::cerr << "Synth pair validation failed: " << synthPairValidation.message << "\n";
+        return 4;
+    }
+
+    const auto drumsContextValidation = dawhermes::hermes::validateTrackContextForDrums(drumsContext);
+    if (!drumsContextValidation.ok) {
+        std::cerr << "Drums context validation failed: " << drumsContextValidation.message << "\n";
+        return 4;
+    }
+
+    const auto cacheRoot = dawhermes::hermes::hermesCacheRoot();
+    const auto cacheBefore = collectHermesCacheDirectories(cacheRoot);
+
+    dawhermes::hermes::EmbeddedHermesEngine engine;
+
+    HermesDrumsOptions drumsOptions;
+    drumsOptions.resultLayout = HermesResultLayout::singleDrumTrack;
+    drumsOptions.profile = HermesDrumsProfile::balanced;
+    drumsOptions.detectionMode = HermesDetectionMode::multiDetector;
+    drumsOptions.targetMapping = dawhermes::hermes::HermesTargetMapping::generalMidi;
+    drumsOptions.c1MidiNote = 36;
+    drumsOptions.createEmptyEnabledLayers = false;
+
+    HermesBassOptions bassOptions;
+    bassOptions.resultTrackName = "Bass MIDI - Hermes Bass Repaired";
+
+    HermesSyncOptions bassSyncOptions;
+    bassSyncOptions.role = HermesSyncRole::bass;
+    bassSyncOptions.preserveTempoMap = true;
+    bassSyncOptions.resultTrackName = "Bass MIDI - Hermes Sync";
+
+    HermesSyncOptions synthSyncOptions;
+    synthSyncOptions.role = HermesSyncRole::synth;
+    synthSyncOptions.preserveTempoMap = true;
+    synthSyncOptions.resultTrackName = "Synth MIDI - Hermes Sync";
+
+    const auto drumsExecution = executeTimedOperation([&]() {
+        return engine.drumsMakeMidiFromWav(drumsContext, drumsOptions);
+    });
+
+    const auto bassRepairExecution = executeTimedOperation([&]() {
+        return engine.bassMakeOrRepairMidiFromWav(bassPair, bassOptions);
+    });
+
+    const auto bassSyncExecution = executeTimedOperation([&]() {
+        return engine.synchronizeMidiWithWav(bassPair, bassSyncOptions);
+    });
+
+    const auto synthSyncExecution = executeTimedOperation([&]() {
+        return engine.synchronizeMidiWithWav(synthPair, synthSyncOptions);
+    });
+
+    const auto cacheAfter = collectHermesCacheDirectories(cacheRoot);
+    const auto newCacheDirectories = collectNewDirectories(cacheBefore, cacheAfter);
+
+    const bool operationsSuccessful =
+        drumsExecution.result.isSuccess()
+        && bassRepairExecution.result.isSuccess()
+        && bassSyncExecution.result.isSuccess()
+        && synthSyncExecution.result.isSuccess();
+
+    const bool zeroNoteViolation =
+        (drumsExecution.result.isSuccess() && (drumsExecution.generatedNoteCount == 0 || drumsExecution.hasZeroNoteTrack))
+        || (bassRepairExecution.result.isSuccess() && (bassRepairExecution.generatedNoteCount == 0 || bassRepairExecution.hasZeroNoteTrack))
+        || (bassSyncExecution.result.isSuccess() && (bassSyncExecution.generatedNoteCount == 0 || bassSyncExecution.hasZeroNoteTrack))
+        || (synthSyncExecution.result.isSuccess() && (synthSyncExecution.generatedNoteCount == 0 || synthSyncExecution.hasZeroNoteTrack));
+
+    const bool bassSyncTempoPreserved =
+        bassSyncExecution.result.isSuccess()
+        && tempoMapsEquivalent(bassMidi->selectedMetadata.tempoMap, bassSyncExecution.result.tempoMap);
+    const bool synthSyncTempoPreserved =
+        synthSyncExecution.result.isSuccess()
+        && tempoMapsEquivalent(synthMidi->selectedMetadata.tempoMap, synthSyncExecution.result.tempoMap);
+
+    const bool bassRepairLineageMatches = generatedMetadataLineageMatches(bassRepairExecution, bassMidi.value());
+    const bool bassSyncLineageMatches = generatedMetadataLineageMatches(bassSyncExecution, bassMidi.value());
+    const bool synthSyncLineageMatches = generatedMetadataLineageMatches(synthSyncExecution, synthMidi.value());
+
+    const bool cacheCleanupOk = newCacheDirectories.empty();
+    const bool overallSuccess =
+        operationsSuccessful
+        && !zeroNoteViolation
+        && bassSyncTempoPreserved
+        && synthSyncTempoPreserved
+        && bassRepairLineageMatches
+        && bassSyncLineageMatches
+        && synthSyncLineageMatches
+        && cacheCleanupOk;
+
+    std::vector<std::string> reportWarnings;
+    if (!operationsSuccessful) {
+        reportWarnings.push_back("One or more Hermes operations failed.");
+    }
+    if (zeroNoteViolation) {
+        reportWarnings.push_back("At least one successful operation produced zero-note output.");
+    }
+    if (!bassSyncTempoPreserved || !synthSyncTempoPreserved) {
+        reportWarnings.push_back("Tempo map preservation check failed for at least one sync operation.");
+    }
+    if (!bassRepairLineageMatches || !bassSyncLineageMatches || !synthSyncLineageMatches) {
+        reportWarnings.push_back("MIDI source metadata lineage check failed.");
+    }
+    if (!cacheCleanupOk) {
+        reportWarnings.push_back("Hermes cache directory cleanup check failed.");
+    }
+
+    std::ostringstream report;
+    report << "{\n";
+    report << "  \"overallSuccess\": " << jsonBool(overallSuccess) << ",\n";
+    report << "  \"warnings\": " << jsonStringArray(reportWarnings) << ",\n";
+    report << "  \"inputs\": {\n";
+    report << "    \"bassMidi\": " << quoted(normalizePathString(inputs.bassMidi)) << ",\n";
+    report << "    \"bassWav\": " << quoted(normalizePathString(inputs.bassWav)) << ",\n";
+    report << "    \"drumMidi\": " << quoted(normalizePathString(inputs.drumMidi)) << ",\n";
+    report << "    \"drumWav\": " << quoted(normalizePathString(inputs.drumWav)) << ",\n";
+    report << "    \"synthMidi\": " << quoted(normalizePathString(inputs.synthMidi)) << ",\n";
+    report << "    \"synthWav\": " << quoted(normalizePathString(inputs.synthWav)) << "\n";
+    report << "  },\n";
+    report << "  \"midiMetadata\": {\n";
+    report << "    \"bass\": " << serializeMidiAssetReport(bassMidi.value()) << ",\n";
+    report << "    \"drums\": " << serializeMidiAssetReport(drumMidi.value()) << ",\n";
+    report << "    \"synth\": " << serializeMidiAssetReport(synthMidi.value()) << "\n";
+    report << "  },\n";
+    report << "  \"wavMetadata\": {\n";
+    report << "    \"bass\": " << serializeWavInspectionReport(inputs.bassWav, bassWavInspection.value()) << ",\n";
+    report << "    \"drums\": " << serializeWavInspectionReport(inputs.drumWav, drumWavInspection.value()) << ",\n";
+    report << "    \"synth\": " << serializeWavInspectionReport(inputs.synthWav, synthWavInspection.value()) << "\n";
+    report << "  },\n";
+    report << "  \"operations\": {\n";
+    report << "    \"drumsExtraction\": " << serializeOperationReport(drumsExecution, false, false) << ",\n";
+    report << "    \"bassRepair\": " << serializeOperationReport(bassRepairExecution, false, bassRepairLineageMatches) << ",\n";
+    report << "    \"bassSync\": " << serializeOperationReport(bassSyncExecution, bassSyncTempoPreserved, bassSyncLineageMatches) << ",\n";
+    report << "    \"synthSync\": " << serializeOperationReport(synthSyncExecution, synthSyncTempoPreserved, synthSyncLineageMatches) << "\n";
+    report << "  },\n";
+    report << "  \"checks\": {\n";
+    report << "    \"operationsSuccessful\": " << jsonBool(operationsSuccessful) << ",\n";
+    report << "    \"zeroNoteViolation\": " << jsonBool(zeroNoteViolation) << ",\n";
+    report << "    \"bassSyncTempoPreserved\": " << jsonBool(bassSyncTempoPreserved) << ",\n";
+    report << "    \"synthSyncTempoPreserved\": " << jsonBool(synthSyncTempoPreserved) << ",\n";
+    report << "    \"bassRepairMetadataLineageMatches\": " << jsonBool(bassRepairLineageMatches) << ",\n";
+    report << "    \"bassSyncMetadataLineageMatches\": " << jsonBool(bassSyncLineageMatches) << ",\n";
+    report << "    \"synthSyncMetadataLineageMatches\": " << jsonBool(synthSyncLineageMatches) << ",\n";
+    report << "    \"cacheCleanupOk\": " << jsonBool(cacheCleanupOk) << "\n";
+    report << "  },\n";
+    report << "  \"cache\": {\n";
+    report << "    \"root\": " << quoted(normalizePathString(cacheRoot)) << ",\n";
+    report << "    \"beforeCount\": " << cacheBefore.size() << ",\n";
+    report << "    \"afterCount\": " << cacheAfter.size() << ",\n";
+    report << "    \"newDirectories\": " << jsonStringArray(newCacheDirectories) << "\n";
+    report << "  }\n";
+    report << "}\n";
+
+    std::string writeError;
+    if (!writeReportFile(inputs.reportPath, report.str(), writeError)) {
+        std::cerr << writeError << "\n";
+        return 5;
+    }
+
+    std::cout << "[M2-REAL-ASSETS] Report=" << normalizePathString(inputs.reportPath) << "\n";
+    std::cout << "[M2-REAL-ASSETS] OverallSuccess=" << (overallSuccess ? "true" : "false") << "\n";
+    std::cout << "[M2-REAL-ASSETS] DrumsStatus=" << operationStatusToString(drumsExecution.result.status)
+              << " Notes=" << drumsExecution.generatedNoteCount << "\n";
+    std::cout << "[M2-REAL-ASSETS] BassRepairStatus=" << operationStatusToString(bassRepairExecution.result.status)
+              << " Notes=" << bassRepairExecution.generatedNoteCount << "\n";
+    std::cout << "[M2-REAL-ASSETS] BassSyncStatus=" << operationStatusToString(bassSyncExecution.result.status)
+              << " Notes=" << bassSyncExecution.generatedNoteCount << "\n";
+    std::cout << "[M2-REAL-ASSETS] SynthSyncStatus=" << operationStatusToString(synthSyncExecution.result.status)
+              << " Notes=" << synthSyncExecution.generatedNoteCount << "\n";
+
+    return overallSuccess ? 0 : 6;
+}
+
 }  // namespace
 
-int main()
+int main(int argc, char* argv[])
 {
+    if (argc > 1 && std::string(argv[1]) == "--m2-real-assets") {
+        return runM2RealAssetsMode(argc, argv);
+    }
+
     struct NamedTest {
         const char* name;
         bool (*func)();
@@ -1147,6 +2167,7 @@ int main()
         { "MIDI note replacement", testMidiNoteReplacement },
         { "Stable track IDs", testStableTrackIds },
         { "Selection state", testSelectionState },
+        { "Selection multi-toggle", testSelectionStateMultiToggle },
         { "Delete selected track", testDeleteSelectedTrack },
         { "Delete unselected track", testDeleteUnselectedTrack },
         { "Empty project safety", testEmptyProjectSafety },
@@ -1159,6 +2180,10 @@ int main()
         { "Delete group removes children", testDeleteGroupTrackRemovesChildren },
         { "Stub Hermes not implemented", testStubEngineNotImplemented },
         { "Hermes command enablement", testHermesCommandEnablementAudioVsMidi },
+        { "Hermes pair enablement", testHermesCommandEnablementValidAudioMidiPair },
+        { "Pair context validation", testValidateAudioMidiPairContext },
+        { "Hermes cache clear", testHermesCacheCreateAndClear },
+        { "Hermes job runner serialization", testHermesJobRunnerSerializesJobs },
         { "MIDI note event validation", testMidiNoteEventValidation },
         { "Separate layout creates separate tracks", testSeparateLayoutCreatesSeparateMidiTracks },
         { "Grouped layout shared hierarchy", testGroupedLayoutCreatesSharedProjectHierarchy },

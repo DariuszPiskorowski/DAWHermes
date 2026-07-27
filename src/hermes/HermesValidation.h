@@ -20,7 +20,10 @@ bool isValidDetectionMode(HermesDetectionMode value);
 bool isValidTargetMapping(HermesTargetMapping value);
 
 ValidationResult validateDrumsOptions(const HermesDrumsOptions& options);
+ValidationResult validateBassOptions(const HermesBassOptions& options);
+ValidationResult validateSyncOptions(const HermesSyncOptions& options);
 ValidationResult validateBpmOptions(const HermesBpmOptions& options);
 ValidationResult validateTrackContextForDrums(const HermesTrackContext& context);
+ValidationResult validateTrackContextForAudioMidiPair(const HermesAudioMidiPairContext& context);
 
 }  // namespace dawhermes::hermes

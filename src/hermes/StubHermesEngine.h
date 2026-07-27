@@ -11,11 +11,11 @@ public:
         const HermesDrumsOptions& options) override;
 
     HermesOperationResult bassMakeOrRepairMidiFromWav(
-        const HermesTrackContext& context,
+        const HermesAudioMidiPairContext& context,
         const HermesBassOptions& options) override;
 
     HermesOperationResult synchronizeMidiWithWav(
-        const HermesTrackContext& context,
+        const HermesAudioMidiPairContext& context,
         const HermesSyncOptions& options) override;
 
     HermesOperationResult setOrFixBpm(

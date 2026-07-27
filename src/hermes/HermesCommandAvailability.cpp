@@ -1,5 +1,7 @@
 #include "hermes/HermesCommandAvailability.h"
 
+#include <filesystem>
+
 namespace dawhermes::hermes {
 
 HermesCommandAvailability getHermesCommandAvailability(
@@ -11,8 +13,8 @@ HermesCommandAvailability getHermesCommandAvailability(
         return HermesCommandAvailability::enabled;
     }
 
-    const auto selectedId = selection.selectedTrackId();
-    if (!selectedId.has_value()) {
+    const auto& selectedIds = selection.selectedTrackIds();
+    if (selectedIds.empty()) {
         switch (command) {
         case HermesCommand::drumsMakeMidiFromWav:
         case HermesCommand::bassMakeRepairMidiFromWav:
@@ -26,25 +28,69 @@ HermesCommandAvailability getHermesCommandAvailability(
         }
     }
 
-    const auto* track = project.findTrackById(selectedId.value());
-    if (track == nullptr) {
+    std::size_t audioCount = 0;
+    std::size_t midiCount = 0;
+    std::size_t validAudioCount = 0;
+    std::size_t validMidiCount = 0;
+    const core::Track* primaryTrack = nullptr;
+
+    for (const auto selectedId : selectedIds) {
+        const auto* track = project.findTrackById(selectedId);
+        if (track == nullptr) {
+            continue;
+        }
+
+        if (primaryTrack == nullptr || selection.selectedTrackId().value_or(0) == selectedId) {
+            primaryTrack = track;
+        }
+
+        if (track->type == core::TrackType::audio) {
+            ++audioCount;
+            std::error_code ec;
+            const auto sourcePath = std::filesystem::path(track->audioSourcePath);
+            if (!track->audioSourcePath.empty()
+                && std::filesystem::exists(sourcePath, ec)
+                && std::filesystem::is_regular_file(sourcePath, ec)) {
+                ++validAudioCount;
+            }
+        } else if (track->type == core::TrackType::midi) {
+            ++midiCount;
+            if (!track->midiNotes.empty()) {
+                ++validMidiCount;
+            }
+        }
+    }
+
+    if (primaryTrack == nullptr) {
         return HermesCommandAvailability::requiresAudioAndMidi;
     }
 
+    const auto hasValidPair =
+        selectedIds.size() == 2 && validAudioCount == 1 && validMidiCount == 1 && audioCount == 1 && midiCount == 1;
+
     switch (command) {
     case HermesCommand::drumsMakeMidiFromWav:
-    case HermesCommand::bassMakeRepairMidiFromWav:
-        if (track->type != core::TrackType::audio) {
+        if (selectedIds.size() != 1) {
             return HermesCommandAvailability::requiresAudioTrack;
         }
 
-        return track->audioSourcePath.empty() ? HermesCommandAvailability::requiresAudioFile
+        if (primaryTrack->type != core::TrackType::audio) {
+            return HermesCommandAvailability::requiresAudioTrack;
+        }
+
+        return primaryTrack->audioSourcePath.empty() ? HermesCommandAvailability::requiresAudioFile
                                               : HermesCommandAvailability::enabled;
+    case HermesCommand::bassMakeRepairMidiFromWav:
+        return hasValidPair ? HermesCommandAvailability::enabled : HermesCommandAvailability::requiresAudioAndMidi;
     case HermesCommand::setFixBpm:
-        return track->type == core::TrackType::midi ? HermesCommandAvailability::enabled
+        if (selectedIds.size() != 1) {
+            return HermesCommandAvailability::requiresMidiTrack;
+        }
+
+        return primaryTrack->type == core::TrackType::midi ? HermesCommandAvailability::enabled
                                                      : HermesCommandAvailability::requiresMidiTrack;
     case HermesCommand::synchronizeMidiWithWav:
-        return HermesCommandAvailability::requiresAudioAndMidi;
+        return hasValidPair ? HermesCommandAvailability::enabled : HermesCommandAvailability::requiresAudioAndMidi;
     case HermesCommand::drumsMapping:
         return HermesCommandAvailability::enabled;
     default:
@@ -66,8 +112,9 @@ std::string describeAvailability(HermesCommand command, HermesCommandAvailabilit
     case HermesCommandAvailability::requiresMidiTrack:
         return "Requires a selected MIDI track.";
     case HermesCommandAvailability::requiresAudioAndMidi:
-        if (command == HermesCommand::synchronizeMidiWithWav) {
-            return "Requires both audio and MIDI selections; multi-selection is not available in Milestone 1.";
+        if (command == HermesCommand::synchronizeMidiWithWav
+            || command == HermesCommand::bassMakeRepairMidiFromWav) {
+            return "Select exactly one audio track with WAV and one non-empty MIDI track.";
         }
 
         return "Required source track selection is not available.";

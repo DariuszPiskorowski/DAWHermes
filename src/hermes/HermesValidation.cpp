@@ -78,6 +78,26 @@ ValidationResult validateDrumsOptions(const HermesDrumsOptions& options)
     return ValidationResult::pass();
 }
 
+ValidationResult validateBassOptions(const HermesBassOptions&)
+{
+    return ValidationResult::pass();
+}
+
+ValidationResult validateSyncOptions(const HermesSyncOptions& options)
+{
+    if (!options.preserveTempoMap) {
+        if (!options.bpmOverride.has_value()) {
+            return ValidationResult::fail("A BPM override is required when tempo preservation is disabled.");
+        }
+
+        if (!std::isfinite(options.bpmOverride.value()) || options.bpmOverride.value() <= 0.0) {
+            return ValidationResult::fail("BPM override must be a finite value greater than zero.");
+        }
+    }
+
+    return ValidationResult::pass();
+}
+
 ValidationResult validateBpmOptions(const HermesBpmOptions& options)
 {
     if (!std::isfinite(options.bpm)) {
@@ -105,6 +125,28 @@ ValidationResult validateTrackContextForDrums(const HermesTrackContext& context)
     const auto sourcePath = std::filesystem::path(context.audioSourcePath);
     if (!std::filesystem::exists(sourcePath, ec) || !std::filesystem::is_regular_file(sourcePath, ec)) {
         return ValidationResult::fail("Selected WAV source file does not exist.");
+    }
+
+    return ValidationResult::pass();
+}
+
+ValidationResult validateTrackContextForAudioMidiPair(const HermesAudioMidiPairContext& context)
+{
+    const auto audioValidation = validateTrackContextForDrums(context.audioTrack);
+    if (!audioValidation.ok) {
+        return audioValidation;
+    }
+
+    if (context.midiTrack.trackType != core::TrackType::midi) {
+        return ValidationResult::fail("Selected MIDI source is not a MIDI track.");
+    }
+
+    if (context.midiNotes.empty()) {
+        return ValidationResult::fail("Selected MIDI source track does not contain note data.");
+    }
+
+    if (context.midiSourceMetadata.ticksPerQuarterNote <= 0) {
+        return ValidationResult::fail("MIDI source metadata is missing a valid ticks-per-quarter-note value.");
     }
 
     return ValidationResult::pass();

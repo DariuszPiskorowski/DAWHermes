@@ -1,4 +1,4 @@
-# DAWHermes Architecture (Milestone 1.1)
+# DAWHermes Architecture (Milestone 2)
 
 ## Why a new Windows repository
 
@@ -12,13 +12,13 @@ A direct Swift port would not satisfy the Windows-native tooling, deployment, an
 - CMake enables deterministic dependency pinning and build automation without requiring Projucer.
 - JUCE is pinned via FetchContent to immutable tag `8.0.13` to avoid moving-target dependency drift.
 
-## Milestone 1 module boundaries
+## Module boundaries
 
 The codebase is split into explicit layers:
 
 - `src/app` - application lifecycle, top-level window wiring, settings, logging bootstrap.
 - `src/core` - in-memory project and track model plus selection/controller state and extracted deterministic layout geometry.
-- `src/ui` - JUCE views, menu bar, context menus, workspace rendering, and option dialogs.
+- `src/ui` - JUCE views, menu bar, context menus, workspace rendering, option dialogs, and MIDI/WAV import parsing utilities.
 - `src/hermes` - neutral Hermes contracts, command availability rules, option validation, embedded Python engine, and connector boundaries.
 - `tests` - non-GUI behavioural and validation tests.
 - `scripts` - configure/build/test/install/uninstall automation for Windows.
@@ -34,18 +34,20 @@ This separation keeps Hermes integration swappable and testable without rewritin
 
 This mirrors expected desktop DAW ergonomics and avoids disruptive automation.
 
-## Hermes integration in Milestone 1.1
+## Hermes integration in Milestone 2
 
-Milestone 1 keeps `IHermesEngine` as the UI boundary and introduces `EmbeddedHermesEngine` for real in-process drums extraction.
+Milestone 2 keeps `IHermesEngine` as the UI boundary and expands `EmbeddedHermesEngine` to real in-process drums extraction, bass repair, and MIDI/WAV synchronization.
 
 - The UI continues to call only the neutral interface.
 - Embedded Python uses pybind11::embed and CPython 3.11.
-- `midi-cleaner` drums extraction is called directly in-process.
+- `midi-cleaner` drums, bass, and synchronization workflows are called directly in-process.
 - Returned hit data is converted to DAWHermes MIDI notes in memory.
 - No user-visible intermediate MIDI files are written in DAWHermes for this workflow.
-- Drums processing is run on a serialized background worker so the message thread remains responsive.
+- Hermes processing is run on a serialized background worker so the message thread remains responsive.
 - Project-model mutation still happens on the message thread when background processing completes.
-- Non-M1 Hermes commands still return explicit not-implemented status.
+- Set/Fix BPM still returns explicit not-implemented status.
+
+For successful bass and sync operations, temporary Hermes cache job directories are deleted immediately. Failed operations preserve diagnostics in cache.
 
 `StubHermesEngine` remains in the codebase for tests and for explicit placeholder behavior.
 
@@ -63,15 +65,15 @@ The install script deploys a runnable Release app to `%LOCALAPPDATA%\DAWHermes\a
 
 No PowerShell or terminal launcher is used for normal user launch.
 
-## Current limitations (Milestone 1)
+## Current limitations (Milestone 2)
 
 Implemented now:
 
 - workspace shell and command surfaces;
-- file-backed audio source assignment and minimal MIDI note storage in tracks;
+- file-backed audio source assignment and MIDI import into track model;
 - extracted top-row-3-columns + full-width-bottom MIDI layout geometry;
 - draggable splitter geometry with persisted layout state and reset command;
-- embedded Hermes drums extraction and in-memory MIDI insertion;
+- embedded Hermes drums extraction, bass repair, and MIDI/WAV synchronization;
 - grouped multitrack insertion as a real hierarchy (group track + child MIDI tracks);
 - enabled-empty-layer aware insertion for drums extraction;
 - transactional Hermes result insertion with rollback on validation failure;
@@ -83,8 +85,10 @@ Implemented now:
 Not implemented now:
 
 - audio playback/recording/device setup;
-- MIDI import/playback/piano-roll editing;
-- Hermes bass/sync/BPM workflows;
+- full MIDI playback/piano-roll editing;
+- Hermes set/fix BPM workflow;
 - AI APIs;
 - ACE exchange;
 - Cubase export.
+
+Note: Milestone 2 includes minimal MIDI import for source-track creation and pairing workflows, but does not include full timeline/piano-roll editing.

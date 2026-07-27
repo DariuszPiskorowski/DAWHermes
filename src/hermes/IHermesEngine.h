@@ -13,11 +13,11 @@ public:
         const HermesDrumsOptions& options) = 0;
 
     virtual HermesOperationResult bassMakeOrRepairMidiFromWav(
-        const HermesTrackContext& context,
+        const HermesAudioMidiPairContext& context,
         const HermesBassOptions& options) = 0;
 
     virtual HermesOperationResult synchronizeMidiWithWav(
-        const HermesTrackContext& context,
+        const HermesAudioMidiPairContext& context,
         const HermesSyncOptions& options) = 0;
 
     virtual HermesOperationResult setOrFixBpm(

@@ -13,11 +13,13 @@ HermesOperationResult HermesOperationResult::success(
     HermesResultLayout resultLayout,
     std::vector<HermesGeneratedMidiTrack> generatedMidiTracks,
     double bpmUsed,
-    std::vector<std::string> warnings)
+    std::vector<std::string> warnings,
+    HermesOperationKind operationKind)
 {
     HermesOperationResult result;
     result.status = HermesOperationStatus::success;
     result.message = std::move(message);
+    result.operationKind = operationKind;
     result.resultLayout = resultLayout;
     result.generatedMidiTracks = std::move(generatedMidiTracks);
     result.bpmUsed = bpmUsed;
@@ -52,14 +54,14 @@ HermesOperationResult StubHermesEngine::drumsMakeMidiFromWav(
 }
 
 HermesOperationResult StubHermesEngine::bassMakeOrRepairMidiFromWav(
-    const HermesTrackContext&,
+    const HermesAudioMidiPairContext&,
     const HermesBassOptions&)
 {
     return HermesOperationResult::notImplemented();
 }
 
 HermesOperationResult StubHermesEngine::synchronizeMidiWithWav(
-    const HermesTrackContext&,
+    const HermesAudioMidiPairContext&,
     const HermesSyncOptions&)
 {
     return HermesOperationResult::notImplemented();

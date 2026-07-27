@@ -14,8 +14,12 @@ std::optional<hermes::HermesBpmOptions> showSetFixBpmDialog(
     juce::Component* parent,
     const hermes::HermesTrackContext& context);
 
-bool showBassRepairDialog(juce::Component* parent, const hermes::HermesTrackContext& context);
-bool showSynchronizeDialog(juce::Component* parent, const hermes::HermesTrackContext& context);
+std::optional<hermes::HermesBassOptions> showBassRepairDialog(
+    juce::Component* parent,
+    const hermes::HermesAudioMidiPairContext& context);
+std::optional<hermes::HermesSyncOptions> showSynchronizeDialog(
+    juce::Component* parent,
+    const hermes::HermesAudioMidiPairContext& context);
 bool showDrumMappingDialog(juce::Component* parent);
 std::optional<hermes::ComposerAssistantSettings> showComposerAssistantSettingsDialog(
     juce::Component* parent,

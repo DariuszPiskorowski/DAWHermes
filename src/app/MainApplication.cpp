@@ -6,7 +6,6 @@
 
 #include "app/AppLogger.h"
 #include "app/MainWindow.h"
-#include "hermes/EmbeddedHermesEngine.h"
 
 namespace dawhermes::app {
 
@@ -40,11 +39,9 @@ void MainApplication::initialise(const juce::String&)
     AppLogger::initialise(getApplicationVersion());
 
     try {
-        hermesEngine_ = std::make_unique<hermes::EmbeddedHermesEngine>();
         mainWindow_ = std::make_unique<MainWindow>(
             getApplicationName(),
-            appProperties_,
-            *hermesEngine_);
+            appProperties_);
     } catch (const std::exception& ex) {
         AppLogger::log("Window creation failure: " + juce::String(ex.what()));
         juce::AlertWindow::showMessageBox(
@@ -65,7 +62,6 @@ void MainApplication::initialise(const juce::String&)
 void MainApplication::shutdown()
 {
     mainWindow_.reset();
-    hermesEngine_.reset();
 
     AppLogger::shutdown();
 }

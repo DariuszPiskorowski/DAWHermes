@@ -6,7 +6,9 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 
 ## Current status
 
-Milestone 1.1 hardens the Milestone 1 foundation with resizable workspace behavior and safer embedded Hermes integration.
+Milestone 2 (correction + completion pass) extends Milestone 1.1 with real bass repair, real MIDI/WAV synchronization, and explicit real-assets verification tooling.
+
+Milestone 1.1 is complete. Milestone 2 functional integration is complete and manually accepted.
 
 Currently implemented:
 
@@ -15,16 +17,21 @@ Currently implemented:
 - draggable workspace separators (left/center, center/right, top/bottom split);
 - persistent workspace panel sizes with View -> Reset Panel Layout;
 - audio, MIDI, and group track models with file-backed audio source assignment;
+- File -> Import MIDI as Track... with note-bearing-track selection;
 - track selection and deletion;
 - deliberate right-click context menus;
 - Hermes menu, option dialogs and validation;
 - neutral Hermes engine interface with embedded Python runtime implementation;
 - real Hermes workflow: Drums -> Make MIDI from WAV;
-- serialized non-blocking background execution for Drums -> Make MIDI from WAV;
+- real Hermes workflow: Bass -> Repair MIDI against WAV;
+- real Hermes workflow: Synchronize MIDI with WAV;
+- serialized non-blocking background execution for drums, bass repair, and MIDI/WAV sync;
 - direct MIDI-note insertion into DAWHermes project model (no user-visible intermediate MIDI files);
+- MIDI source-metadata retention for imported and generated tracks;
 - grouped multitrack drum output inserted as a real group track with child MIDI tracks;
 - enabled-empty-layer handling for drum extraction options (enabled empty layers can be created when requested);
 - single-operation Undo/Redo for inserted Hermes drum MIDI tracks and groups without re-running analysis;
+- successful bass/sync Hermes job-directory cleanup with failure diagnostics retained in cache;
 - Composer Assistant connector boundary with safe settings and manual probe;
 - automated model and validation tests;
 - Release build scripts;
@@ -34,14 +41,17 @@ Currently implemented:
 Not implemented yet:
 
 - audio playback or recording;
-- MIDI import, playback or editing;
-- Hermes bass repair workflow;
-- Hermes synchronize MIDI with WAV workflow;
+- full MIDI playback or piano-roll editing;
 - Hermes set/fix BPM workflow;
 - VST3 hosting;
 - AI model connection;
 - ACE Studio exchange;
 - Cubase export.
+
+Known limitation:
+
+Milestone 2 functional integration is accepted.
+Musical-quality comparison of original, repaired and synchronized MIDI remains pending visual piano-roll/timeline support in Milestone 3.
 
 ## Related projects
 
@@ -50,7 +60,7 @@ Reference implementations:
 - `DariuszPiskorowski/DAW-create-example` - macOS DAW prototype and UI/function reference.
 - `DariuszPiskorowski/midi-cleaner` - current Hermes MIDI Fidelity Engine implementation used by embedded drums extraction.
 
-These projects remain separate and unchanged during Milestone 1.
+These projects remain separate and unchanged during Milestone 2 work.
 
 ## Technology
 
@@ -109,6 +119,15 @@ Run tests:
 .\scripts\test.ps1
 ```
 
+Run opt-in Milestone 2 real-assets verification (embedded Hermes path, hash and cache checks):
+
+```powershell
+.\scripts\test-m2-real-assets.ps1 `
+	-BassMidi <path> -BassWav <path> `
+	-DrumMidi <path> -DrumWav <path> `
+	-SynthMidi <path> -SynthWav <path>
+```
+
 Install locally:
 
 ```powershell
@@ -140,17 +159,20 @@ Selecting a track never opens a dialog automatically.
 Initial command structure:
 
 ```text
+File
+└── Import MIDI as Track...
+
 Hermes
 ├── Drums
 │   ├── Make MIDI from WAV...
 │   └── Drum Mapping...
 ├── Bass
-│   └── Make / Repair MIDI from WAV...
+│   └── Repair MIDI against WAV...
 ├── Synchronize MIDI with WAV...
 └── Set / Fix BPM...
 ```
 
-Milestone 1 provides real processing only for Drums -> Make MIDI from WAV. Other Hermes commands remain explicit placeholders.
+Command availability for bass/sync requires a selected audio+MIDI pair, non-empty MIDI notes, and an existing audio source file.
 
 Composer Assistant connector defaults in Milestone 1:
 

@@ -1,15 +1,15 @@
 #pragma once
 
-#include <atomic>
 #include <optional>
-#include <thread>
+#include <memory>
+#include <vector>
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "core/MainLayoutGeometry.h"
 #include "core/ProjectController.h"
 #include "hermes/ComposerAssistantConnector.h"
-#include "hermes/IHermesEngine.h"
+#include "hermes/HermesJobRunner.h"
 #include "hermes/HermesProjectResult.h"
 
 namespace dawhermes::ui {
@@ -18,9 +18,7 @@ class MainComponent final : public juce::Component,
                             private juce::MenuBarModel,
                             private juce::ListBoxModel {
 public:
-    MainComponent(
-        hermes::IHermesEngine& hermesEngine,
-        juce::ApplicationProperties& applicationProperties);
+    explicit MainComponent(juce::ApplicationProperties& applicationProperties);
     ~MainComponent() override;
 
     void resized() override;
@@ -39,13 +37,6 @@ private:
         horizontal
     };
 
-    struct DrumsJobCompletion {
-        hermes::HermesTrackContext context;
-        hermes::HermesDrumsOptions options;
-        hermes::HermesOperationResult result;
-        double durationMs { 0.0 };
-    };
-
     enum CommandId {
         commandNewProject = 1000,
         commandExit,
@@ -54,6 +45,7 @@ private:
         commandResetPanelLayout,
         commandAddAudioTrack,
         commandAddMidiTrack,
+        commandImportMidiTrack,
         commandAssignAudioFile,
         commandDeleteSelectedTrack,
         commandAbout,
@@ -62,6 +54,7 @@ private:
         commandHermesBassRepair,
         commandHermesSynchronize,
         commandHermesSetFixBpm,
+        commandClearHermesCache,
         commandComposerAssistantSettings,
         commandComposerAssistantProbe
     };
@@ -85,6 +78,8 @@ private:
     juce::PopupMenu buildTrackContextMenu() const;
 
     std::optional<hermes::HermesTrackContext> selectedTrackContext() const;
+    std::optional<hermes::HermesAudioMidiPairContext> selectedAudioMidiPairContext() const;
+    std::vector<core::Track> selectedTracks() const;
     std::optional<core::Track> selectedTrack() const;
 
     void showTrackContextMenu();
@@ -93,6 +88,7 @@ private:
 
     void addAudioTrack();
     void addMidiTrack();
+    void importMidiTrack();
     void assignAudioFileToSelectedTrack();
     void deleteSelectedTrack();
 
@@ -104,6 +100,7 @@ private:
     void runUndo();
     void runRedo();
     void runResetPanelLayout();
+    void runClearHermesCache();
     void runComposerAssistantSettings();
     void runComposerAssistantProbe();
 
@@ -116,9 +113,14 @@ private:
     void loadPanelLayoutState();
     void savePanelLayoutState() const;
 
-    bool isDrumsJobRunning() const;
-    void completeDrumsMakeMidi(DrumsJobCompletion completion);
-    void finishDrumsWorkerThread();
+    bool isHermesJobRunning() const;
+    void completeHermesJob(hermes::HermesJobResult result);
+    void startHermesJob(
+        const hermes::HermesJobRequest& request,
+        const juce::String& runningStatus,
+        const juce::String& operationLabel);
+    juce::String describeActiveOperation() const;
+    void cleanupStaleHermesCacheOnStartup();
 
     void loadComposerSettings();
     void saveComposerSettings() const;
@@ -126,12 +128,13 @@ private:
     void resetProject();
     void showAbout();
 
-    hermes::IHermesEngine& hermesEngine_;
     juce::ApplicationProperties& applicationProperties_;
+    std::unique_ptr<hermes::HermesJobRunner> hermesJobRunner_;
     hermes::ComposerAssistantConnector composerConnector_;
     hermes::ComposerAssistantSettings composerSettings_;
     std::optional<hermes::AppliedHermesResult> undoResult_;
     std::optional<hermes::AppliedHermesResult> redoResult_;
+    std::optional<hermes::HermesOperationKind> activeOperation_;
 
     core::ProjectModel projectModel_;
     core::SelectionState selectionState_;
@@ -153,9 +156,6 @@ private:
     core::MainPanelLayoutState dragStartPanelLayoutState_;
     juce::Point<int> dragStartPosition_;
     ActiveSplitter activeSplitter_ { ActiveSplitter::none };
-
-    std::thread drumsWorker_;
-    std::atomic<bool> drumsJobRunning_ { false };
 };
 
 }  // namespace dawhermes::ui

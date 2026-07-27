@@ -14,6 +14,8 @@ public:
     bool removeTrackById(std::uint64_t id);
     bool setAudioSourcePath(std::uint64_t id, std::string audioSourcePath);
     bool replaceMidiNotes(std::uint64_t id, std::vector<MidiNote> midiNotes);
+    bool setMidiSourceMetadata(std::uint64_t id, MidiSourceMetadata metadata);
+    bool clearMidiSourceMetadata(std::uint64_t id);
     bool setGeneratedGroupId(std::uint64_t id, std::string groupId);
 
     Track* findTrackById(std::uint64_t id);
