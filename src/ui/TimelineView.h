@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,6 +29,7 @@ public:
     void setTempoMap(std::vector<core::MidiTempoEvent> tempoMap);
     void setTrackRowHeight(int rowHeight);
     void setVerticalScrollPixels(int scrollPixels);
+    void setPlayheadBeat(std::optional<double> beat);
 
     void paint(juce::Graphics& g) override;
 
@@ -44,6 +46,7 @@ private:
     int gridDenominator_ { 16 };
     int rowHeight_ { 30 };
     int verticalScrollPixels_ { 0 };
+    std::optional<double> playheadBeat_;
 
     juce::AudioFormatManager audioFormatManager_;
     juce::AudioThumbnailCache thumbnailCache_ { 32 };

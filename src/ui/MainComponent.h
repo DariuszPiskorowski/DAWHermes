@@ -6,6 +6,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "audio/MidiAuditionEngine.h"
 #include "core/MidiComparisonModel.h"
 #include "core/MidiNoteSelectionState.h"
 #include "core/MidiTimeMap.h"
@@ -27,7 +28,8 @@ namespace dawhermes::ui {
 
 class MainComponent final : public juce::Component,
                             private juce::MenuBarModel,
-                            private juce::ListBoxModel {
+                            private juce::ListBoxModel,
+                            private juce::Timer {
 public:
     explicit MainComponent(juce::ApplicationProperties& applicationProperties);
     ~MainComponent() override;
@@ -130,6 +132,11 @@ private:
     void refreshAfterMidiNoteMutation();
     void synchronizeMidiNoteSelectionWithEditableTrack();
     void updateStatusForMidiNoteSelection();
+    void startSelectedMidiPlayback();
+    void stopMidiPlayback();
+    void panicMidiPlayback();
+    void updateTransportControlState();
+    void timerCallback() override;
     void updateVelocityControlState();
     std::optional<int> primarySelectedMidiNoteVelocity() const;
     std::optional<std::uint64_t> editableMidiTrackIdForPianoRoll() const;
@@ -201,10 +208,16 @@ private:
     core::MidiNoteSelectionState midiNoteSelectionState_;
     core::ProjectHistory projectHistory_;
     core::ProjectController projectController_;
+    audio::MidiAuditionEngine midiAuditionEngine_;
 
     juce::MenuBarComponent menuBar_;
 
     juce::Label transportLabel_;
+    juce::TextButton playButton_ { "Play" };
+    juce::TextButton stopButton_ { "Stop" };
+    juce::TextButton panicButton_ { "Panic" };
+    juce::Label volumeLabel_;
+    juce::Slider volumeSlider_;
     juce::Label tracksHeaderLabel_;
     juce::ListBox trackList_;
     juce::ComboBox gridCombo_;
@@ -235,6 +248,8 @@ private:
     bool suppressVelocityEditorCallbacks_ { false };
     bool midiComparisonEnabled_ { false };
     bool suppressViewportControlCallbacks_ { false };
+    bool transportWasPlaying_ { false };
+    std::optional<double> playbackPlayheadBeat_;
     core::MidiComparisonTolerance midiComparisonTolerance_;
 
     core::MainPanelLayoutState panelLayoutState_;

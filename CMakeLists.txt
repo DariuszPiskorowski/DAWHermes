@@ -51,6 +51,16 @@ add_library(dawhermes_core
 target_include_directories(dawhermes_core PUBLIC src)
 set_project_warnings(dawhermes_core)
 
+add_library(dawhermes_audio
+  src/audio/MidiPlaybackModel.cpp
+  src/audio/MidiAuditionEngine.cpp
+)
+target_include_directories(dawhermes_audio PUBLIC src)
+target_link_libraries(
+  dawhermes_audio
+  PUBLIC dawhermes_core juce::juce_audio_basics juce::juce_audio_devices)
+set_project_warnings(dawhermes_audio)
+
 add_library(dawhermes_midi
   src/midi/MidiTrackExporter.cpp
 )
@@ -97,7 +107,7 @@ add_library(dawhermes_ui
 )
 target_include_directories(dawhermes_ui PUBLIC src)
 target_link_libraries(dawhermes_ui
-  PUBLIC dawhermes_core dawhermes_midi dawhermes_hermes
+  PUBLIC dawhermes_audio dawhermes_core dawhermes_midi dawhermes_hermes
   PRIVATE juce::juce_gui_extra juce::juce_audio_formats juce::juce_audio_utils)
 target_compile_definitions(
   dawhermes_ui
@@ -133,7 +143,9 @@ add_executable(DAWHermesTests
   tests/test_main.cpp
   src/ui/MidiImportParser.cpp
 )
-target_link_libraries(DAWHermesTests PRIVATE dawhermes_core dawhermes_midi dawhermes_hermes juce::juce_audio_formats)
+target_link_libraries(
+  DAWHermesTests
+  PRIVATE dawhermes_audio dawhermes_core dawhermes_midi dawhermes_hermes juce::juce_audio_formats)
 set_project_warnings(DAWHermesTests)
 
 add_test(NAME DAWHermesTests COMMAND DAWHermesTests)

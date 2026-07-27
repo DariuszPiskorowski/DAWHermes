@@ -8,7 +8,8 @@
 4. M2 - Real bass repair and MIDI/WAV synchronization (with explicit File -> Import MIDI as Track entry point, pair-selection validation, and real-assets verification).
 5. M3 - Timeline/piano-roll milestone:
 	- M3.1 visual timeline + piano roll + MIDI comparison (no editing);
-	- M3.2 MIDI editing workflow.
+	- M3.2 MIDI editing workflow;
+	- M3.3 selected-track MIDI audition playback.
 6. M4 - Audio engine and device configuration.
 7. M5 - VST3 hosting.
 8. M6 - DAW-level AI assistant.
@@ -17,15 +18,16 @@
 
 No network-delivery milestone is defined in this plan.
 
-## Current active scope
+## Current completed scope
 
-Current WIP work targets Milestone 3.2 MIDI editing and selected-track MIDI export:
+Milestone 3.3 MIDI audition playback is complete:
 
-- preserve accepted Milestone 2 and Milestone 3.1 functionality;
-- edit MIDI notes directly in the in-memory project model;
-- provide note selection, marquee selection, creation, deletion, movement, duration resize, keyboard nudging, Snap, velocity editing, and quantize selected notes;
-- export the selected non-empty MIDI track to a standard MIDI file from the edited in-memory state;
-- keep playback, Timeline editing, controller lanes, copy/paste, VST hosting, and Cubase-specific exchange out of scope.
+- preserve accepted Milestone 2, 3.1, and 3.2 functionality;
+- audition the primary selected non-empty MIDI track from an immutable edited-note snapshot;
+- provide Play, Stop, Panic, safe volume, and Timeline/Piano Roll playheads;
+- use an internal simple synth and the default system audio output;
+- keep WAV/audio-track playback, recording, Timeline editing, VST hosting, mixing, and Cubase/Reaper sync out of scope.
 
 Milestone 3.1 visual functionality is accepted.
-Milestone 3.2 is implemented locally on the WIP branch and still awaits user manual acceptance.
+Milestone 3.2 is accepted and published.
+Milestone 3.3 is manually accepted and published.

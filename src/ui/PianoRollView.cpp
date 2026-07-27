@@ -58,6 +58,12 @@ void PianoRollView::setSnapEnabled(bool enabled)
     snapEnabled_ = enabled;
 }
 
+void PianoRollView::setPlayheadBeat(std::optional<double> beat)
+{
+    playheadBeat_ = beat;
+    repaint();
+}
+
 void PianoRollView::setPrimaryNotes(std::vector<core::MidiNote> notes)
 {
     if (noteEditGesture_ == NoteEditGesture::moving || noteEditGesture_ == NoteEditGesture::resizing) {
@@ -528,6 +534,15 @@ void PianoRollView::paint(juce::Graphics& g)
         g.fillRect(marquee);
         g.setColour(juce::Colour(0xff9bc8ff));
         g.drawRect(marquee, 1.25f);
+    }
+
+    if (playheadBeat_.has_value()) {
+        const auto x = static_cast<int>(std::round(
+            core::timelineBeatToX(playheadBeat_.value(), bounds.getWidth(), viewport)));
+        if (x >= bounds.getX() && x <= bounds.getRight()) {
+            g.setColour(juce::Colour(0xffff704d));
+            g.drawVerticalLine(x, 0.0f, static_cast<float>(bounds.getBottom()));
+        }
     }
 
     g.setColour(juce::Colour(0xff313b47));

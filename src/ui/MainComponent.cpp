@@ -331,12 +331,26 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     addAndMakeVisible(menuBar_);
 
     transportLabel_.setText(
-        "Transport (Milestone 1 placeholder)  |  Play / Stop / Record unavailable",
+        "MIDI Audition",
         juce::dontSendNotification);
     transportLabel_.setJustificationType(juce::Justification::centredLeft);
     transportLabel_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff2b323b));
     transportLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(transportLabel_);
+
+    addAndMakeVisible(playButton_);
+    addAndMakeVisible(stopButton_);
+    addAndMakeVisible(panicButton_);
+    volumeLabel_.setText("Vol", juce::dontSendNotification);
+    volumeLabel_.setJustificationType(juce::Justification::centredRight);
+    volumeLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
+    addAndMakeVisible(volumeLabel_);
+    volumeSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
+    volumeSlider_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 46, 20);
+    volumeSlider_.setRange(0.0, 100.0, 1.0);
+    volumeSlider_.setValue(25.0, juce::dontSendNotification);
+    volumeSlider_.setTextValueSuffix("%");
+    addAndMakeVisible(volumeSlider_);
 
     tracksHeaderLabel_.setText("Tracks", juce::dontSendNotification);
     tracksHeaderLabel_.setJustificationType(juce::Justification::centredLeft);
@@ -413,10 +427,14 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     cleanupStaleHermesCacheOnStartup();
     updateVisualWorkspace();
     updateStatusForSelection();
+    startTimerHz(30);
 }
 
 MainComponent::~MainComponent()
 {
+    stopTimer();
+    midiAuditionEngine_.panic();
+
     if (hermesJobRunner_ != nullptr) {
         hermesJobRunner_->stop();
     }
@@ -433,6 +451,14 @@ void MainComponent::initializeVisualWorkspace()
     resolvedTimelineInfo_.ticksPerQuarterNote = 960;
     resolvedTimelineInfo_.tempoMap = core::sanitizeTempoMap({});
     resolvedTimelineInfo_.timeSignatureMap = core::sanitizeTimeSignatureMap({});
+
+    playButton_.onClick = [this]() { startSelectedMidiPlayback(); };
+    stopButton_.onClick = [this]() { stopMidiPlayback(); };
+    panicButton_.onClick = [this]() { panicMidiPlayback(); };
+    volumeSlider_.onValueChange = [this]() {
+        midiAuditionEngine_.setVolume(static_cast<float>(volumeSlider_.getValue() / 100.0));
+    };
+    midiAuditionEngine_.setVolume(static_cast<float>(volumeSlider_.getValue() / 100.0));
 
     gridCombo_.onChange = [this]() {
         const auto selected = sanitizeGridDenominator(gridCombo_.getSelectedId());
@@ -555,6 +581,21 @@ void MainComponent::resized()
         layout.transportBar.y,
         layout.transportBar.width,
         layout.transportBar.height);
+    auto transportControls = juce::Rectangle<int>(
+        layout.transportBar.x,
+        layout.transportBar.y,
+        layout.transportBar.width,
+        layout.transportBar.height).reduced(6, 3);
+    transportLabel_.setBounds(transportControls.removeFromLeft(std::min(120, transportControls.getWidth())));
+    transportControls.removeFromLeft(6);
+    playButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
+    transportControls.removeFromLeft(4);
+    stopButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
+    transportControls.removeFromLeft(4);
+    panicButton_.setBounds(transportControls.removeFromLeft(std::min(62, transportControls.getWidth())));
+    transportControls.removeFromLeft(8);
+    volumeLabel_.setBounds(transportControls.removeFromLeft(std::min(28, transportControls.getWidth())));
+    volumeSlider_.setBounds(transportControls.removeFromLeft(std::min(190, transportControls.getWidth())));
     tracksHeaderLabel_.setBounds(
         layout.tracksHeader.x,
         layout.tracksHeader.y,
@@ -1444,6 +1485,7 @@ void MainComponent::updateVisualWorkspace()
     timelineView_.setGridDenominator(gridDenominator_);
     timelineView_.setTempoMap(resolvedTimelineInfo_.tempoMap);
     timelineView_.setVerticalScrollPixels(static_cast<int>(std::round(trackList_.getVerticalPosition())));
+    timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
 
     timeRulerView_.setViewportState(timelineViewportState_);
     timeRulerView_.setGridDenominator(gridDenominator_);
@@ -1455,6 +1497,7 @@ void MainComponent::updateVisualWorkspace()
     pianoRollView_.setGridDenominator(gridDenominator_);
     pianoRollView_.setSnapEnabled(snapEnabled_);
     pianoRollView_.setTimeSignatureMap(resolvedTimelineInfo_.timeSignatureMap);
+    pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
 
     std::vector<core::MidiNote> primaryNotes;
     juce::String primaryName;
@@ -1497,6 +1540,7 @@ void MainComponent::updateVisualWorkspace()
     snapToggle_.setToggleState(snapEnabled_, juce::dontSendNotification);
     updateVelocityControlState();
     menuBar_.repaint();
+    updateTransportControlState();
 }
 
 void MainComponent::updateStatusForSelection()
@@ -2379,6 +2423,95 @@ void MainComponent::completeHermesJob(hermes::HermesJobResult result)
     }
 }
 
+void MainComponent::startSelectedMidiPlayback()
+{
+    const auto track = selectedTrack();
+    if (!track.has_value() || !audio::canAuditionMidiTrack(track.value())) {
+        statusLabel_.setText(
+            "Select a non-empty MIDI track before playback.",
+            juce::dontSendNotification);
+        updateTransportControlState();
+        return;
+    }
+
+    const auto snapshotResult = audio::createMidiPlaybackSnapshot(track.value());
+    if (!snapshotResult.ok) {
+        statusLabel_.setText(
+            "MIDI playback unavailable: " + juce::String(snapshotResult.message),
+            juce::dontSendNotification);
+        updateTransportControlState();
+        return;
+    }
+
+    std::string error;
+    if (!midiAuditionEngine_.startPlayback(snapshotResult.snapshot, error)) {
+        statusLabel_.setText(
+            "Audio output unavailable: " + juce::String(error),
+            juce::dontSendNotification);
+        updateTransportControlState();
+        return;
+    }
+
+    playbackPlayheadBeat_ = 0.0;
+    transportWasPlaying_ = true;
+    timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
+    pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
+    statusLabel_.setText(
+        "Playing MIDI snapshot: " + juce::String(track->name),
+        juce::dontSendNotification);
+    updateTransportControlState();
+}
+
+void MainComponent::stopMidiPlayback()
+{
+    midiAuditionEngine_.stop();
+    playbackPlayheadBeat_.reset();
+    transportWasPlaying_ = false;
+    timelineView_.setPlayheadBeat(std::nullopt);
+    pianoRollView_.setPlayheadBeat(std::nullopt);
+    statusLabel_.setText("MIDI playback stopped.", juce::dontSendNotification);
+    updateTransportControlState();
+}
+
+void MainComponent::panicMidiPlayback()
+{
+    midiAuditionEngine_.panic();
+    playbackPlayheadBeat_.reset();
+    transportWasPlaying_ = false;
+    timelineView_.setPlayheadBeat(std::nullopt);
+    pianoRollView_.setPlayheadBeat(std::nullopt);
+    statusLabel_.setText("Panic: all audition voices stopped.", juce::dontSendNotification);
+    updateTransportControlState();
+}
+
+void MainComponent::updateTransportControlState()
+{
+    const auto state = audio::midiTransportCommandState(
+        selectedTrack(),
+        midiAuditionEngine_.isPlaying());
+    playButton_.setEnabled(state.playEnabled);
+    stopButton_.setEnabled(state.stopEnabled);
+    panicButton_.setEnabled(state.panicEnabled);
+}
+
+void MainComponent::timerCallback()
+{
+    const auto playing = midiAuditionEngine_.isPlaying();
+    if (playing) {
+        playbackPlayheadBeat_ = midiAuditionEngine_.playheadBeat();
+        timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
+        pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
+    } else if (transportWasPlaying_) {
+        playbackPlayheadBeat_ = midiAuditionEngine_.playheadBeat();
+        timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
+        pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
+        statusLabel_.setText("MIDI playback finished.", juce::dontSendNotification);
+    }
+
+    transportWasPlaying_ = playing;
+    updateTransportControlState();
+}
+
 void MainComponent::runHermesDrumsMakeMidi()
 {
     app::AppLogger::log("Hermes command selected: Drums -> Make MIDI from WAV");
@@ -2875,6 +3008,7 @@ void MainComponent::resetProject()
         return;
     }
 
+    stopMidiPlayback();
     projectModel_.clear();
     projectController_.clearSelection();
     midiNoteSelectionState_.clear();
@@ -2890,7 +3024,7 @@ void MainComponent::showAbout()
     juce::AlertWindow::showMessageBox(
         juce::AlertWindow::InfoIcon,
         "About DAWHermes",
-    "DAWHermes Milestone 3.1\nNative Windows DAW shell with embedded Hermes tools and visual MIDI comparison.");
+        "DAWHermes Milestone 3.3\nNative Windows MIDI editing and audition workbench with embedded Hermes tools.");
 }
 
 }  // namespace dawhermes::ui

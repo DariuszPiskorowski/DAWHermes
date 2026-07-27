@@ -17,6 +17,9 @@ if (-not (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
 }
 
 & $cmake.Path --build $buildDir --config Debug --target DAWHermesTests
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
 
 Push-Location $repoRoot
 try {

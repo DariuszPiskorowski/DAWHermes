@@ -24,6 +24,7 @@ public:
     void setTimeSignatureMap(std::vector<core::MidiTimeSignatureEvent> timeSignatureMap);
     void setGridDenominator(int denominator);
     void setSnapEnabled(bool enabled);
+    void setPlayheadBeat(std::optional<double> beat);
 
     void setPrimaryNotes(std::vector<core::MidiNote> notes);
     void setSelectedNoteIds(std::vector<std::uint64_t> selectedNoteIds);
@@ -76,6 +77,7 @@ private:
     std::vector<core::MidiTimeSignatureEvent> timeSignatureMap_;
     int gridDenominator_ { 16 };
     bool snapEnabled_ { true };
+    std::optional<double> playheadBeat_;
 
     std::vector<core::MidiNote> primaryNotes_;
     std::vector<std::uint64_t> selectedNoteIds_;

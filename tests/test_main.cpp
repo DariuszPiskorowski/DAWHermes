@@ -33,6 +33,8 @@
 #include "core/TimelineGeometry.h"
 #include "core/TimelineViewport.h"
 #include "core/Track.h"
+#include "audio/MidiAuditionEngine.h"
+#include "audio/MidiPlaybackModel.h"
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/ComposerAssistantConnector.h"
 #include "hermes/EmbeddedHermesEngine.h"
@@ -1719,6 +1721,190 @@ bool testMidiQuantizeSelectedNotesBehaviour()
     EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, afterNotes);
 
     EXPECT_EQ(dawhermes::core::quantizeSelectedNoteStarts(primary->midiNotes, { firstId, secondId }, dawhermes::core::gridStepBeats(16)), static_cast<std::size_t>(0));
+    return true;
+}
+
+bool testMidiPlaybackEventGenerationFromEditedNotes()
+{
+    ProjectModel project;
+    const auto trackId = project.addTrack(TrackType::midi, "Audition").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        trackId,
+        {
+            MidiNote { 62, 64, 0.50, 0.75, 9, 101 },
+            MidiNote { 72, 127, -2.0, 0.25, 1, 102 },
+        }));
+
+    const auto* track = project.findTrackById(trackId);
+    EXPECT_TRUE(track != nullptr);
+    const auto notesBefore = track->midiNotes;
+    const auto snapshotResult = dawhermes::audio::createMidiPlaybackSnapshot(*track);
+    EXPECT_TRUE(snapshotResult.ok);
+    EXPECT_EQ(snapshotResult.snapshot.events.size(), static_cast<std::size_t>(4));
+    EXPECT_TRUE(approxEqual(snapshotResult.snapshot.durationSeconds, 0.625));
+    EXPECT_EQ(project.findTrackById(trackId)->midiNotes, notesBefore);
+
+    const auto movedOn = std::find_if(
+        snapshotResult.snapshot.events.begin(),
+        snapshotResult.snapshot.events.end(),
+        [](const auto& event) {
+            return event.kind == dawhermes::audio::MidiPlaybackEventKind::noteOn && event.pitch == 62;
+        });
+    EXPECT_TRUE(movedOn != snapshotResult.snapshot.events.end());
+    EXPECT_TRUE(approxEqual(movedOn->timeSeconds, 0.25));
+    EXPECT_TRUE(approxEqual(movedOn->amplitude, 64.0 / 127.0));
+
+    const auto movedOff = std::find_if(
+        snapshotResult.snapshot.events.begin(),
+        snapshotResult.snapshot.events.end(),
+        [](const auto& event) {
+            return event.kind == dawhermes::audio::MidiPlaybackEventKind::noteOff && event.pitch == 62;
+        });
+    EXPECT_TRUE(movedOff != snapshotResult.snapshot.events.end());
+    EXPECT_TRUE(approxEqual(movedOff->timeSeconds, 0.625));
+
+    const auto clampedStart = std::find_if(
+        snapshotResult.snapshot.events.begin(),
+        snapshotResult.snapshot.events.end(),
+        [](const auto& event) {
+            return event.kind == dawhermes::audio::MidiPlaybackEventKind::noteOn && event.pitch == 72;
+        });
+    EXPECT_TRUE(clampedStart != snapshotResult.snapshot.events.end());
+    EXPECT_TRUE(approxEqual(clampedStart->timeSeconds, 0.0));
+    EXPECT_TRUE(approxEqual(clampedStart->amplitude, 1.0));
+
+    dawhermes::core::Track audioTrack;
+    audioTrack.type = TrackType::audio;
+    audioTrack.midiNotes = track->midiNotes;
+    EXPECT_TRUE(!dawhermes::audio::createMidiPlaybackSnapshot(audioTrack).ok);
+
+    dawhermes::core::Track groupTrack;
+    groupTrack.type = TrackType::group;
+    groupTrack.midiNotes = track->midiNotes;
+    EXPECT_TRUE(!dawhermes::audio::createMidiPlaybackSnapshot(groupTrack).ok);
+
+    dawhermes::core::Track emptyMidiTrack;
+    emptyMidiTrack.type = TrackType::midi;
+    EXPECT_TRUE(!dawhermes::audio::createMidiPlaybackSnapshot(emptyMidiTrack).ok);
+    return true;
+}
+
+bool testMidiPlaybackTempoTimingAndOrdering()
+{
+    const std::vector<dawhermes::core::MidiTempoEvent> fallbackTempo;
+    EXPECT_TRUE(approxEqual(dawhermes::audio::midiBeatToSeconds(1.0, fallbackTempo), 0.5));
+    EXPECT_TRUE(approxEqual(dawhermes::audio::midiBeatToSeconds(0.5, fallbackTempo), 0.25));
+    EXPECT_TRUE(approxEqual(dawhermes::audio::midiBeatToSeconds(-4.0, fallbackTempo), 0.0));
+    EXPECT_TRUE(approxEqual(dawhermes::audio::midiSecondsToBeat(0.25, fallbackTempo), 0.5));
+
+    const std::vector<dawhermes::core::MidiTempoEvent> tempoMap {
+        dawhermes::core::MidiTempoEvent { 0.0, 500000 },
+        dawhermes::core::MidiTempoEvent { 2.0, 1000000 },
+    };
+    EXPECT_TRUE(approxEqual(dawhermes::audio::midiBeatToSeconds(3.0, tempoMap), 2.0));
+    EXPECT_TRUE(approxEqual(dawhermes::audio::midiSecondsToBeat(2.0, tempoMap), 3.0));
+
+    dawhermes::core::Track track;
+    track.type = TrackType::midi;
+    track.name = "Ordering";
+    track.midiNotes = {
+        MidiNote { 67, 100, 1.0, 1.0, 1, 1 },
+        MidiNote { 60, 100, 0.0, 1.0, 16, 2 },
+    };
+    dawhermes::core::MidiSourceMetadata metadata;
+    metadata.tempoMap = tempoMap;
+    track.midiSourceMetadata = metadata;
+
+    const auto result = dawhermes::audio::createMidiPlaybackSnapshot(track);
+    EXPECT_TRUE(result.ok);
+    EXPECT_TRUE(approxEqual(result.snapshot.durationSeconds, 1.0));
+
+    bool sawOffBeforeOn = false;
+    for (std::size_t index = 0; index + 1 < result.snapshot.events.size(); ++index) {
+        const auto& current = result.snapshot.events[index];
+        const auto& next = result.snapshot.events[index + 1];
+        if (approxEqual(current.timeSeconds, 0.5)
+            && approxEqual(next.timeSeconds, 0.5)
+            && current.kind == dawhermes::audio::MidiPlaybackEventKind::noteOff
+            && next.kind == dawhermes::audio::MidiPlaybackEventKind::noteOn) {
+            sawOffBeforeOn = true;
+        }
+    }
+    EXPECT_TRUE(sawOffBeforeOn);
+    return true;
+}
+
+bool testMidiPlaybackSnapshotAndNoHistoryBehaviour()
+{
+    ProjectModel project;
+    const auto trackId = project.addTrack(TrackType::midi, "Snapshot").id;
+    EXPECT_TRUE(project.replaceMidiNotes(trackId, { MidiNote { 60, 100, 0.0, 1.0, 1, 1 } }));
+    const auto tempDir = createTempDirectory("midi-playback-source-safety");
+    const auto sourcePath = tempDir / "source.mid";
+    {
+        std::ofstream source(sourcePath, std::ios::binary | std::ios::trunc);
+        source << "source-midi-sentinel";
+    }
+    dawhermes::core::MidiSourceMetadata metadata;
+    metadata.sourceFilePath = sourcePath.string();
+    EXPECT_TRUE(project.setMidiSourceMetadata(trackId, metadata));
+    const auto sourceBefore = readBinaryFile(sourcePath);
+
+    dawhermes::core::ProjectHistory history;
+    const auto historySize = history.size();
+    const auto notesBefore = project.findTrackById(trackId)->midiNotes;
+    const auto snapshotResult = dawhermes::audio::createMidiPlaybackSnapshot(*project.findTrackById(trackId));
+    EXPECT_TRUE(snapshotResult.ok);
+    EXPECT_EQ(history.size(), historySize);
+    EXPECT_EQ(project.findTrackById(trackId)->midiNotes, notesBefore);
+
+    project.findTrackById(trackId)->midiNotes.front().pitch = 72;
+    EXPECT_EQ(snapshotResult.snapshot.events.front().pitch, 60);
+    EXPECT_EQ(project.findTrackById(trackId)->midiNotes.front().pitch, 72);
+
+    dawhermes::audio::MidiAuditionEngine engine;
+    engine.setVolume(0.5f);
+    EXPECT_TRUE(approxEqual(engine.volume(), 0.5));
+    engine.stop();
+    engine.panic();
+    EXPECT_EQ(history.size(), historySize);
+    EXPECT_EQ(readBinaryFile(sourcePath), sourceBefore);
+
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    return true;
+}
+
+bool testMidiPlaybackTransportCommandState()
+{
+    dawhermes::core::Track playable;
+    playable.type = TrackType::midi;
+    playable.midiNotes = { MidiNote { 60, 100, 0.0, 1.0, 1, 1 } };
+
+    const auto ready = dawhermes::audio::midiTransportCommandState(playable, false);
+    EXPECT_TRUE(ready.playEnabled);
+    EXPECT_TRUE(!ready.stopEnabled);
+    EXPECT_TRUE(ready.panicEnabled);
+
+    const auto playing = dawhermes::audio::midiTransportCommandState(playable, true);
+    EXPECT_TRUE(!playing.playEnabled);
+    EXPECT_TRUE(playing.stopEnabled);
+    EXPECT_TRUE(playing.panicEnabled);
+
+    dawhermes::core::Track emptyMidi;
+    emptyMidi.type = TrackType::midi;
+    EXPECT_TRUE(!dawhermes::audio::midiTransportCommandState(emptyMidi, false).playEnabled);
+
+    dawhermes::core::Track audioTrack;
+    audioTrack.type = TrackType::audio;
+    audioTrack.midiNotes = playable.midiNotes;
+    EXPECT_TRUE(!dawhermes::audio::midiTransportCommandState(audioTrack, false).playEnabled);
+
+    dawhermes::core::Track groupTrack;
+    groupTrack.type = TrackType::group;
+    groupTrack.midiNotes = playable.midiNotes;
+    EXPECT_TRUE(!dawhermes::audio::midiTransportCommandState(groupTrack, false).playEnabled);
+    EXPECT_TRUE(!dawhermes::audio::midiTransportCommandState(std::nullopt, false).playEnabled);
     return true;
 }
 
@@ -3666,6 +3852,10 @@ int main(int argc, char* argv[])
         { "MIDI snap control editing grid behaviour", testMidiSnapControlEditingGridBehaviour },
         { "MIDI velocity editing behaviour", testMidiVelocityEditingBehaviour },
         { "MIDI quantize selected notes behaviour", testMidiQuantizeSelectedNotesBehaviour },
+        { "MIDI playback event generation", testMidiPlaybackEventGenerationFromEditedNotes },
+        { "MIDI playback tempo timing and ordering", testMidiPlaybackTempoTimingAndOrdering },
+        { "MIDI playback snapshot and no-history behaviour", testMidiPlaybackSnapshotAndNoHistoryBehaviour },
+        { "MIDI playback transport command state", testMidiPlaybackTransportCommandState },
         { "MIDI track exporter basics and round trip", testMidiTrackExporterBasicsAndRoundTrip },
         { "MIDI track exporter tempo/signature/PPQ/ordering", testMidiTrackExporterTempoSignaturePpqAndOrdering },
         { "MIDI track exporter edited state regressions", testMidiTrackExporterEditedStateAndRegressions },

@@ -62,6 +62,12 @@ void TimelineView::setVerticalScrollPixels(int scrollPixels)
     repaint();
 }
 
+void TimelineView::setPlayheadBeat(std::optional<double> beat)
+{
+    playheadBeat_ = beat;
+    repaint();
+}
+
 juce::AudioThumbnail* TimelineView::getOrCreateThumbnail(const std::string& path)
 {
     if (path.empty()) {
@@ -190,6 +196,15 @@ void TimelineView::paint(juce::Graphics& g)
 
         g.setColour(juce::Colour(0xff313b47));
         g.drawHorizontalLine(rowRect.getBottom() - 1, 0.0f, static_cast<float>(bounds.getRight()));
+    }
+
+    if (playheadBeat_.has_value()) {
+        const auto x = static_cast<int>(std::round(
+            core::timelineBeatToX(playheadBeat_.value(), bounds.getWidth(), viewport)));
+        if (x >= bounds.getX() && x <= bounds.getRight()) {
+            g.setColour(juce::Colour(0xffff704d));
+            g.drawVerticalLine(x, 0.0f, static_cast<float>(bounds.getBottom()));
+        }
     }
 }
 

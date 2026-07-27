@@ -2,9 +2,9 @@
 
 ## Status
 
-Milestone 3.2 is implemented locally on the WIP branch and awaits user manual acceptance.
+Milestone 3.2 is manually accepted and published on `main`.
 
-This document describes the current implementation checkpoint. It does not mark the whole M3 series as manually accepted.
+This document describes the accepted editing/export checkpoint. Later M3 milestones have separate acceptance.
 
 ## Implemented Editing Features
 
@@ -70,11 +70,10 @@ Automated export tests write only to isolated temporary directories and remove t
 
 ## Out of Scope
 
-Not implemented in this checkpoint:
+Not implemented in this checkpoint (selected-track MIDI audition is added separately by M3.3):
 
-- playback;
-- Play/Stop/Record;
-- audio engine;
+- WAV/audio-track playback;
+- Record;
 - Timeline editing;
 - controller lanes;
 - copy/paste;
@@ -88,4 +87,4 @@ Not implemented in this checkpoint:
 - Export is selected-track only.
 - Quantize has no strength, swing, or groove controls.
 - Velocity editing is a compact selected-note control, not a full velocity lane.
-- M3.2 still needs user manual acceptance in the installed native Windows app.
+- M3.3 audition playback has its own manual acceptance workflow.

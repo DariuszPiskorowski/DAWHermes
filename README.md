@@ -6,7 +6,8 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 
 ## Current status
 
-Milestone 3.2 is implemented locally as a MIDI-editing and selected-track MIDI export checkpoint on the WIP branch. It still awaits user manual acceptance.
+Milestone 3.2 MIDI editing and selected-track export is complete, manually accepted, and published.
+Milestone 3.3 MIDI audition playback is complete, manually accepted, and published.
 
 Milestone 1.1 and Milestone 2 functional integration are complete and accepted.
 Milestone 3.1 visual functionality is accepted.
@@ -27,6 +28,7 @@ Currently implemented:
 - note hover diagnostics (pitch, velocity, start, duration, channel);
 - View -> Compare Selected MIDI Tracks mode with color-coded delta legend (read-only comparison);
 - piano-roll note selection, marquee selection, creation, deletion, mouse movement, right-edge duration resize, keyboard nudging, Snap, velocity editing, and quantize selected notes to grid;
+- selected-track MIDI audition through the system default audio output with Play, Stop, Panic, safe volume, and Timeline/Piano Roll playheads;
 - track selection and deletion;
 - deliberate right-click context menus;
 - Hermes menu, option dialogs and validation;
@@ -49,7 +51,7 @@ Currently implemented:
 
 Not implemented yet:
 
-- audio playback or recording;
+- WAV/audio-track playback or recording;
 - Hermes set/fix BPM workflow;
 - VST3 hosting;
 - AI model connection;
@@ -58,12 +60,13 @@ Not implemented yet:
 
 Known limitation:
 
-Milestone 3.1 visual functionality is accepted. Milestone 3.2 implementation is local and awaits user manual acceptance.
+Milestone 3.1 visual functionality and Milestone 3.2 MIDI editing/export are accepted.
+Milestone 3.3 audition uses a deliberately simple internal sine synth. Its functional sound is accepted for MIDI audition and is not intended as production-quality instrument playback.
 
 The current Timeline and Piano Roll styling is intentionally functional rather than final.
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
-Playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange remain deferred.
+WAV playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange remain deferred.
 
 ## Related projects
 

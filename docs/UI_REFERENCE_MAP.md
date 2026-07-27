@@ -1,4 +1,4 @@
-# UI Reference Map (Milestone 3.1 + local M3.2 WIP)
+# UI Reference Map (accepted Milestones 3.1-3.3)
 
 This document captures the structural UI alignment and visual-analysis surfaces active in Milestone 3.1.
 
@@ -84,7 +84,7 @@ Bottom piano workspace:
 - hover diagnostics per note (pitch/velocity/start/duration/channel);
 - compare legend and color-coded overlay when compare mode is enabled.
 
-Local Milestone 3.2 WIP editing surfaces:
+Accepted Milestone 3.2 editing surfaces:
 
 - Snap toggle near the grid selector;
 - editable primary-track MIDI note selection and marquee selection;
@@ -94,6 +94,13 @@ Local Milestone 3.2 WIP editing surfaces:
 - arrow-key grid/semitone/octave nudging;
 - Edit -> Quantize Selected Notes to Grid;
 - File -> Export Selected MIDI Track... for the selected non-empty MIDI track.
+
+Accepted Milestone 3.3 audition surfaces:
+
+- compact Play, Stop, Panic, and Volume controls in the transport strip;
+- Play enabled only for the primary selected non-empty MIDI track;
+- orange playback playhead in Timeline and Piano Roll;
+- no Record control and no audio-track playback.
 
 ## Compare mode
 
@@ -106,5 +113,5 @@ Comparison is read-only and visual only. It does not modify MIDI notes.
 The current Timeline and Piano Roll styling is intentionally functional rather than final.
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
-MIDI note editing remains a Milestone 3.2 concern.
-The M3.2 implementation is local and awaits user manual acceptance. Playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange are not part of this checkpoint.
+MIDI note editing is accepted Milestone 3.2 functionality.
+M3.3 adds selected-track MIDI audition only. WAV playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange are not part of this checkpoint.
