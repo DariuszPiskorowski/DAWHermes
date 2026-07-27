@@ -60,7 +60,7 @@ Respect every `AGENTS.md` found in any repository before editing that repository
 
 Work in coherent, end-to-end milestones.
 
-For a normal milestone:
+For normal feature/milestone work:
 
 1. Start from clean, up-to-date `main`.
 2. Create a local milestone branch named `wip/<milestone-topic>`.
@@ -68,28 +68,46 @@ For a normal milestone:
 4. Add deterministic automated tests.
 5. Run the required build/test/install checks.
 6. Install the app for manual user acceptance.
-7. Do not push and do not merge until the user manually accepts the installed workflow.
-8. After acceptance, squash the milestone branch into one clean commit on `main`.
-9. Push only `main`.
-10. Leave the local WIP branch in place unless the user asks to delete it.
+7. Do not merge into `main` before the user manually accepts the installed workflow.
+8. After manual acceptance, push the milestone branch and open a Pull Request into `main`.
+9. Use the PR for review: inspect changed files, confirm tests/build/install results, confirm no generated or personal files are included, and verify the milestone boundaries.
+10. After PR review approval, squash merge the PR into `main` as one clean milestone commit.
+11. Pull the updated `main` locally and verify local `main` equals `origin/main`.
+12. Leave the local WIP branch in place unless the user asks to delete it.
 
-Large milestones may contain local WIP checkpoint commits on the WIP branch, especially before risky refactors, long-running agent sessions, or possible rate limits. These checkpoint commits must stay local and must not be pushed directly to `main`.
+Large milestones may contain local WIP checkpoint commits on the WIP branch, especially before risky refactors, long-running agent sessions, or possible rate limits. These checkpoint commits may be pushed only when opening the accepted PR; they must not be merged into `main` one by one.
 
 Prompts should not split one coherent milestone into many unrelated half-steps unless the user explicitly chooses that because of tool limits. The agent should continue through implementation, tests, installation and report without repeatedly asking for permission.
+
+Small administrative documentation-only changes that the user explicitly requests, such as updating this `AGENTS.md`, may be committed directly to `main`. Product code and feature milestones should use the PR workflow above.
+
+## Pull Request workflow
+
+For accepted milestone branches:
+
+- Push the milestone branch only after local tests/build/install pass and the user manually accepts the installed workflow.
+- Open a PR from the milestone branch into `main`.
+- The PR title should match the milestone, for example `Complete Milestone 3.4 audio stem playback`.
+- The PR body must summarize the result, tests, install/native launch, manual acceptance status, known limitations, and safety checks.
+- Review the PR diff before merge.
+- Do not merge if required tests fail, generated files are present, real user assets are present, or the milestone scope is unclear.
+- Prefer GitHub squash merge for the PR, producing one clean commit on `main`.
+- Do not rebase, force-push, or rewrite published PR branches unless the user explicitly approves it.
+- Do not push WIP branches that are not ready for accepted PR review.
 
 ## Git safety
 
 - Never discard unrelated user changes.
 - Never use destructive `reset`, `clean`, forced checkout, branch deletion or force-push without explicit user permission.
 - Do not rewrite published history.
-- Do not push WIP branches unless the user explicitly asks.
+- Do not push WIP branches unless they are being published for an accepted PR or the user explicitly asks.
 - Do not commit or push when required tests fail.
 - Do not silently continue from a dirty or ambiguous working tree.
 - Use `git fetch origin --prune` and `git pull --ff-only origin main` for synchronization.
 - Use `main` as the default branch and stable published line.
 - Keep commits focused and factual.
 - Prefer one squash commit per accepted milestone on `main`.
-- Confirm local `main` and `origin/main` match after push.
+- Confirm local `main` and `origin/main` match after PR merge/push.
 
 Before final commit/push, verify no generated or personal files are included.
 
@@ -258,7 +276,7 @@ git rev-parse origin/main
 - Clearly distinguish implemented behaviour from placeholders and future work.
 - Keep reports factual and concise.
 - Include exact commands/results for tests and builds.
-- Include commit SHA, branch, push status and final working-tree status.
+- Include commit SHA, branch, PR URL/number when used, push status and final working-tree status.
 - Include root cause when fixing defects.
 - Do not produce long essays when a short result report is enough.
 
@@ -269,6 +287,7 @@ Result: <what changed>
 Tests: <commands and pass/fail>
 Install/native launch: <pass/fail>
 Commit: <sha/message or not committed>
+PR: <number/url or not used>
 Push: <pushed/not pushed>
 Status: <clean/dirty and branch>
 Limitations: <only important accepted limitations>
