@@ -25,6 +25,7 @@ juce::String noteNameForPitch(int pitch)
 PianoRollView::PianoRollView()
 {
     setOpaque(true);
+    setWantsKeyboardFocus(true);
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
 }
 
@@ -52,9 +53,24 @@ void PianoRollView::setGridDenominator(int denominator)
     repaint();
 }
 
+void PianoRollView::setSnapEnabled(bool enabled)
+{
+    snapEnabled_ = enabled;
+}
+
 void PianoRollView::setPrimaryNotes(std::vector<core::MidiNote> notes)
 {
+    if (noteEditGesture_ == NoteEditGesture::moving || noteEditGesture_ == NoteEditGesture::resizing) {
+        return;
+    }
+
     primaryNotes_ = std::move(notes);
+    repaint();
+}
+
+void PianoRollView::setSelectedNoteIds(std::vector<std::uint64_t> selectedNoteIds)
+{
+    selectedNoteIds_ = std::move(selectedNoteIds);
     repaint();
 }
 
@@ -212,6 +228,187 @@ void PianoRollView::rebuildRenderedNotes()
     }
 }
 
+std::optional<std::size_t> PianoRollView::findRenderedNoteAt(juce::Point<float> point, bool primaryOnly) const
+{
+    for (std::size_t index = renderedNotes_.size(); index-- > 0;) {
+        const auto& rendered = renderedNotes_[index];
+        if (primaryOnly && (rendered.isCandidate || rendered.category == core::MidiComparisonCategory::removed)) {
+            continue;
+        }
+
+        if (rendered.bounds.contains(point)) {
+            return index;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool PianoRollView::isRightEdgeHit(const RenderedNote& note, juce::Point<float> point) const
+{
+    return !note.isCandidate
+        && note.category != core::MidiComparisonCategory::removed
+        && note.bounds.contains(point)
+        && core::isMidiNoteRightEdgeHit(note.bounds.getX(), note.bounds.getWidth(), point.x);
+}
+
+double PianoRollView::beatForX(float x) const
+{
+    return core::timelineXToBeat(
+        static_cast<double>(x),
+        getLocalBounds().getWidth(),
+        core::sanitizeTimelineViewportState(viewportState_));
+}
+
+double PianoRollView::pitchForY(float y) const
+{
+    return core::yToPitch(
+        static_cast<double>(y),
+        getLocalBounds().getHeight(),
+        core::sanitizePitchViewportState(pitchViewportState_));
+}
+
+void PianoRollView::beginNoteEditGesture(const RenderedNote& note, bool resize)
+{
+    const auto clickedSelected = note.note.id != 0
+        && std::find(selectedNoteIds_.begin(), selectedNoteIds_.end(), note.note.id) != selectedNoteIds_.end();
+
+    if (!clickedSelected) {
+        selectedNoteIds_.clear();
+        selectedNoteIds_.push_back(note.note.id);
+        if (onPrimaryNoteClicked != nullptr) {
+            onPrimaryNoteClicked(note.note.id, false);
+        }
+    }
+
+    noteEditSelectedIds_ = selectedNoteIds_;
+    if (noteEditSelectedIds_.empty() && note.note.id != 0) {
+        noteEditSelectedIds_.push_back(note.note.id);
+    }
+
+    noteEditOriginalNotes_ = primaryNotes_;
+    noteEditAnchorNoteId_ = note.note.id;
+    noteEditChanged_ = false;
+    noteEditRequestedDeltaBeats_ = 0.0;
+    noteEditRequestedDeltaSemitones_ = 0;
+    noteEditRequestedAnchorEndBeat_ = note.note.startBeat + note.note.durationBeats;
+    noteEditGesture_ = resize ? NoteEditGesture::resizing : NoteEditGesture::moving;
+    setMouseCursor(resize ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::DraggingHandCursor);
+}
+
+void PianoRollView::updateNoteEditGesture(juce::Point<float> currentPosition)
+{
+    if (noteEditGesture_ != NoteEditGesture::moving && noteEditGesture_ != NoteEditGesture::resizing) {
+        return;
+    }
+
+    noteEditCurrentPosition_ = currentPosition;
+    primaryNotes_ = noteEditOriginalNotes_;
+
+    if (noteEditGesture_ == NoteEditGesture::moving) {
+        noteEditRequestedDeltaBeats_ = beatForX(noteEditCurrentPosition_.x) - beatForX(noteEditStartPosition_.x);
+        noteEditRequestedDeltaSemitones_ = static_cast<int>(std::round(
+            pitchForY(noteEditCurrentPosition_.y) - pitchForY(noteEditStartPosition_.y)));
+
+        core::MoveSelectedNotesRequest request;
+        request.selectedNoteIds = noteEditSelectedIds_;
+        request.requestedDeltaBeats = noteEditRequestedDeltaBeats_;
+        request.requestedDeltaSemitones = noteEditRequestedDeltaSemitones_;
+        request.snapEnabled = snapEnabled_;
+        request.gridStepBeats = core::gridStepBeats(gridDenominator_);
+
+        const auto result = core::moveSelectedNotes(primaryNotes_, request);
+        noteEditChanged_ = result.changed;
+    } else {
+        noteEditRequestedAnchorEndBeat_ = beatForX(noteEditCurrentPosition_.x);
+
+        core::ResizeSelectedNotesRequest request;
+        request.selectedNoteIds = noteEditSelectedIds_;
+        request.anchorNoteId = noteEditAnchorNoteId_;
+        request.requestedAnchorEndBeat = noteEditRequestedAnchorEndBeat_;
+        request.snapEnabled = snapEnabled_;
+        request.gridStepBeats = core::gridStepBeats(gridDenominator_);
+
+        const auto result = core::resizeSelectedNotes(primaryNotes_, request);
+        noteEditChanged_ = result.changed;
+    }
+
+    repaint();
+}
+
+void PianoRollView::finishNoteEditGesture()
+{
+    if (noteEditGesture_ != NoteEditGesture::moving && noteEditGesture_ != NoteEditGesture::resizing) {
+        noteEditGesture_ = NoteEditGesture::none;
+        return;
+    }
+
+    const auto gesture = noteEditGesture_;
+    const auto changed = noteEditChanged_;
+    const auto selectedIds = noteEditSelectedIds_;
+    const auto deltaBeats = noteEditRequestedDeltaBeats_;
+    const auto deltaSemitones = noteEditRequestedDeltaSemitones_;
+    const auto anchorId = noteEditAnchorNoteId_;
+    const auto anchorEndBeat = noteEditRequestedAnchorEndBeat_;
+    const auto originalNotes = noteEditOriginalNotes_;
+
+    noteEditGesture_ = NoteEditGesture::none;
+    noteEditOriginalNotes_.clear();
+    noteEditSelectedIds_.clear();
+    noteEditAnchorNoteId_ = 0;
+    noteEditChanged_ = false;
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+
+    if (!changed) {
+        primaryNotes_ = originalNotes;
+        repaint();
+        return;
+    }
+
+    if (gesture == NoteEditGesture::moving && onMoveNotesRequested != nullptr) {
+        onMoveNotesRequested(selectedIds, deltaBeats, deltaSemitones);
+    } else if (gesture == NoteEditGesture::resizing && onResizeNotesRequested != nullptr) {
+        onResizeNotesRequested(anchorId, selectedIds, anchorEndBeat);
+    }
+}
+
+void PianoRollView::cancelNoteEditGesture()
+{
+    if (noteEditGesture_ == NoteEditGesture::none) {
+        return;
+    }
+
+    primaryNotes_ = noteEditOriginalNotes_;
+    noteEditOriginalNotes_.clear();
+    noteEditSelectedIds_.clear();
+    noteEditAnchorNoteId_ = 0;
+    noteEditGesture_ = NoteEditGesture::none;
+    noteEditChanged_ = false;
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    repaint();
+}
+
+core::MidiNoteMarqueeSelectionRequest PianoRollView::marqueeRequestFor(
+    juce::Point<float> start,
+    juce::Point<float> end) const
+{
+    const auto bounds = getLocalBounds();
+    const auto viewport = core::sanitizeTimelineViewportState(viewportState_);
+    const auto pitchViewport = core::sanitizePitchViewportState(pitchViewportState_);
+
+    const auto startBeat = core::timelineXToBeat(start.x, bounds.getWidth(), viewport);
+    const auto endBeat = core::timelineXToBeat(end.x, bounds.getWidth(), viewport);
+    const auto startPitch = core::yToPitch(start.y, bounds.getHeight(), pitchViewport);
+    const auto endPitch = core::yToPitch(end.y, bounds.getHeight(), pitchViewport);
+
+    core::MidiNoteMarqueeSelectionRequest request;
+    request.startBeat = startBeat;
+    request.endBeat = endBeat;
+    request.lowPitch = std::floor(std::min(startPitch, endPitch));
+    request.highPitch = std::ceil(std::max(startPitch, endPitch));
+    return request;
+}
+
 void PianoRollView::paint(juce::Graphics& g)
 {
     const auto bounds = getLocalBounds();
@@ -262,6 +459,14 @@ void PianoRollView::paint(juce::Graphics& g)
             const auto colour = comparisonEnabled_ ? juce::Colour(0xff3f5f86) : juce::Colour(0xff6ba4f6);
             g.setColour(colour);
             g.fillRect(note.bounds);
+            const auto selected = note.note.id != 0
+                && std::find(selectedNoteIds_.begin(), selectedNoteIds_.end(), note.note.id) != selectedNoteIds_.end();
+            if (selected) {
+                g.setColour(juce::Colour(0xfffff2c0));
+                g.drawRect(note.bounds.expanded(1.5f), 2.0f);
+                g.setColour(juce::Colour(0x55304050));
+                g.fillRect(note.bounds.reduced(1.0f));
+            }
             continue;
         }
 
@@ -313,8 +518,64 @@ void PianoRollView::paint(juce::Graphics& g)
         g.drawText(tooltip, tooltipRect.reduced(6, 0), juce::Justification::centredLeft, false);
     }
 
+    if (marqueeActive_ && marqueeStartPosition_.has_value()) {
+        const auto marquee = juce::Rectangle<float>::leftTopRightBottom(
+            std::min(marqueeStartPosition_->x, marqueeCurrentPosition_.x),
+            std::min(marqueeStartPosition_->y, marqueeCurrentPosition_.y),
+            std::max(marqueeStartPosition_->x, marqueeCurrentPosition_.x),
+            std::max(marqueeStartPosition_->y, marqueeCurrentPosition_.y));
+        g.setColour(juce::Colour(0x334f96d8));
+        g.fillRect(marquee);
+        g.setColour(juce::Colour(0xff9bc8ff));
+        g.drawRect(marquee, 1.25f);
+    }
+
     g.setColour(juce::Colour(0xff313b47));
     g.drawRect(bounds, 1);
+}
+
+bool PianoRollView::keyPressed(const juce::KeyPress& key)
+{
+    if (key == juce::KeyPress::escapeKey) {
+        if (noteEditGesture_ != NoteEditGesture::none) {
+            cancelNoteEditGesture();
+            return true;
+        }
+
+        if (marqueeStartPosition_.has_value() || marqueeActive_) {
+            marqueeStartPosition_.reset();
+            marqueeActive_ = false;
+            repaint();
+            return true;
+        }
+
+        return false;
+    }
+
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) {
+        if (onDeleteRequested != nullptr) {
+            onDeleteRequested();
+            return true;
+        }
+    }
+
+    if (key == juce::KeyPress::leftKey || key == juce::KeyPress::rightKey
+        || key == juce::KeyPress::upKey || key == juce::KeyPress::downKey) {
+        if (onNudgeRequested != nullptr) {
+            const auto gridStep = core::gridStepBeats(gridDenominator_);
+            if (key == juce::KeyPress::leftKey) {
+                onNudgeRequested(0, -gridStep);
+            } else if (key == juce::KeyPress::rightKey) {
+                onNudgeRequested(0, gridStep);
+            } else {
+                const auto octave = key.getModifiers().isShiftDown() ? 12 : 1;
+                onNudgeRequested(key == juce::KeyPress::upKey ? octave : -octave, 0.0);
+            }
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void PianoRollView::mouseMove(const juce::MouseEvent& event)
@@ -322,20 +583,158 @@ void PianoRollView::mouseMove(const juce::MouseEvent& event)
     hoverPosition_ = event.getPosition();
     hoveredNoteIndex_.reset();
 
+    rebuildRenderedNotes();
     const auto point = event.position;
-    for (std::size_t index = renderedNotes_.size(); index-- > 0;) {
-        if (renderedNotes_[index].bounds.contains(point)) {
-            hoveredNoteIndex_ = index;
-            break;
-        }
+    hoveredNoteIndex_ = findRenderedNoteAt(point, false);
+    if (hoveredNoteIndex_.has_value() && isRightEdgeHit(renderedNotes_[hoveredNoteIndex_.value()], point)) {
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+    } else {
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
     }
 
+    repaint();
+}
+
+void PianoRollView::mouseDown(const juce::MouseEvent& event)
+{
+    grabKeyboardFocus();
+
+    if (!event.mods.isLeftButtonDown()) {
+        return;
+    }
+
+    rebuildRenderedNotes();
+
+    const auto additive = event.mods.isCtrlDown() || event.mods.isCommandDown();
+    const auto primaryNoteIndex = findRenderedNoteAt(event.position, true);
+    const auto anyNoteIndex = findRenderedNoteAt(event.position, false);
+
+    marqueeStartPosition_.reset();
+    marqueeActive_ = false;
+    marqueeAdditive_ = additive;
+    noteEditGesture_ = NoteEditGesture::none;
+
+    if (event.getNumberOfClicks() >= 2) {
+        if (!anyNoteIndex.has_value() && onCreateNoteRequested != nullptr) {
+            const auto beat = core::timelineXToBeat(
+                event.position.x,
+                getLocalBounds().getWidth(),
+                core::sanitizeTimelineViewportState(viewportState_));
+            const auto pitch = static_cast<int>(std::floor(core::yToPitch(
+                event.position.y,
+                getLocalBounds().getHeight(),
+                core::sanitizePitchViewportState(pitchViewportState_))));
+            onCreateNoteRequested(beat, pitch);
+        }
+        return;
+    }
+
+    if (primaryNoteIndex.has_value()) {
+        noteEditAnchorNoteId_ = renderedNotes_[primaryNoteIndex.value()].note.id;
+        noteEditStartPosition_ = event.position;
+        noteEditCurrentPosition_ = event.position;
+        noteEditGesture_ = isRightEdgeHit(renderedNotes_[primaryNoteIndex.value()], event.position)
+            ? NoteEditGesture::pendingResize
+            : NoteEditGesture::pendingMove;
+        noteEditOriginalNotes_ = primaryNotes_;
+        return;
+    }
+
+    if (onEmptySpaceClicked != nullptr) {
+        onEmptySpaceClicked(additive);
+    }
+
+    marqueeStartPosition_ = event.position;
+    marqueeCurrentPosition_ = event.position;
+}
+
+void PianoRollView::mouseDrag(const juce::MouseEvent& event)
+{
+    if (noteEditGesture_ == NoteEditGesture::pendingMove || noteEditGesture_ == NoteEditGesture::pendingResize) {
+        if (!core::isMeaningfulMarqueeDrag(
+                event.position.x - noteEditStartPosition_.x,
+                event.position.y - noteEditStartPosition_.y)) {
+            return;
+        }
+
+        rebuildRenderedNotes();
+        const auto noteIndex = findRenderedNoteAt(noteEditStartPosition_, true);
+        if (!noteIndex.has_value()) {
+            cancelNoteEditGesture();
+            return;
+        }
+
+        beginNoteEditGesture(
+            renderedNotes_[noteIndex.value()],
+            noteEditGesture_ == NoteEditGesture::pendingResize);
+        updateNoteEditGesture(event.position);
+        return;
+    }
+
+    if (noteEditGesture_ == NoteEditGesture::moving || noteEditGesture_ == NoteEditGesture::resizing) {
+        updateNoteEditGesture(event.position);
+        return;
+    }
+
+    if (!marqueeStartPosition_.has_value()) {
+        return;
+    }
+
+    marqueeCurrentPosition_ = event.position;
+    marqueeActive_ = core::isMeaningfulMarqueeDrag(
+        marqueeCurrentPosition_.x - marqueeStartPosition_->x,
+        marqueeCurrentPosition_.y - marqueeStartPosition_->y);
+    repaint();
+}
+
+void PianoRollView::mouseUp(const juce::MouseEvent& event)
+{
+    if (noteEditGesture_ == NoteEditGesture::moving || noteEditGesture_ == NoteEditGesture::resizing) {
+        updateNoteEditGesture(event.position);
+        finishNoteEditGesture();
+        return;
+    }
+
+    if (noteEditGesture_ == NoteEditGesture::pendingMove || noteEditGesture_ == NoteEditGesture::pendingResize) {
+        rebuildRenderedNotes();
+        const auto noteIndex = findRenderedNoteAt(noteEditStartPosition_, true);
+        if (noteIndex.has_value() && onPrimaryNoteClicked != nullptr) {
+            const auto additive = event.mods.isCtrlDown() || event.mods.isCommandDown();
+            onPrimaryNoteClicked(renderedNotes_[noteIndex.value()].note.id, additive);
+        }
+        noteEditGesture_ = NoteEditGesture::none;
+        noteEditOriginalNotes_.clear();
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        return;
+    }
+
+    if (!marqueeStartPosition_.has_value()) {
+        return;
+    }
+
+    marqueeCurrentPosition_ = event.position;
+    const auto shouldApply = marqueeActive_
+        && core::isMeaningfulMarqueeDrag(
+            marqueeCurrentPosition_.x - marqueeStartPosition_->x,
+            marqueeCurrentPosition_.y - marqueeStartPosition_->y);
+
+    if (shouldApply && onMarqueeSelectionFinished != nullptr) {
+        onMarqueeSelectionFinished(
+            core::findMidiNotesIntersectingRange(primaryNotes_, marqueeRequestFor(*marqueeStartPosition_, marqueeCurrentPosition_)),
+            marqueeAdditive_);
+    }
+
+    marqueeStartPosition_.reset();
+    marqueeActive_ = false;
     repaint();
 }
 
 void PianoRollView::mouseExit(const juce::MouseEvent&)
 {
     hoveredNoteIndex_.reset();
+    if (noteEditGesture_ == NoteEditGesture::none) {
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    }
     repaint();
 }
 

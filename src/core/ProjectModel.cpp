@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <unordered_set>
 #include <utility>
 
 namespace dawhermes::core {
@@ -75,7 +76,21 @@ bool ProjectModel::replaceMidiNotes(std::uint64_t id, std::vector<MidiNote> midi
         return false;
     }
 
+    assignStableMidiNoteIds(midiNotes, id);
     track->midiNotes = std::move(midiNotes);
+    return true;
+}
+
+bool ProjectModel::appendMidiNote(std::uint64_t id, MidiNote midiNote)
+{
+    auto* track = findTrackById(id);
+    if (track == nullptr || track->type != TrackType::midi) {
+        return false;
+    }
+
+    std::vector<MidiNote> scratch { midiNote };
+    assignStableMidiNoteIds(scratch, id);
+    track->midiNotes.push_back(scratch.front());
     return true;
 }
 
@@ -110,6 +125,47 @@ bool ProjectModel::setGeneratedGroupId(std::uint64_t id, std::string groupId)
 
     track->generatedGroupId = std::move(groupId);
     return true;
+}
+
+std::uint64_t ProjectModel::allocateMidiNoteId()
+{
+    while (nextMidiNoteId_ == 0 || isMidiNoteIdInUse(nextMidiNoteId_)) {
+        ++nextMidiNoteId_;
+    }
+
+    const auto allocated = nextMidiNoteId_;
+    ++nextMidiNoteId_;
+    return allocated;
+}
+
+bool ProjectModel::repairMidiNoteIds(std::uint64_t trackId)
+{
+    auto* track = findTrackById(trackId);
+    if (track == nullptr || track->type != TrackType::midi) {
+        return false;
+    }
+
+    const auto before = track->midiNotes;
+    assignStableMidiNoteIds(track->midiNotes, trackId);
+    return before != track->midiNotes;
+}
+
+bool ProjectModel::repairAllMidiNoteIds()
+{
+    bool changed = false;
+    for (auto& track : tracks_) {
+        if (track.type != TrackType::midi) {
+            continue;
+        }
+
+        const auto before = track.midiNotes;
+        assignStableMidiNoteIds(track.midiNotes, track.id);
+        if (before != track.midiNotes) {
+            changed = true;
+        }
+    }
+
+    return changed;
 }
 
 Track* ProjectModel::findTrackById(std::uint64_t id)
@@ -149,6 +205,58 @@ bool ProjectModel::empty() const noexcept
 void ProjectModel::clear()
 {
     tracks_.clear();
+    nextTrackId_ = 1;
+    nextMidiNoteId_ = 1;
+    nextAudioTrackNumber_ = 1;
+    nextMidiTrackNumber_ = 1;
+    nextGroupTrackNumber_ = 1;
+}
+
+void ProjectModel::assignStableMidiNoteIds(std::vector<MidiNote>& notes, std::optional<std::uint64_t> exemptTrackId)
+{
+    std::unordered_set<std::uint64_t> localIds;
+    localIds.reserve(notes.size());
+
+    for (auto& note : notes) {
+        const auto invalidOrDuplicate = note.id == 0
+            || localIds.find(note.id) != localIds.end()
+            || isMidiNoteIdInUse(note.id, exemptTrackId);
+
+        if (invalidOrDuplicate) {
+            note.id = allocateMidiNoteId();
+        } else {
+            nextMidiNoteId_ = std::max(nextMidiNoteId_, note.id + 1);
+        }
+
+        localIds.insert(note.id);
+    }
+}
+
+bool ProjectModel::isMidiNoteIdInUse(std::uint64_t noteId, std::optional<std::uint64_t> exemptTrackId) const
+{
+    if (noteId == 0) {
+        return false;
+    }
+
+    for (const auto& track : tracks_) {
+        if (track.type != TrackType::midi) {
+            continue;
+        }
+
+        if (exemptTrackId.has_value() && exemptTrackId.value() == track.id) {
+            continue;
+        }
+
+        const auto existing = std::find_if(track.midiNotes.begin(), track.midiNotes.end(), [noteId](const MidiNote& note) {
+            return note.id == noteId;
+        });
+
+        if (existing != track.midiNotes.end()) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool ProjectModel::isDescendantOf(const Track& track, std::uint64_t ancestorTrackId) const

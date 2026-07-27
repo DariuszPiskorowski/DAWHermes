@@ -1,6 +1,7 @@
 #include "ui/MainComponent.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -9,9 +10,11 @@
 #include <utility>
 
 #include "app/AppLogger.h"
+#include "core/MidiNoteEditing.h"
 #include "hermes/HermesCache.h"
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/HermesValidation.h"
+#include "midi/MidiTrackExporter.h"
 #include "ui/HermesDialogs.h"
 #include "ui/MidiImportParser.h"
 
@@ -79,6 +82,23 @@ int trackDepth(const core::ProjectModel& project, const core::Track& track)
 }
 
 constexpr const char* kPanelLayoutSettingsKey = "layout.panelStateV1";
+constexpr const char* kMidiSnapEnabledSettingsKey = "midiEditing.snapEnabled";
+
+juce::String gridLabelForDenominator(int denominator)
+{
+    switch (denominator) {
+    case 4:
+        return "1/4";
+    case 8:
+        return "1/8";
+    case 16:
+        return "1/16";
+    case 32:
+        return "1/32";
+    default:
+        return "1/16";
+    }
+}
 
 juce::String buildHermesGroupId()
 {
@@ -140,6 +160,161 @@ int sanitizeGridDenominator(int value)
     }
 }
 
+juce::String noteNameForPitch(int pitch)
+{
+    static constexpr std::array<const char*, 12> names {
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+    };
+
+    const auto clamped = std::clamp(pitch, 0, 127);
+    const auto pitchClass = clamped % 12;
+    const auto octave = (clamped / 12) - 1;
+    return juce::String(names[static_cast<std::size_t>(pitchClass)]) + juce::String(octave);
+}
+
+bool trackContainsNoteId(const core::Track& track, std::uint64_t noteId)
+{
+    return std::any_of(track.midiNotes.begin(), track.midiNotes.end(), [noteId](const core::MidiNote& note) {
+        return note.id == noteId;
+    });
+}
+
+class CreateMidiNoteCommand final : public core::ProjectEditCommand {
+public:
+    CreateMidiNoteCommand(core::ProjectModel& project, std::uint64_t trackId, core::MidiNote note)
+        : project_(project), trackId_(trackId), note_(note)
+    {
+    }
+
+    std::string label() const override { return "Create MIDI Note"; }
+
+    bool undo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr || track->type != core::TrackType::midi) {
+            return false;
+        }
+
+        return core::deleteSelectedNotes(track->midiNotes, { note_.id }) == 1;
+    }
+
+    bool redo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr || track->type != core::TrackType::midi || trackContainsNoteId(*track, note_.id)) {
+            return false;
+        }
+
+        track->midiNotes.push_back(note_);
+        core::sortMidiNotesByStart(track->midiNotes);
+        return true;
+    }
+
+private:
+    core::ProjectModel& project_;
+    std::uint64_t trackId_ { 0 };
+    core::MidiNote note_;
+};
+
+class DeleteMidiNotesCommand final : public core::ProjectEditCommand {
+public:
+    DeleteMidiNotesCommand(
+        core::ProjectModel& project,
+        std::uint64_t trackId,
+        std::vector<std::uint64_t> noteIds,
+        std::vector<core::MidiNote> deletedNotes)
+        : project_(project),
+          trackId_(trackId),
+          noteIds_(std::move(noteIds)),
+          deletedNotes_(std::move(deletedNotes))
+    {
+    }
+
+    std::string label() const override { return deletedNotes_.size() == 1 ? "Delete MIDI Note" : "Delete MIDI Notes"; }
+
+    bool undo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr || track->type != core::TrackType::midi) {
+            return false;
+        }
+
+        for (const auto& note : deletedNotes_) {
+            if (trackContainsNoteId(*track, note.id)) {
+                return false;
+            }
+        }
+
+        track->midiNotes.insert(track->midiNotes.end(), deletedNotes_.begin(), deletedNotes_.end());
+        core::sortMidiNotesByStart(track->midiNotes);
+        return true;
+    }
+
+    bool redo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr || track->type != core::TrackType::midi) {
+            return false;
+        }
+
+        return core::deleteSelectedNotes(track->midiNotes, noteIds_) == deletedNotes_.size();
+    }
+
+private:
+    core::ProjectModel& project_;
+    std::uint64_t trackId_ { 0 };
+    std::vector<std::uint64_t> noteIds_;
+    std::vector<core::MidiNote> deletedNotes_;
+};
+
+class ReplaceMidiNotesCommand final : public core::ProjectEditCommand {
+public:
+    ReplaceMidiNotesCommand(
+        core::ProjectModel& project,
+        std::uint64_t trackId,
+        std::string label,
+        std::vector<core::MidiNote> beforeNotes,
+        std::vector<core::MidiNote> afterNotes)
+        : project_(project),
+          trackId_(trackId),
+          label_(std::move(label)),
+          beforeNotes_(std::move(beforeNotes)),
+          afterNotes_(std::move(afterNotes))
+    {
+    }
+
+    std::string label() const override { return label_; }
+
+    bool undo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr || track->type != core::TrackType::midi) {
+            return false;
+        }
+
+        track->midiNotes = beforeNotes_;
+        return true;
+    }
+
+    bool redo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr || track->type != core::TrackType::midi) {
+            return false;
+        }
+
+        track->midiNotes = afterNotes_;
+        return true;
+    }
+
+private:
+    core::ProjectModel& project_;
+    std::uint64_t trackId_ { 0 };
+    std::string label_;
+    std::vector<core::MidiNote> beforeNotes_;
+    std::vector<core::MidiNote> afterNotes_;
+};
+
 }  // namespace
 
 MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
@@ -151,6 +326,7 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
       menuBar_(this)
 {
     setOpaque(true);
+    setWantsKeyboardFocus(true);
 
     addAndMakeVisible(menuBar_);
 
@@ -181,6 +357,9 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     gridCombo_.setSelectedId(gridDenominator_, juce::dontSendNotification);
     addAndMakeVisible(gridCombo_);
 
+    snapToggle_.setToggleState(snapEnabled_, juce::dontSendNotification);
+    addAndMakeVisible(snapToggle_);
+
     addAndMakeVisible(horizontalZoomOutButton_);
     addAndMakeVisible(horizontalZoomInButton_);
     addAndMakeVisible(horizontalFitButton_);
@@ -196,6 +375,14 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     addAndMakeVisible(pitchZoomOutButton_);
     addAndMakeVisible(pitchZoomInButton_);
     addAndMakeVisible(pitchFitButton_);
+    velocityLabel_.setText("Vel", juce::dontSendNotification);
+    velocityLabel_.setJustificationType(juce::Justification::centredRight);
+    velocityLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffc7ccd4));
+    addAndMakeVisible(velocityLabel_);
+    velocityEditor_.setInputRestrictions(3, "0123456789");
+    velocityEditor_.setJustification(juce::Justification::centred);
+    velocityEditor_.setEnabled(false);
+    addAndMakeVisible(velocityEditor_);
     addAndMakeVisible(pianoKeyboardView_);
     addAndMakeVisible(pianoRollView_);
 
@@ -221,6 +408,7 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     initializeVisualWorkspace();
 
     loadPanelLayoutState();
+    loadMidiEditingSettings();
     loadComposerSettings();
     cleanupStaleHermesCacheOnStartup();
     updateVisualWorkspace();
@@ -256,6 +444,13 @@ void MainComponent::initializeVisualWorkspace()
         updateVisualWorkspace();
     };
 
+    snapToggle_.onClick = [this]() {
+        snapEnabled_ = snapToggle_.getToggleState();
+        saveMidiEditingSettings();
+        pianoRollView_.setSnapEnabled(snapEnabled_);
+        statusLabel_.setText(snapEnabled_ ? "Snap: On" : "Snap: Off", juce::dontSendNotification);
+    };
+
     horizontalZoomOutButton_.onClick = [this]() { applyHorizontalZoom(0.80); };
     horizontalZoomInButton_.onClick = [this]() { applyHorizontalZoom(1.25); };
     horizontalFitButton_.onClick = [this]() { fitHorizontalToProject(); };
@@ -274,6 +469,13 @@ void MainComponent::initializeVisualWorkspace()
     pitchZoomInButton_.onClick = [this]() { applyPitchZoom(1.20); };
     pitchFitButton_.onClick = [this]() { fitPitchToActiveNotes(); };
 
+    velocityEditor_.onReturnKey = [this]() {
+        applyVelocityEditorValue();
+    };
+    velocityEditor_.onFocusLost = [this]() {
+        applyVelocityEditorValue();
+    };
+
     pianoPitchScrollSlider_.onValueChange = [this]() {
         if (suppressViewportControlCallbacks_) {
             return;
@@ -288,7 +490,39 @@ void MainComponent::initializeVisualWorkspace()
     timelineView_.setGridDenominator(gridDenominator_);
     timeRulerView_.setGridDenominator(gridDenominator_);
     pianoRollView_.setGridDenominator(gridDenominator_);
+    pianoRollView_.setSnapEnabled(snapEnabled_);
     midiComparisonLegend_.setComparisonEnabled(false);
+
+    pianoRollView_.onPrimaryNoteClicked = [this](std::uint64_t noteId, bool additive) {
+        selectMidiNote(noteId, additive);
+    };
+    pianoRollView_.onEmptySpaceClicked = [this](bool additive) {
+        clearMidiNoteSelectionFromEmptyClick(additive);
+    };
+    pianoRollView_.onMarqueeSelectionFinished = [this](std::vector<std::uint64_t> noteIds, bool additive) {
+        applyMidiNoteMarqueeSelection(std::move(noteIds), additive);
+    };
+    pianoRollView_.onCreateNoteRequested = [this](double beat, int pitch) {
+        createMidiNoteAt(beat, pitch);
+    };
+    pianoRollView_.onDeleteRequested = [this]() {
+        deleteSelectedMidiNotes(true);
+    };
+    pianoRollView_.onMoveNotesRequested = [this](
+        std::vector<std::uint64_t> selectedNoteIds,
+        double deltaBeats,
+        int deltaSemitones) {
+        moveSelectedMidiNotes(std::move(selectedNoteIds), deltaBeats, deltaSemitones, "Moved MIDI notes", snapEnabled_);
+    };
+    pianoRollView_.onResizeNotesRequested = [this](
+        std::uint64_t anchorNoteId,
+        std::vector<std::uint64_t> selectedNoteIds,
+        double requestedAnchorEndBeat) {
+        resizeSelectedMidiNotes(anchorNoteId, std::move(selectedNoteIds), requestedAnchorEndBeat);
+    };
+    pianoRollView_.onNudgeRequested = [this](int deltaSemitones, double deltaBeats) {
+        nudgeSelectedMidiNotes(deltaSemitones, deltaBeats);
+    };
 }
 
 void MainComponent::paint(juce::Graphics& g)
@@ -331,10 +565,12 @@ void MainComponent::resized()
     auto timelineBounds = juce::Rectangle<int>(layout.timeline.x, layout.timeline.y, layout.timeline.width, layout.timeline.height);
     const auto headerHeight = std::max(24, layout.trackList.y - layout.timeline.y);
     auto timelineHeader = timelineBounds.removeFromTop(std::min(headerHeight, timelineBounds.getHeight()));
-    const auto controlsWidth = std::min(350, timelineHeader.getWidth());
+    const auto controlsWidth = std::min(410, timelineHeader.getWidth());
     auto controlsArea = timelineHeader.removeFromLeft(controlsWidth).reduced(2);
 
     gridCombo_.setBounds(controlsArea.removeFromLeft(58));
+    controlsArea.removeFromLeft(4);
+    snapToggle_.setBounds(controlsArea.removeFromLeft(58));
     controlsArea.removeFromLeft(4);
     horizontalZoomOutButton_.setBounds(controlsArea.removeFromLeft(28));
     controlsArea.removeFromLeft(2);
@@ -366,6 +602,10 @@ void MainComponent::resized()
     pitchZoomInButton_.setBounds(pitchControls.removeFromLeft(60));
     pitchControls.removeFromLeft(4);
     pitchFitButton_.setBounds(pitchControls.removeFromLeft(84));
+    pitchControls.removeFromLeft(8);
+    velocityLabel_.setBounds(pitchControls.removeFromLeft(28));
+    pitchControls.removeFromLeft(4);
+    velocityEditor_.setBounds(pitchControls.removeFromLeft(46));
 
     midiComparisonLegend_.setBounds(midiLegend);
 
@@ -429,6 +669,30 @@ void MainComponent::mouseUp(const juce::MouseEvent& event)
     updateCursorForSplitters(event.getPosition());
 }
 
+bool MainComponent::keyPressed(const juce::KeyPress& key)
+{
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) {
+        deleteSelectedMidiNotes(true);
+        return true;
+    }
+
+    if (key == juce::KeyPress::leftKey || key == juce::KeyPress::rightKey
+        || key == juce::KeyPress::upKey || key == juce::KeyPress::downKey) {
+        const auto gridStep = core::gridStepBeats(gridDenominator_);
+        if (key == juce::KeyPress::leftKey) {
+            nudgeSelectedMidiNotes(0, -gridStep);
+        } else if (key == juce::KeyPress::rightKey) {
+            nudgeSelectedMidiNotes(0, gridStep);
+        } else {
+            const auto octave = key.getModifiers().isShiftDown() ? 12 : 1;
+            nudgeSelectedMidiNotes(key == juce::KeyPress::upKey ? octave : -octave, 0.0);
+        }
+        return true;
+    }
+
+    return false;
+}
+
 juce::StringArray MainComponent::getMenuBarNames()
 {
     return { "File", "Edit", "View", "Track", "Tools", "Help" };
@@ -442,12 +706,16 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
     case 0:
         menu.addItem(commandNewProject, "New Project");
         menu.addItem(commandImportMidiTrack, "Import MIDI as Track...");
+        menu.addItem(commandExportSelectedMidiTrack, "Export Selected MIDI Track...", canExportSelectedMidiTrack());
         menu.addSeparator();
         menu.addItem(commandExit, "Exit");
         break;
     case 1:
         menu.addItem(commandUndo, "Undo", canUndo());
         menu.addItem(commandRedo, "Redo", canRedo());
+        menu.addSeparator();
+        menu.addItem(commandDeleteSelectedNotes, "Delete Selected Notes", canDeleteSelectedMidiNotes());
+        menu.addItem(commandQuantizeSelectedNotes, "Quantize Selected Notes to Grid", canEditSelectedMidiNotes());
         break;
     case 2:
         menu.addItem(commandResetPanelLayout, "Reset Panel Layout");
@@ -575,11 +843,20 @@ void MainComponent::executeCommand(int commandId)
         case commandImportMidiTrack:
             importMidiTrack();
             break;
+        case commandExportSelectedMidiTrack:
+            exportSelectedMidiTrack();
+            break;
         case commandAssignAudioFile:
             assignAudioFileToSelectedTrack();
             break;
         case commandDeleteSelectedTrack:
             deleteSelectedTrack();
+            break;
+        case commandDeleteSelectedNotes:
+            deleteSelectedMidiNotes(false);
+            break;
+        case commandQuantizeSelectedNotes:
+            quantizeSelectedMidiNotesToGrid();
             break;
         case commandUndo:
             runUndo();
@@ -743,6 +1020,24 @@ void MainComponent::savePanelLayoutState() const
         settings->setValue(
             kPanelLayoutSettingsKey,
             juce::String(core::serializeMainPanelLayoutState(panelLayoutState_)));
+        settings->saveIfNeeded();
+    }
+}
+
+void MainComponent::loadMidiEditingSettings()
+{
+    if (auto* settings = applicationProperties_.getUserSettings()) {
+        snapEnabled_ = settings->getBoolValue(kMidiSnapEnabledSettingsKey, snapEnabled_);
+    }
+
+    snapToggle_.setToggleState(snapEnabled_, juce::dontSendNotification);
+    pianoRollView_.setSnapEnabled(snapEnabled_);
+}
+
+void MainComponent::saveMidiEditingSettings() const
+{
+    if (auto* settings = applicationProperties_.getUserSettings()) {
+        settings->setValue(kMidiSnapEnabledSettingsKey, snapEnabled_);
         settings->saveIfNeeded();
     }
 }
@@ -1127,6 +1422,7 @@ void MainComponent::updateVisualWorkspace()
     timelineViewportState_ = core::sanitizeTimelineViewportState(timelineViewportState_);
     pitchViewportState_ = core::sanitizePitchViewportState(pitchViewportState_);
     gridDenominator_ = sanitizeGridDenominator(gridDenominator_);
+    synchronizeMidiNoteSelectionWithEditableTrack();
 
     std::vector<const core::Track*> prioritizedTracks;
     prioritizedTracks.reserve(projectController_.selectedTrackIds().size());
@@ -1157,6 +1453,7 @@ void MainComponent::updateVisualWorkspace()
     pianoRollView_.setViewportState(timelineViewportState_);
     pianoRollView_.setPitchViewportState(pitchViewportState_);
     pianoRollView_.setGridDenominator(gridDenominator_);
+    pianoRollView_.setSnapEnabled(snapEnabled_);
     pianoRollView_.setTimeSignatureMap(resolvedTimelineInfo_.timeSignatureMap);
 
     std::vector<core::MidiNote> primaryNotes;
@@ -1190,12 +1487,15 @@ void MainComponent::updateVisualWorkspace()
     }
 
     pianoRollView_.setPrimaryNotes(primaryNotes);
+    pianoRollView_.setSelectedNoteIds(midiNoteSelectionState_.selectedNoteIds());
 
     midiComparisonLegend_.setComparisonEnabled(comparisonActive);
     midiComparisonLegend_.setTrackLabels(primaryName, candidateName);
     midiComparisonLegend_.setComparisonSummary(
         comparisonActive ? core::summarizeMidiComparison(comparisonResult) : core::MidiComparisonSummary {});
 
+    snapToggle_.setToggleState(snapEnabled_, juce::dontSendNotification);
+    updateVelocityControlState();
     menuBar_.repaint();
 }
 
@@ -1369,6 +1669,55 @@ void MainComponent::importMidiTrack()
         juce::dontSendNotification);
 }
 
+bool MainComponent::canExportSelectedMidiTrack() const
+{
+    const auto track = selectedTrack();
+    return track.has_value() && midi::canExportMidiTrack(track.value());
+}
+
+void MainComponent::exportSelectedMidiTrack()
+{
+    const auto track = selectedTrack();
+    if (!track.has_value() || !midi::canExportMidiTrack(track.value())) {
+        statusLabel_.setText("Select a non-empty MIDI track before exporting.", juce::dontSendNotification);
+        return;
+    }
+
+    auto defaultName = juce::File::createLegalFileName(juce::String(track->name) + " - Edited.mid");
+    if (!defaultName.endsWithIgnoreCase(".mid") && !defaultName.endsWithIgnoreCase(".midi")) {
+        defaultName << ".mid";
+    }
+
+    juce::FileChooser chooser(
+        "Export selected MIDI track",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile(defaultName),
+        "*.mid;*.midi");
+
+    if (!chooser.browseForFileToSave(true)) {
+        return;
+    }
+
+    auto selectedFile = chooser.getResult();
+    if (!selectedFile.hasFileExtension("mid;midi")) {
+        selectedFile = selectedFile.withFileExtension(".mid");
+    }
+
+    const auto result = midi::exportMidiTrackToFile(
+        track.value(),
+        selectedFile.getFullPathName().toStdString());
+
+    if (!result.ok) {
+        statusLabel_.setText(
+            "MIDI export failed: " + juce::String(result.message),
+            juce::dontSendNotification);
+        return;
+    }
+
+    statusLabel_.setText(
+        "Exported selected MIDI track: " + selectedFile.getFileName(),
+        juce::dontSendNotification);
+}
+
 void MainComponent::assignAudioFileToSelectedTrack()
 {
     const auto track = selectedTrack();
@@ -1421,6 +1770,476 @@ void MainComponent::deleteSelectedTrack()
 
     refreshTrackView();
     updateStatusForSelection();
+}
+
+std::optional<std::uint64_t> MainComponent::editableMidiTrackIdForPianoRoll() const
+{
+    if (const auto pair = selectedMidiComparisonPair(); pair.has_value() && midiComparisonEnabled_) {
+        return pair->first.id;
+    }
+
+    const auto selectedIds = projectController_.selectedTrackIds();
+    if (selectedIds.size() != 1) {
+        return std::nullopt;
+    }
+
+    const auto* track = projectModel_.findTrackById(selectedIds.front());
+    if (track == nullptr || track->type != core::TrackType::midi) {
+        return std::nullopt;
+    }
+
+    return track->id;
+}
+
+core::Track* MainComponent::editableMidiTrackForPianoRoll()
+{
+    const auto trackId = editableMidiTrackIdForPianoRoll();
+    return trackId.has_value() ? projectModel_.findTrackById(trackId.value()) : nullptr;
+}
+
+const core::Track* MainComponent::editableMidiTrackForPianoRoll() const
+{
+    const auto trackId = editableMidiTrackIdForPianoRoll();
+    return trackId.has_value() ? projectModel_.findTrackById(trackId.value()) : nullptr;
+}
+
+void MainComponent::synchronizeMidiNoteSelectionWithEditableTrack()
+{
+    const auto trackId = editableMidiTrackIdForPianoRoll();
+    if (!trackId.has_value()) {
+        midiNoteSelectionState_.clear();
+        return;
+    }
+
+    midiNoteSelectionState_.setActiveTrack(trackId.value());
+    if (const auto* track = projectModel_.findTrackById(trackId.value()); track != nullptr) {
+        midiNoteSelectionState_.removeDeletedNotes(track->midiNotes);
+    }
+}
+
+void MainComponent::updateStatusForMidiNoteSelection()
+{
+    statusLabel_.setText(
+        "Selected MIDI notes: " + juce::String(static_cast<int>(midiNoteSelectionState_.selectionCount())),
+        juce::dontSendNotification);
+}
+
+bool MainComponent::canDeleteSelectedMidiNotes() const
+{
+    const auto* track = editableMidiTrackForPianoRoll();
+    if (track == nullptr || !midiNoteSelectionState_.hasSelection()) {
+        return false;
+    }
+
+    if (midiNoteSelectionState_.activeTrackId() != track->id) {
+        return false;
+    }
+
+    return std::any_of(
+        midiNoteSelectionState_.selectedNoteIds().begin(),
+        midiNoteSelectionState_.selectedNoteIds().end(),
+        [track](std::uint64_t noteId) { return trackContainsNoteId(*track, noteId); });
+}
+
+bool MainComponent::canEditSelectedMidiNotes() const
+{
+    return canDeleteSelectedMidiNotes();
+}
+
+bool MainComponent::shouldIgnoreKeyboardDeletion() const
+{
+    return shouldIgnoreKeyboardMidiEditing();
+}
+
+bool MainComponent::shouldIgnoreKeyboardMidiEditing() const
+{
+    if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) {
+        return true;
+    }
+
+    auto* focused = juce::Component::getCurrentlyFocusedComponent();
+    while (focused != nullptr) {
+        if (dynamic_cast<juce::TextEditor*>(focused) != nullptr || dynamic_cast<juce::Slider*>(focused) != nullptr) {
+            return true;
+        }
+
+        focused = focused->getParentComponent();
+    }
+
+    return false;
+}
+
+void MainComponent::selectMidiNote(std::uint64_t noteId, bool additive)
+{
+    const auto trackId = editableMidiTrackIdForPianoRoll();
+    const auto* track = editableMidiTrackForPianoRoll();
+    if (!trackId.has_value() || track == nullptr || noteId == 0 || !trackContainsNoteId(*track, noteId)) {
+        return;
+    }
+
+    if (additive) {
+        midiNoteSelectionState_.toggleNote(trackId.value(), noteId);
+    } else {
+        midiNoteSelectionState_.selectSingle(trackId.value(), noteId);
+    }
+
+    updateVisualWorkspace();
+    menuBar_.repaint();
+    updateStatusForMidiNoteSelection();
+}
+
+void MainComponent::clearMidiNoteSelectionFromEmptyClick(bool additive)
+{
+    if (additive) {
+        return;
+    }
+
+    if (!midiNoteSelectionState_.hasSelection()) {
+        return;
+    }
+
+    midiNoteSelectionState_.clearSelection();
+    updateVisualWorkspace();
+    menuBar_.repaint();
+    updateStatusForSelection();
+}
+
+void MainComponent::applyMidiNoteMarqueeSelection(std::vector<std::uint64_t> noteIds, bool additive)
+{
+    const auto trackId = editableMidiTrackIdForPianoRoll();
+    const auto* track = editableMidiTrackForPianoRoll();
+    if (!trackId.has_value() || track == nullptr) {
+        return;
+    }
+
+    std::vector<std::uint64_t> selectedIds;
+    if (additive) {
+        selectedIds = midiNoteSelectionState_.selectedNoteIds();
+    }
+
+    for (const auto noteId : noteIds) {
+        if (noteId == 0 || !trackContainsNoteId(*track, noteId)) {
+            continue;
+        }
+
+        if (std::find(selectedIds.begin(), selectedIds.end(), noteId) == selectedIds.end()) {
+            selectedIds.push_back(noteId);
+        }
+    }
+
+    midiNoteSelectionState_.setSelection(trackId.value(), std::move(selectedIds), std::nullopt);
+    updateVisualWorkspace();
+    menuBar_.repaint();
+    updateStatusForMidiNoteSelection();
+}
+
+void MainComponent::createMidiNoteAt(double beat, int pitch)
+{
+    auto* track = editableMidiTrackForPianoRoll();
+    if (track == nullptr) {
+        statusLabel_.setText("Select a MIDI track before creating notes.", juce::dontSendNotification);
+        return;
+    }
+
+    core::MidiNoteCreationRequest request;
+    request.clickedBeat = beat;
+    request.clickedPitch = pitch;
+    request.defaultVelocity = 100;
+    request.defaultChannel = core::mostCommonMidiChannel(track->midiNotes);
+    request.snapEnabled = snapEnabled_;
+    request.gridStepBeats = core::gridStepBeats(gridDenominator_);
+
+    auto note = core::makeCreatedMidiNote(request);
+    note.id = projectModel_.allocateMidiNoteId();
+
+    auto command = std::make_unique<CreateMidiNoteCommand>(projectModel_, track->id, note);
+    if (!command->redo()) {
+        statusLabel_.setText("MIDI note could not be created.", juce::dontSendNotification);
+        return;
+    }
+
+    redoResult_.reset();
+    projectHistory_.pushExecuted(std::move(command));
+    midiNoteSelectionState_.selectSingle(track->id, note.id);
+
+    refreshAfterMidiNoteMutation();
+    statusLabel_.setText(
+        "Created MIDI note: " + noteNameForPitch(note.pitch)
+            + " at beat " + juce::String(note.startBeat, 3),
+        juce::dontSendNotification);
+}
+
+void MainComponent::moveSelectedMidiNotes(
+    std::vector<std::uint64_t> selectedNoteIds,
+    double deltaBeats,
+    int deltaSemitones,
+    juce::String statusPrefix,
+    bool snapEnabled)
+{
+    auto* track = editableMidiTrackForPianoRoll();
+    if (track == nullptr || selectedNoteIds.empty()) {
+        return;
+    }
+
+    const auto beforeNotes = track->midiNotes;
+
+    core::MoveSelectedNotesRequest request;
+    request.selectedNoteIds = std::move(selectedNoteIds);
+    request.requestedDeltaBeats = deltaBeats;
+    request.requestedDeltaSemitones = deltaSemitones;
+    request.snapEnabled = snapEnabled;
+    request.gridStepBeats = core::gridStepBeats(gridDenominator_);
+
+    const auto result = core::moveSelectedNotes(track->midiNotes, request);
+    if (!result.changed || beforeNotes == track->midiNotes) {
+        track->midiNotes = beforeNotes;
+        return;
+    }
+
+    redoResult_.reset();
+    projectHistory_.pushExecuted(std::make_unique<ReplaceMidiNotesCommand>(
+        projectModel_,
+        track->id,
+        "Move MIDI Notes",
+        beforeNotes,
+        track->midiNotes));
+
+    refreshAfterMidiNoteMutation();
+    statusLabel_.setText(
+        statusPrefix + ": " + juce::String(result.appliedDeltaBeats, 3)
+            + " beats, " + juce::String(result.appliedDeltaSemitones) + " semitones",
+        juce::dontSendNotification);
+}
+
+void MainComponent::resizeSelectedMidiNotes(
+    std::uint64_t anchorNoteId,
+    std::vector<std::uint64_t> selectedNoteIds,
+    double requestedAnchorEndBeat)
+{
+    auto* track = editableMidiTrackForPianoRoll();
+    if (track == nullptr || selectedNoteIds.empty() || anchorNoteId == 0) {
+        return;
+    }
+
+    const auto beforeNotes = track->midiNotes;
+
+    core::ResizeSelectedNotesRequest request;
+    request.selectedNoteIds = std::move(selectedNoteIds);
+    request.anchorNoteId = anchorNoteId;
+    request.requestedAnchorEndBeat = requestedAnchorEndBeat;
+    request.snapEnabled = snapEnabled_;
+    request.gridStepBeats = core::gridStepBeats(gridDenominator_);
+
+    const auto result = core::resizeSelectedNotes(track->midiNotes, request);
+    if (!result.changed || beforeNotes == track->midiNotes) {
+        track->midiNotes = beforeNotes;
+        return;
+    }
+
+    redoResult_.reset();
+    projectHistory_.pushExecuted(std::make_unique<ReplaceMidiNotesCommand>(
+        projectModel_,
+        track->id,
+        "Resize MIDI Notes",
+        beforeNotes,
+        track->midiNotes));
+
+    refreshAfterMidiNoteMutation();
+    statusLabel_.setText(
+        "Resized MIDI notes: " + juce::String(result.appliedDurationDeltaBeats, 3) + " beats",
+        juce::dontSendNotification);
+}
+
+void MainComponent::nudgeSelectedMidiNotes(int deltaSemitones, double deltaBeats)
+{
+    if (shouldIgnoreKeyboardMidiEditing()) {
+        return;
+    }
+
+    if (!midiNoteSelectionState_.hasSelection()) {
+        return;
+    }
+
+    moveSelectedMidiNotes(
+        midiNoteSelectionState_.selectedNoteIds(),
+        deltaBeats,
+        deltaSemitones,
+        "Nudged MIDI notes",
+        true);
+}
+
+std::optional<int> MainComponent::primarySelectedMidiNoteVelocity() const
+{
+    const auto* track = editableMidiTrackForPianoRoll();
+    const auto noteId = midiNoteSelectionState_.primarySelectedNoteId();
+    if (track == nullptr || !noteId.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto noteIndex = core::findNoteIndexById(track->midiNotes, noteId.value());
+    if (!noteIndex.has_value()) {
+        return std::nullopt;
+    }
+
+    return track->midiNotes.at(noteIndex.value()).velocity;
+}
+
+void MainComponent::updateVelocityControlState()
+{
+    const auto velocity = primarySelectedMidiNoteVelocity();
+
+    suppressVelocityEditorCallbacks_ = true;
+    if (velocity.has_value() && canEditSelectedMidiNotes()) {
+        velocityEditor_.setEnabled(true);
+        velocityEditor_.setText(juce::String(velocity.value()), false);
+    } else {
+        velocityEditor_.setText({}, false);
+        velocityEditor_.setEnabled(false);
+    }
+    suppressVelocityEditorCallbacks_ = false;
+}
+
+void MainComponent::applyVelocityEditorValue()
+{
+    if (suppressVelocityEditorCallbacks_ || !velocityEditor_.isEnabled()) {
+        return;
+    }
+
+    const auto text = velocityEditor_.getText().trim();
+    if (text.isEmpty()) {
+        updateVelocityControlState();
+        return;
+    }
+
+    applyVelocityToSelectedMidiNotes(text.getIntValue());
+}
+
+void MainComponent::applyVelocityToSelectedMidiNotes(int velocity)
+{
+    auto* track = editableMidiTrackForPianoRoll();
+    if (track == nullptr || !canEditSelectedMidiNotes()) {
+        updateVelocityControlState();
+        return;
+    }
+
+    const auto beforeNotes = track->midiNotes;
+    const auto clampedVelocity = core::clampMidiVelocity(velocity);
+    const auto changedCount = core::applyVelocityToSelectedNotes(
+        track->midiNotes,
+        midiNoteSelectionState_.selectedNoteIds(),
+        clampedVelocity);
+
+    if (changedCount == 0 || beforeNotes == track->midiNotes) {
+        track->midiNotes = beforeNotes;
+        updateVelocityControlState();
+        return;
+    }
+
+    redoResult_.reset();
+    projectHistory_.pushExecuted(std::make_unique<ReplaceMidiNotesCommand>(
+        projectModel_,
+        track->id,
+        "Set MIDI Note Velocity",
+        beforeNotes,
+        track->midiNotes));
+
+    refreshAfterMidiNoteMutation();
+    statusLabel_.setText(
+        "Set velocity " + juce::String(clampedVelocity) + " for "
+            + juce::String(static_cast<int>(changedCount)) + " MIDI notes",
+        juce::dontSendNotification);
+}
+
+void MainComponent::quantizeSelectedMidiNotesToGrid()
+{
+    auto* track = editableMidiTrackForPianoRoll();
+    if (track == nullptr || !canEditSelectedMidiNotes()) {
+        statusLabel_.setText("No selected MIDI notes to quantize.", juce::dontSendNotification);
+        updateVelocityControlState();
+        return;
+    }
+
+    const auto beforeNotes = track->midiNotes;
+    const auto changedCount = core::quantizeSelectedNoteStarts(
+        track->midiNotes,
+        midiNoteSelectionState_.selectedNoteIds(),
+        core::gridStepBeats(gridDenominator_));
+
+    if (changedCount == 0 || beforeNotes == track->midiNotes) {
+        track->midiNotes = beforeNotes;
+        statusLabel_.setText("No MIDI notes changed by quantize.", juce::dontSendNotification);
+        updateVelocityControlState();
+        return;
+    }
+
+    redoResult_.reset();
+    projectHistory_.pushExecuted(std::make_unique<ReplaceMidiNotesCommand>(
+        projectModel_,
+        track->id,
+        "Quantize MIDI Notes",
+        beforeNotes,
+        track->midiNotes));
+
+    refreshAfterMidiNoteMutation();
+    statusLabel_.setText(
+        "Quantized " + juce::String(static_cast<int>(changedCount))
+            + " MIDI notes to " + gridLabelForDenominator(gridDenominator_) + " grid",
+        juce::dontSendNotification);
+}
+
+void MainComponent::deleteSelectedMidiNotes(bool fromKeyboard)
+{
+    if (fromKeyboard && shouldIgnoreKeyboardDeletion()) {
+        return;
+    }
+
+    auto* track = editableMidiTrackForPianoRoll();
+    if (track == nullptr || !canDeleteSelectedMidiNotes()) {
+        if (!fromKeyboard) {
+            statusLabel_.setText("No selected MIDI notes to delete.", juce::dontSendNotification);
+        }
+        return;
+    }
+
+    std::vector<std::uint64_t> noteIds;
+    std::vector<core::MidiNote> deletedNotes;
+    for (const auto& note : track->midiNotes) {
+        if (midiNoteSelectionState_.isSelected(note.id)) {
+            noteIds.push_back(note.id);
+            deletedNotes.push_back(note);
+        }
+    }
+
+    if (deletedNotes.empty()) {
+        midiNoteSelectionState_.clearSelection();
+        updateVisualWorkspace();
+        menuBar_.repaint();
+        return;
+    }
+
+    auto command = std::make_unique<DeleteMidiNotesCommand>(projectModel_, track->id, noteIds, deletedNotes);
+    if (!command->redo()) {
+        statusLabel_.setText("Selected MIDI notes could not be deleted.", juce::dontSendNotification);
+        return;
+    }
+
+    redoResult_.reset();
+    projectHistory_.pushExecuted(std::move(command));
+    midiNoteSelectionState_.clearSelection();
+
+    const auto deletedCount = deletedNotes.size();
+    refreshAfterMidiNoteMutation();
+    statusLabel_.setText(
+        "Deleted " + juce::String(static_cast<int>(deletedCount)) + " MIDI notes",
+        juce::dontSendNotification);
+}
+
+void MainComponent::refreshAfterMidiNoteMutation()
+{
+    synchronizeMidiNoteSelectionWithEditableTrack();
+    refreshTrackView();
+    trackList_.repaint();
+    menuBar_.repaint();
 }
 
 void MainComponent::startHermesJob(
@@ -1808,6 +2627,21 @@ void MainComponent::runUndo()
         return;
     }
 
+    if (projectHistory_.canUndo()) {
+        const auto label = projectHistory_.undoLabel();
+        if (!projectHistory_.undo()) {
+            statusLabel_.setText("Undo failed: MIDI edit could not be restored.", juce::dontSendNotification);
+            return;
+        }
+
+        synchronizeMidiNoteSelectionWithEditableTrack();
+        refreshTrackView();
+        updateStatusForSelection();
+        statusLabel_.setText("Undo " + juce::String(label), juce::dontSendNotification);
+        app::AppLogger::log("Undo " + juce::String(label));
+        return;
+    }
+
     auto resultToUndo = undoResult_.value();
     if (!hermes::undoAppliedHermesResult(projectController_, resultToUndo)) {
         app::AppLogger::log("Undo failed for last Hermes result.");
@@ -1839,6 +2673,21 @@ void MainComponent::runRedo()
 
     if (!canRedo()) {
         statusLabel_.setText("Nothing to redo.", juce::dontSendNotification);
+        return;
+    }
+
+    if (projectHistory_.canRedo()) {
+        const auto label = projectHistory_.redoLabel();
+        if (!projectHistory_.redo()) {
+            statusLabel_.setText("Redo failed: MIDI edit could not be restored.", juce::dontSendNotification);
+            return;
+        }
+
+        synchronizeMidiNoteSelectionWithEditableTrack();
+        refreshTrackView();
+        updateStatusForSelection();
+        statusLabel_.setText("Redo " + juce::String(label), juce::dontSendNotification);
+        app::AppLogger::log("Redo " + juce::String(label));
         return;
     }
 
@@ -1955,12 +2804,12 @@ void MainComponent::runClearHermesCache()
 
 bool MainComponent::canUndo() const
 {
-    return undoResult_.has_value() && !undoResult_->trackIds.empty();
+    return projectHistory_.canUndo() || (undoResult_.has_value() && !undoResult_->trackIds.empty());
 }
 
 bool MainComponent::canRedo() const
 {
-    return redoResult_.has_value() && !redoResult_->tracks.empty();
+    return projectHistory_.canRedo() || (redoResult_.has_value() && !redoResult_->tracks.empty());
 }
 
 void MainComponent::runComposerAssistantSettings()
@@ -2028,6 +2877,8 @@ void MainComponent::resetProject()
 
     projectModel_.clear();
     projectController_.clearSelection();
+    midiNoteSelectionState_.clear();
+    projectHistory_.clear();
     undoResult_.reset();
     redoResult_.reset();
     refreshTrackView();

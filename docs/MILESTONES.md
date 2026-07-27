@@ -19,13 +19,13 @@ No network-delivery milestone is defined in this plan.
 
 ## Current active scope
 
-Current work targets Milestone 3.1 visual inspection/comparison only:
+Current WIP work targets Milestone 3.2 MIDI editing and selected-track MIDI export:
 
-- preserve accepted Milestone 2 functionality and Hermes behaviour;
-- replace timeline/MIDI placeholders with real visual components;
-- provide deterministic shared viewport, ruler/grid, piano-roll rendering, and note hover diagnostics;
-- provide compare mode for two selected MIDI tracks in the View menu;
-- keep workflow read-only (no MIDI note editing or playback changes in this milestone).
+- preserve accepted Milestone 2 and Milestone 3.1 functionality;
+- edit MIDI notes directly in the in-memory project model;
+- provide note selection, marquee selection, creation, deletion, movement, duration resize, keyboard nudging, Snap, velocity editing, and quantize selected notes;
+- export the selected non-empty MIDI track to a standard MIDI file from the edited in-memory state;
+- keep playback, Timeline editing, controller lanes, copy/paste, VST hosting, and Cubase-specific exchange out of scope.
 
 Milestone 3.1 visual functionality is accepted.
-Milestone 3.2 remains the next stage for actual MIDI editing workflows.
+Milestone 3.2 is implemented locally on the WIP branch and still awaits user manual acceptance.

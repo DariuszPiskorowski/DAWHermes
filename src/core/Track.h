@@ -19,6 +19,17 @@ struct MidiNote {
     double startBeat { 0.0 };
     double durationBeats { 0.25 };
     int channel { 1 };
+    std::uint64_t id { 0 };
+
+    bool operator==(const MidiNote& other) const
+    {
+        return pitch == other.pitch
+            && velocity == other.velocity
+            && startBeat == other.startBeat
+            && durationBeats == other.durationBeats
+            && channel == other.channel
+            && id == other.id;
+    }
 };
 
 enum class MidiTrackOrigin {

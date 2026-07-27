@@ -18,6 +18,7 @@ The codebase is split into explicit layers:
 
 - `src/app` - application lifecycle, top-level window wiring, settings, logging bootstrap.
 - `src/core` - in-memory project and track model, selection/controller state, deterministic layout geometry, timeline viewport/time-map logic, piano-roll geometry, and MIDI comparison model.
+- `src/midi` - testable MIDI file export utilities that transform project MIDI tracks into standard MIDI files without depending on UI dialogs.
 - `src/ui` - JUCE views, menu bar, context menus, timeline/piano-roll rendering, option dialogs, and MIDI/WAV import parsing utilities.
 - `src/hermes` - neutral Hermes contracts, command availability rules, option validation, embedded Python engine, and connector boundaries.
 - `tests` - non-GUI behavioural and validation tests.
@@ -53,6 +54,14 @@ Milestone 3.1 adds:
 - time-signature aware bar/ruler calculation sourced from imported MIDI metadata with fallback defaults;
 - deterministic MIDI comparison classification (`unchanged`, `timingAdjusted`, `velocityAdjusted`, `pitchChanged`, `added`, `removed`);
 - color-coded visual compare overlay and summary legend.
+
+Local Milestone 3.2 WIP adds direct in-memory MIDI note editing and selected-track MIDI export:
+
+- selected note IDs are stored as stable project note IDs, not vector indices;
+- MIDI edits mutate `Track::midiNotes` through core editing helpers and `ProjectHistory` commands;
+- selected-track export uses `src/midi/MidiTrackExporter` to write the current edited in-memory notes through JUCE MIDI facilities;
+- export preserves pitch, velocity, channel, start beat, duration, note-off timing, track name, PPQ, tempo map, and time signatures where available;
+- export does not re-read or modify the original source MIDI file and does not create Undo/Redo history entries.
 
 For successful bass and sync operations, temporary Hermes cache job directories are deleted immediately. Failed operations preserve diagnostics in cache.
 
@@ -98,11 +107,11 @@ Implemented now:
 Not implemented now:
 
 - audio playback/recording/device setup;
-- MIDI note editing actions (move/resize/create/delete);
 - Hermes set/fix BPM workflow;
 - AI APIs;
 - ACE exchange;
 - Cubase export.
+- Cubase-specific exchange/export.
 
 Note: Milestone 2 includes minimal MIDI import for source-track creation and pairing workflows, but does not include full timeline/piano-roll editing.
 
@@ -111,3 +120,4 @@ Additional Milestone 3.1 boundaries:
 - timeline ruler/lanes and piano roll share one horizontal beat viewport state;
 - waveform drawing is static visualization only and not a playback transport surface;
 - current Timeline and Piano Roll styling is intentionally functional rather than final, with visual polish deferred until near project end.
+- Milestone 3.2 is implemented locally and awaits user manual acceptance; playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange are still deferred.

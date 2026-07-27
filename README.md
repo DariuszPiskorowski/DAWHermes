@@ -6,10 +6,10 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 
 ## Current status
 
-Milestone 3.1 extends Milestone 2 with visual timeline/piano-roll inspection and deterministic MIDI comparison.
+Milestone 3.2 is implemented locally as a MIDI-editing and selected-track MIDI export checkpoint on the WIP branch. It still awaits user manual acceptance.
 
 Milestone 1.1 and Milestone 2 functional integration are complete and accepted.
-Milestone 3.1 visual functionality is accepted and focuses on read-only visual analysis before editing features.
+Milestone 3.1 visual functionality is accepted.
 
 Currently implemented:
 
@@ -19,12 +19,14 @@ Currently implemented:
 - persistent workspace panel sizes with View -> Reset Panel Layout;
 - audio, MIDI, and group track models with file-backed audio source assignment;
 - File -> Import MIDI as Track... with note-bearing-track selection;
+- File -> Export Selected MIDI Track... for the selected non-empty MIDI track;
 - timeline ruler with bar labels and selectable beat grid (1/4, 1/8, 1/16, 1/32);
 - timeline lanes aligned to track-list ordering and row geometry;
 - static waveform thumbnails for audio tracks in timeline lanes (display only);
 - piano keyboard + piano-roll note visualization with shared horizontal viewport;
 - note hover diagnostics (pitch, velocity, start, duration, channel);
 - View -> Compare Selected MIDI Tracks mode with color-coded delta legend (read-only comparison);
+- piano-roll note selection, marquee selection, creation, deletion, mouse movement, right-edge duration resize, keyboard nudging, Snap, velocity editing, and quantize selected notes to grid;
 - track selection and deletion;
 - deliberate right-click context menus;
 - Hermes menu, option dialogs and validation;
@@ -48,21 +50,20 @@ Currently implemented:
 Not implemented yet:
 
 - audio playback or recording;
-- MIDI note editing workflow;
 - Hermes set/fix BPM workflow;
 - VST3 hosting;
 - AI model connection;
 - ACE Studio exchange;
-- Cubase export.
+- Cubase-specific exchange/export.
 
 Known limitation:
 
-Milestone 3.1 visual functionality is accepted.
+Milestone 3.1 visual functionality is accepted. Milestone 3.2 implementation is local and awaits user manual acceptance.
 
 The current Timeline and Piano Roll styling is intentionally functional rather than final.
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
-Actual MIDI note editing actions (create/move/resize/delete) remain deferred to Milestone 3.2.
+Playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange remain deferred.
 
 ## Related projects
 
@@ -198,6 +199,7 @@ The application is divided into:
 
 - `app` - lifecycle and application wiring;
 - `core` - project and track models;
+- `midi` - testable selected-track MIDI export;
 - `ui` - JUCE desktop interface;
 - `hermes` - neutral integration contracts and engine implementation;
 - `tests` - automated non-GUI verification;

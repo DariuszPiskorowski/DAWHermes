@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -17,12 +18,16 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "core/MainLayoutGeometry.h"
 #include "core/MidiComparisonModel.h"
+#include "core/MidiNoteEditing.h"
+#include "core/MidiNoteSelectionState.h"
 #include "core/MidiTimeMap.h"
 #include "core/ProjectController.h"
+#include "core/ProjectHistory.h"
 #include "core/ProjectModel.h"
 #include "core/SelectionState.h"
 #include "core/TimelineGeometry.h"
@@ -37,6 +42,7 @@
 #include "hermes/HermesTypes.h"
 #include "hermes/HermesValidation.h"
 #include "hermes/StubHermesEngine.h"
+#include "midi/MidiTrackExporter.h"
 #include "ui/MidiImportParser.h"
 
 namespace {
@@ -293,6 +299,187 @@ std::size_t countNotesOnTrack(const dawhermes::core::Track& track)
 {
     return track.midiNotes.size();
 }
+
+std::vector<std::uint64_t> noteIdsFor(const std::vector<MidiNote>& notes)
+{
+    std::vector<std::uint64_t> ids;
+    ids.reserve(notes.size());
+    for (const auto& note : notes) {
+        ids.push_back(note.id);
+    }
+    return ids;
+}
+
+bool containsNoteId(const std::vector<std::uint64_t>& ids, std::uint64_t noteId)
+{
+    return std::find(ids.begin(), ids.end(), noteId) != ids.end();
+}
+
+bool approxEqual(double left, double right, double tolerance = 0.0001)
+{
+    return std::abs(left - right) <= tolerance;
+}
+
+std::filesystem::path createTempDirectory(const std::string& stem)
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto path = std::filesystem::temp_directory_path()
+        / ("dawhermes-" + stem + "-" + std::to_string(now));
+    std::error_code ec;
+    std::filesystem::create_directories(path, ec);
+    return path;
+}
+
+std::string readBinaryFile(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    return std::string(
+        std::istreambuf_iterator<char>(in),
+        std::istreambuf_iterator<char>());
+}
+
+const MidiNote* findNoteByPitch(const std::vector<MidiNote>& notes, int pitch)
+{
+    const auto it = std::find_if(notes.begin(), notes.end(), [pitch](const MidiNote& note) {
+        return note.pitch == pitch;
+    });
+
+    return it != notes.end() ? &(*it) : nullptr;
+}
+
+class TestCreateMidiNoteCommand final : public dawhermes::core::ProjectEditCommand {
+public:
+    TestCreateMidiNoteCommand(ProjectModel& project, std::uint64_t trackId, MidiNote note)
+        : project_(project), trackId_(trackId), note_(note)
+    {
+    }
+
+    std::string label() const override { return "Create MIDI Note"; }
+
+    bool undo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr) {
+            return false;
+        }
+
+        return dawhermes::core::deleteSelectedNotes(track->midiNotes, { note_.id }) == 1;
+    }
+
+    bool redo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr) {
+            return false;
+        }
+
+        if (containsNoteId(noteIdsFor(track->midiNotes), note_.id)) {
+            return false;
+        }
+
+        track->midiNotes.push_back(note_);
+        dawhermes::core::sortMidiNotesByStart(track->midiNotes);
+        return true;
+    }
+
+private:
+    ProjectModel& project_;
+    std::uint64_t trackId_ { 0 };
+    MidiNote note_;
+};
+
+class TestDeleteMidiNotesCommand final : public dawhermes::core::ProjectEditCommand {
+public:
+    TestDeleteMidiNotesCommand(
+        ProjectModel& project,
+        std::uint64_t trackId,
+        std::vector<std::uint64_t> selectedIds,
+        std::vector<MidiNote> deletedNotes)
+        : project_(project),
+          trackId_(trackId),
+          selectedIds_(std::move(selectedIds)),
+          deletedNotes_(std::move(deletedNotes))
+    {
+    }
+
+    std::string label() const override { return "Delete MIDI Notes"; }
+
+    bool undo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr) {
+            return false;
+        }
+
+        track->midiNotes.insert(track->midiNotes.end(), deletedNotes_.begin(), deletedNotes_.end());
+        dawhermes::core::sortMidiNotesByStart(track->midiNotes);
+        return true;
+    }
+
+    bool redo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr) {
+            return false;
+        }
+
+        return dawhermes::core::deleteSelectedNotes(track->midiNotes, selectedIds_) == deletedNotes_.size();
+    }
+
+private:
+    ProjectModel& project_;
+    std::uint64_t trackId_ { 0 };
+    std::vector<std::uint64_t> selectedIds_;
+    std::vector<MidiNote> deletedNotes_;
+};
+
+class TestReplaceMidiNotesCommand final : public dawhermes::core::ProjectEditCommand {
+public:
+    TestReplaceMidiNotesCommand(
+        ProjectModel& project,
+        std::uint64_t trackId,
+        std::string label,
+        std::vector<MidiNote> beforeNotes,
+        std::vector<MidiNote> afterNotes)
+        : project_(project),
+          trackId_(trackId),
+          label_(std::move(label)),
+          beforeNotes_(std::move(beforeNotes)),
+          afterNotes_(std::move(afterNotes))
+    {
+    }
+
+    std::string label() const override { return label_; }
+
+    bool undo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr) {
+            return false;
+        }
+
+        track->midiNotes = beforeNotes_;
+        return true;
+    }
+
+    bool redo() override
+    {
+        auto* track = project_.findTrackById(trackId_);
+        if (track == nullptr) {
+            return false;
+        }
+
+        track->midiNotes = afterNotes_;
+        return true;
+    }
+
+private:
+    ProjectModel& project_;
+    std::uint64_t trackId_ { 0 };
+    std::string label_;
+    std::vector<MidiNote> beforeNotes_;
+    std::vector<MidiNote> afterNotes_;
+};
 
 bool testTrackCreationAudioAndMidi()
 {
@@ -699,6 +886,1169 @@ bool testMidiComparisonToleranceClassification()
     EXPECT_EQ(summary.pitchChangedCount, static_cast<std::size_t>(0));
     EXPECT_EQ(summary.addedCount, static_cast<std::size_t>(1));
     EXPECT_EQ(summary.removedCount, static_cast<std::size_t>(1));
+    return true;
+}
+
+bool testMidiNoteSelectionStateUsesStableIds()
+{
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "Editable").id;
+    const auto audioId = project.addTrack(TrackType::audio, "Audio").id;
+    const auto groupId = project.addTrack(TrackType::group, "Group").id;
+
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        {
+            makeMidiNote(67, 100, 2.0, 0.5, 2),
+            makeMidiNote(60, 100, 0.0, 0.5, 2),
+            makeMidiNote(64, 100, 1.0, 0.5, 2),
+        }));
+
+    auto* track = project.findTrackById(midiId);
+    EXPECT_TRUE(track != nullptr);
+    const auto firstId = track->midiNotes.at(0).id;
+    const auto secondId = track->midiNotes.at(1).id;
+
+    dawhermes::core::MidiNoteSelectionState selection;
+    selection.selectSingle(midiId, firstId);
+    EXPECT_TRUE(selection.hasSelection());
+    EXPECT_TRUE(selection.isSelected(firstId));
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(1));
+
+    selection.toggleNote(midiId, secondId);
+    EXPECT_TRUE(selection.isSelected(firstId));
+    EXPECT_TRUE(selection.isSelected(secondId));
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(2));
+
+    selection.toggleNote(midiId, secondId);
+    EXPECT_TRUE(selection.isSelected(firstId));
+    EXPECT_TRUE(!selection.isSelected(secondId));
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(1));
+
+    selection.clearSelection();
+    EXPECT_TRUE(!selection.hasSelection());
+
+    selection.selectSingle(midiId, firstId);
+    dawhermes::core::sortMidiNotesByStart(track->midiNotes);
+    EXPECT_TRUE(selection.isSelected(firstId));
+    EXPECT_TRUE(dawhermes::core::findNoteIndexById(track->midiNotes, firstId).has_value());
+
+    selection.setActiveTrack(audioId);
+    EXPECT_TRUE(!selection.hasSelection());
+
+    selection.selectSingle(midiId, firstId);
+    selection.setActiveTrack(groupId);
+    EXPECT_TRUE(!selection.hasSelection());
+    return true;
+}
+
+bool testMidiNoteMarqueeSelectionGeometry()
+{
+    ProjectModel project;
+    const auto primaryId = project.addTrack(TrackType::midi, "Primary").id;
+    const auto comparisonId = project.addTrack(TrackType::midi, "Comparison").id;
+
+    EXPECT_TRUE(project.replaceMidiNotes(
+        primaryId,
+        {
+            makeMidiNote(60, 100, 4.25, 0.50, 1),
+            makeMidiNote(64, 100, 5.00, 0.50, 1),
+            makeMidiNote(72, 100, 10.00, 0.50, 1),
+        }));
+    EXPECT_TRUE(project.replaceMidiNotes(comparisonId, { makeMidiNote(60, 100, 4.25, 0.50, 1) }));
+
+    auto* primary = project.findTrackById(primaryId);
+    const auto* comparison = project.findTrackById(comparisonId);
+    EXPECT_TRUE(primary != nullptr);
+    EXPECT_TRUE(comparison != nullptr);
+
+    dawhermes::core::TimelineViewportState horizontal;
+    horizontal.startBeat = 4.0;
+    horizontal.visibleBeats = 4.0;
+
+    dawhermes::core::PitchViewportState vertical;
+    vertical.highestVisiblePitch = 72.0;
+    vertical.visiblePitchSpan = 24.0;
+
+    const auto beatA = dawhermes::core::timelineXToBeat(40.0, 800, horizontal);
+    const auto beatB = dawhermes::core::timelineXToBeat(260.0, 800, horizontal);
+    const auto pitchA = dawhermes::core::yToPitch(120.0, 240, vertical);
+    const auto pitchB = dawhermes::core::yToPitch(70.0, 240, vertical);
+
+    dawhermes::core::MidiNoteMarqueeSelectionRequest request;
+    request.startBeat = beatA;
+    request.endBeat = beatB;
+    request.lowPitch = std::floor(std::min(pitchA, pitchB));
+    request.highPitch = std::ceil(std::max(pitchA, pitchB));
+
+    const auto ids = dawhermes::core::findMidiNotesIntersectingRange(primary->midiNotes, request);
+    EXPECT_EQ(ids.size(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(containsNoteId(ids, primary->midiNotes.at(0).id));
+    EXPECT_TRUE(containsNoteId(ids, primary->midiNotes.at(1).id));
+
+    dawhermes::core::MidiNoteSelectionState selection;
+    selection.selectSingle(primaryId, primary->midiNotes.at(2).id);
+    selection.setSelection(primaryId, ids, std::nullopt);
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(!selection.isSelected(primary->midiNotes.at(2).id));
+
+    auto additiveIds = selection.selectedNoteIds();
+    additiveIds.push_back(primary->midiNotes.at(2).id);
+    selection.setSelection(primaryId, additiveIds, std::nullopt);
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(3));
+
+    dawhermes::core::MidiNoteMarqueeSelectionRequest partial;
+    partial.startBeat = 4.70;
+    partial.endBeat = 4.80;
+    partial.lowPitch = 60.0;
+    partial.highPitch = 61.0;
+    const auto partialIds = dawhermes::core::findMidiNotesIntersectingRange(primary->midiNotes, partial);
+    EXPECT_EQ(partialIds.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(partialIds.front(), primary->midiNotes.at(0).id);
+
+    const auto ghostIds = dawhermes::core::findMidiNotesIntersectingRange(comparison->midiNotes, request);
+    EXPECT_EQ(ghostIds.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(!containsNoteId(ids, comparison->midiNotes.front().id));
+
+    EXPECT_TRUE(!dawhermes::core::isMeaningfulMarqueeDrag(1.0, 1.0));
+    EXPECT_TRUE(dawhermes::core::isMeaningfulMarqueeDrag(8.0, 0.0));
+
+    selection.clearSelection();
+    EXPECT_TRUE(!selection.hasSelection());
+    return true;
+}
+
+bool testMidiNoteCreationDefaultsAndHistory()
+{
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "Editable").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        {
+            makeMidiNote(60, 100, 0.0, 0.25, 2),
+            makeMidiNote(64, 100, 1.0, 0.25, 3),
+            makeMidiNote(67, 100, 2.0, 0.25, 3),
+        }));
+
+    auto* track = project.findTrackById(midiId);
+    EXPECT_TRUE(track != nullptr);
+    const auto initialIds = noteIdsFor(track->midiNotes);
+
+    dawhermes::core::MidiNoteCreationRequest request;
+    request.clickedBeat = 1.13;
+    request.clickedPitch = 61;
+    request.defaultVelocity = 100;
+    request.defaultChannel = dawhermes::core::mostCommonMidiChannel(track->midiNotes);
+    request.gridStepBeats = dawhermes::core::gridStepBeats(16);
+
+    auto note = dawhermes::core::makeCreatedMidiNote(request);
+    note.id = project.allocateMidiNoteId();
+    EXPECT_EQ(note.pitch, 61);
+    EXPECT_TRUE(std::abs(note.startBeat - 1.25) < 0.0001);
+    EXPECT_TRUE(std::abs(note.durationBeats - 0.25) < 0.0001);
+    EXPECT_EQ(note.velocity, 100);
+    EXPECT_EQ(note.channel, 3);
+    EXPECT_TRUE(!containsNoteId(initialIds, note.id));
+
+    dawhermes::core::ProjectHistory history;
+    auto createCommand = std::make_unique<TestCreateMidiNoteCommand>(project, midiId, note);
+    EXPECT_TRUE(createCommand->redo());
+    history.pushExecuted(std::move(createCommand));
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(1));
+
+    track = project.findTrackById(midiId);
+    EXPECT_TRUE(track != nullptr);
+    EXPECT_EQ(track->midiNotes.size(), static_cast<std::size_t>(4));
+    EXPECT_TRUE(containsNoteId(noteIdsFor(track->midiNotes), note.id));
+
+    EXPECT_TRUE(history.undo());
+    track = project.findTrackById(midiId);
+    EXPECT_TRUE(track != nullptr);
+    EXPECT_EQ(track->midiNotes.size(), static_cast<std::size_t>(3));
+    EXPECT_TRUE(!containsNoteId(noteIdsFor(track->midiNotes), note.id));
+
+    EXPECT_TRUE(history.redo());
+    track = project.findTrackById(midiId);
+    EXPECT_TRUE(track != nullptr);
+    EXPECT_EQ(track->midiNotes.size(), static_cast<std::size_t>(4));
+    EXPECT_TRUE(containsNoteId(noteIdsFor(track->midiNotes), note.id));
+
+    const auto emptyId = project.addTrack(TrackType::midi, "Empty").id;
+    auto* emptyTrack = project.findTrackById(emptyId);
+    EXPECT_TRUE(emptyTrack != nullptr);
+    dawhermes::core::MidiNoteCreationRequest emptyRequest;
+    emptyRequest.clickedBeat = -2.0;
+    emptyRequest.clickedPitch = 200;
+    emptyRequest.defaultChannel = dawhermes::core::mostCommonMidiChannel(emptyTrack->midiNotes);
+    emptyRequest.gridStepBeats = 0.01;
+    const auto emptyNote = dawhermes::core::makeCreatedMidiNote(emptyRequest);
+    EXPECT_EQ(emptyNote.channel, 1);
+    EXPECT_EQ(emptyNote.pitch, 127);
+    EXPECT_TRUE(std::abs(emptyNote.startBeat - 0.0) < 0.0001);
+    EXPECT_TRUE(std::abs(emptyNote.durationBeats - dawhermes::core::kMinimumMidiNoteDurationBeats) < 0.0001);
+    return true;
+}
+
+bool testMidiNoteDeletionHistoryAndSelectionCleanup()
+{
+    ProjectModel project;
+    const auto primaryId = project.addTrack(TrackType::midi, "Primary").id;
+    const auto comparisonId = project.addTrack(TrackType::midi, "Comparison").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        primaryId,
+        {
+            makeMidiNote(60, 100, 0.0, 0.5, 1),
+            makeMidiNote(64, 100, 1.0, 0.5, 1),
+            makeMidiNote(67, 100, 2.0, 0.5, 1),
+        }));
+    EXPECT_TRUE(project.replaceMidiNotes(comparisonId, { makeMidiNote(72, 100, 0.0, 0.5, 1) }));
+
+    auto* primary = project.findTrackById(primaryId);
+    const auto* comparison = project.findTrackById(comparisonId);
+    EXPECT_TRUE(primary != nullptr);
+    EXPECT_TRUE(comparison != nullptr);
+    const auto selectedId = primary->midiNotes.at(1).id;
+    const auto retainedId = primary->midiNotes.at(0).id;
+    const auto comparisonIdNote = comparison->midiNotes.front().id;
+
+    dawhermes::core::MidiNoteSelectionState selection;
+    selection.selectSingle(primaryId, selectedId);
+
+    std::vector<MidiNote> deletedNotes;
+    for (const auto& note : primary->midiNotes) {
+        if (selection.isSelected(note.id)) {
+            deletedNotes.push_back(note);
+        }
+    }
+
+    dawhermes::core::ProjectHistory history;
+    auto deleteCommand = std::make_unique<TestDeleteMidiNotesCommand>(
+        project,
+        primaryId,
+        selection.selectedNoteIds(),
+        deletedNotes);
+    EXPECT_TRUE(deleteCommand->redo());
+    history.pushExecuted(std::move(deleteCommand));
+    selection.removeDeletedNotes(project.findTrackById(primaryId)->midiNotes);
+
+    primary = project.findTrackById(primaryId);
+    comparison = project.findTrackById(comparisonId);
+    EXPECT_TRUE(primary != nullptr);
+    EXPECT_TRUE(comparison != nullptr);
+    EXPECT_EQ(primary->midiNotes.size(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(!containsNoteId(noteIdsFor(primary->midiNotes), selectedId));
+    EXPECT_TRUE(containsNoteId(noteIdsFor(primary->midiNotes), retainedId));
+    EXPECT_TRUE(containsNoteId(noteIdsFor(comparison->midiNotes), comparisonIdNote));
+    EXPECT_TRUE(!selection.hasSelection());
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(1));
+
+    EXPECT_TRUE(history.undo());
+    primary = project.findTrackById(primaryId);
+    EXPECT_TRUE(primary != nullptr);
+    EXPECT_EQ(primary->midiNotes.size(), static_cast<std::size_t>(3));
+    EXPECT_TRUE(containsNoteId(noteIdsFor(primary->midiNotes), selectedId));
+
+    EXPECT_TRUE(history.redo());
+    primary = project.findTrackById(primaryId);
+    EXPECT_TRUE(primary != nullptr);
+    EXPECT_EQ(primary->midiNotes.size(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(!containsNoteId(noteIdsFor(primary->midiNotes), selectedId));
+
+    std::vector<MidiNote> scratch = primary->midiNotes;
+    EXPECT_EQ(dawhermes::core::deleteSelectedNotes(scratch, {}), static_cast<std::size_t>(0));
+    EXPECT_EQ(scratch.size(), primary->midiNotes.size());
+    return true;
+}
+
+bool testMidiEditingRefreshRegressions()
+{
+    ProjectModel project;
+    const auto audioId = project.addTrack(TrackType::audio, "Audio").id;
+    const auto primaryId = project.addTrack(TrackType::midi, "Primary").id;
+    const auto candidateId = project.addTrack(TrackType::midi, "Candidate").id;
+    EXPECT_TRUE(project.setAudioSourcePath(audioId, "C:/tmp/source.wav"));
+    EXPECT_TRUE(project.replaceMidiNotes(primaryId, { makeMidiNote(60, 100, 0.0, 0.5, 1) }));
+    EXPECT_TRUE(project.replaceMidiNotes(candidateId, { makeMidiNote(60, 100, 0.0, 0.5, 1) }));
+
+    auto* primary = project.findTrackById(primaryId);
+    const auto* candidate = project.findTrackById(candidateId);
+    const auto* audio = project.findTrackById(audioId);
+    EXPECT_TRUE(primary != nullptr);
+    EXPECT_TRUE(candidate != nullptr);
+    EXPECT_TRUE(audio != nullptr);
+    const auto sourcePath = audio->audioSourcePath;
+    const auto originalComparison = dawhermes::core::summarizeMidiComparison(
+        dawhermes::core::compareMidiNotes(primary->midiNotes, candidate->midiNotes));
+    EXPECT_EQ(originalComparison.unchangedCount, static_cast<std::size_t>(1));
+
+    MidiNote inserted = makeMidiNote(67, 100, 3.0, 0.5, 1);
+    inserted.id = project.allocateMidiNoteId();
+    primary->midiNotes.push_back(inserted);
+    dawhermes::core::sortMidiNotesByStart(primary->midiNotes);
+
+    const auto updatedComparison = dawhermes::core::summarizeMidiComparison(
+        dawhermes::core::compareMidiNotes(primary->midiNotes, candidate->midiNotes));
+    EXPECT_EQ(updatedComparison.unchangedCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(updatedComparison.removedCount, static_cast<std::size_t>(1));
+
+    dawhermes::core::TimelineViewportState horizontal;
+    horizontal.startBeat = 2.0;
+    horizontal.visibleBeats = 4.0;
+    dawhermes::core::PitchViewportState vertical;
+    vertical.highestVisiblePitch = 80.0;
+    vertical.visiblePitchSpan = 24.0;
+    const auto geometry = dawhermes::core::computeVisibleNoteGeometry(
+        primary->midiNotes,
+        800,
+        240,
+        horizontal,
+        vertical,
+        64);
+    EXPECT_EQ(geometry.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(primary->midiNotes.size(), static_cast<std::size_t>(2));
+
+    const auto lanes = dawhermes::core::buildTimelineLaneGeometry(project.tracks(), 30);
+    EXPECT_EQ(lanes.size(), static_cast<std::size_t>(3));
+
+    audio = project.findTrackById(audioId);
+    EXPECT_TRUE(audio != nullptr);
+    EXPECT_EQ(audio->audioSourcePath, sourcePath);
+    EXPECT_TRUE(!containsNoteId(noteIdsFor(candidate->midiNotes), inserted.id));
+    return true;
+}
+
+bool testMidiNoteMouseMoveSnapClampAndHistory()
+{
+    ProjectModel project;
+    const auto primaryId = project.addTrack(TrackType::midi, "Primary").id;
+    const auto comparisonId = project.addTrack(TrackType::midi, "Comparison").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        primaryId,
+        {
+            makeMidiNote(60, 91, 1.0, 0.5, 2),
+            makeMidiNote(64, 92, 2.0, 0.25, 3),
+            makeMidiNote(67, 93, 3.0, 0.75, 4),
+        }));
+    EXPECT_TRUE(project.replaceMidiNotes(comparisonId, { makeMidiNote(60, 100, 1.0, 0.5, 1) }));
+
+    auto* primary = project.findTrackById(primaryId);
+    const auto* comparison = project.findTrackById(comparisonId);
+    EXPECT_TRUE(primary != nullptr);
+    EXPECT_TRUE(comparison != nullptr);
+    const auto comparisonBefore = comparison->midiNotes;
+    const auto firstId = primary->midiNotes.at(0).id;
+    const auto beforeNotes = primary->midiNotes;
+
+    dawhermes::core::MoveSelectedNotesRequest move;
+    move.selectedNoteIds = { firstId };
+    move.requestedDeltaBeats = 0.37;
+    move.requestedDeltaSemitones = 2;
+    move.gridStepBeats = dawhermes::core::gridStepBeats(16);
+    const auto result = dawhermes::core::moveSelectedNotes(primary->midiNotes, move);
+    EXPECT_TRUE(result.changed);
+    EXPECT_TRUE(std::abs(result.appliedDeltaBeats - 0.25) < 0.0001);
+    EXPECT_EQ(result.appliedDeltaSemitones, 2);
+
+    const auto movedIndex = dawhermes::core::findNoteIndexById(primary->midiNotes, firstId);
+    EXPECT_TRUE(movedIndex.has_value());
+    const auto& moved = primary->midiNotes.at(movedIndex.value());
+    EXPECT_TRUE(std::abs(moved.startBeat - 1.25) < 0.0001);
+    EXPECT_EQ(moved.pitch, 62);
+    EXPECT_TRUE(std::abs(moved.durationBeats - 0.5) < 0.0001);
+    EXPECT_EQ(moved.velocity, 91);
+    EXPECT_EQ(moved.channel, 2);
+    EXPECT_EQ(project.findTrackById(comparisonId)->midiNotes, comparisonBefore);
+
+    dawhermes::core::ProjectHistory history;
+    history.pushExecuted(std::make_unique<TestReplaceMidiNotesCommand>(
+        project,
+        primaryId,
+        "Move MIDI Notes",
+        beforeNotes,
+        primary->midiNotes));
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(history.undo());
+    EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, beforeNotes);
+    EXPECT_TRUE(history.redo());
+    EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, primary->midiNotes);
+
+    dawhermes::core::ProjectHistory canceledHistory;
+    auto canceledScratch = beforeNotes;
+    EXPECT_TRUE(!dawhermes::core::moveSelectedNotes(canceledScratch, dawhermes::core::MoveSelectedNotesRequest { { firstId }, 0.0, 0 }).changed);
+    EXPECT_EQ(canceledHistory.size(), static_cast<std::size_t>(0));
+    return true;
+}
+
+bool testMidiNoteMultiMoveOffsetsClampsAndClickedSelection()
+{
+    ProjectModel project;
+    const auto primaryId = project.addTrack(TrackType::midi, "Primary").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        primaryId,
+        {
+            makeMidiNote(1, 100, 0.1, 0.5, 1),
+            makeMidiNote(7, 100, 1.1, 0.5, 1),
+            makeMidiNote(80, 100, 3.0, 0.5, 1),
+        }));
+
+    auto* primary = project.findTrackById(primaryId);
+    EXPECT_TRUE(primary != nullptr);
+    const auto lowId = primary->midiNotes.at(0).id;
+    const auto highId = primary->midiNotes.at(1).id;
+    const auto unselectedId = primary->midiNotes.at(2).id;
+
+    dawhermes::core::MoveSelectedNotesRequest clampLow;
+    clampLow.selectedNoteIds = { lowId, highId };
+    clampLow.requestedDeltaBeats = -5.0;
+    clampLow.requestedDeltaSemitones = -5;
+    clampLow.gridStepBeats = dawhermes::core::gridStepBeats(16);
+    const auto clampLowResult = dawhermes::core::moveSelectedNotes(primary->midiNotes, clampLow);
+    EXPECT_TRUE(clampLowResult.changed);
+    EXPECT_TRUE(std::abs(clampLowResult.appliedDeltaBeats + 0.1) < 0.0001);
+    EXPECT_EQ(clampLowResult.appliedDeltaSemitones, -1);
+
+    const auto lowIndex = dawhermes::core::findNoteIndexById(primary->midiNotes, lowId).value();
+    const auto highIndex = dawhermes::core::findNoteIndexById(primary->midiNotes, highId).value();
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(lowIndex).startBeat - 0.0) < 0.0001);
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(highIndex).startBeat - 1.0) < 0.0001);
+    EXPECT_EQ(primary->midiNotes.at(lowIndex).pitch, 0);
+    EXPECT_EQ(primary->midiNotes.at(highIndex).pitch, 6);
+    EXPECT_TRUE(std::abs((primary->midiNotes.at(highIndex).startBeat - primary->midiNotes.at(lowIndex).startBeat) - 1.0) < 0.0001);
+    EXPECT_EQ(primary->midiNotes.at(highIndex).pitch - primary->midiNotes.at(lowIndex).pitch, 6);
+
+    primary->midiNotes = {
+        MidiNote { 120, 100, 0.0, 0.5, 1, lowId },
+        MidiNote { 126, 100, 1.0, 0.5, 1, highId },
+        MidiNote { 80, 100, 3.0, 0.5, 1, unselectedId },
+    };
+    dawhermes::core::MoveSelectedNotesRequest clampHigh;
+    clampHigh.selectedNoteIds = { lowId, highId };
+    clampHigh.requestedDeltaSemitones = 20;
+    const auto clampHighResult = dawhermes::core::moveSelectedNotes(primary->midiNotes, clampHigh);
+    EXPECT_TRUE(clampHighResult.changed);
+    EXPECT_EQ(clampHighResult.appliedDeltaSemitones, 1);
+
+    dawhermes::core::MidiNoteSelectionState selection;
+    selection.setSelection(primaryId, { lowId, highId }, std::nullopt);
+    selection.selectSingle(primaryId, unselectedId);
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(selection.isSelected(unselectedId));
+    EXPECT_TRUE(!selection.isSelected(lowId));
+    return true;
+}
+
+bool testMidiNoteMoveSnapDenominators()
+{
+    const std::vector<std::pair<int, double>> cases {
+        { 4, 0.0 },
+        { 8, 0.5 },
+        { 16, 0.5 },
+        { 32, 0.5 },
+    };
+
+    for (const auto& [denominator, expectedStart] : cases) {
+        std::vector<MidiNote> notes { MidiNote { 60, 100, 0.0, 0.25, 1, 42 } };
+        dawhermes::core::MoveSelectedNotesRequest request;
+        request.selectedNoteIds = { 42 };
+        request.requestedDeltaBeats = 0.49;
+        request.gridStepBeats = dawhermes::core::gridStepBeats(denominator);
+        const auto result = dawhermes::core::moveSelectedNotes(notes, request);
+        EXPECT_TRUE(result.changed || expectedStart == 0.0);
+        EXPECT_TRUE(std::abs(notes.front().startBeat - expectedStart) < 0.0001);
+    }
+
+    return true;
+}
+
+bool testMidiNoteResizeSnapClampAndHistory()
+{
+    ProjectModel project;
+    const auto primaryId = project.addTrack(TrackType::midi, "Primary").id;
+    const auto comparisonId = project.addTrack(TrackType::midi, "Comparison").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        primaryId,
+        {
+            makeMidiNote(60, 100, 1.0, 1.0, 1),
+            makeMidiNote(64, 100, 2.0, 0.5, 1),
+            makeMidiNote(67, 100, 4.0, 0.25, 1),
+        }));
+    EXPECT_TRUE(project.replaceMidiNotes(comparisonId, { makeMidiNote(60, 100, 1.0, 1.0, 1) }));
+
+    auto* primary = project.findTrackById(primaryId);
+    EXPECT_TRUE(primary != nullptr);
+    const auto comparisonBefore = project.findTrackById(comparisonId)->midiNotes;
+    const auto anchorId = primary->midiNotes.at(0).id;
+    const auto groupId = primary->midiNotes.at(1).id;
+    const auto beforeNotes = primary->midiNotes;
+
+    EXPECT_TRUE(dawhermes::core::isMidiNoteRightEdgeHit(10.0, 100.0, 108.0));
+    EXPECT_TRUE(!dawhermes::core::isMidiNoteRightEdgeHit(10.0, 100.0, 50.0));
+
+    dawhermes::core::ResizeSelectedNotesRequest resize;
+    resize.selectedNoteIds = { anchorId, groupId };
+    resize.anchorNoteId = anchorId;
+    resize.requestedAnchorEndBeat = 2.37;
+    resize.gridStepBeats = dawhermes::core::gridStepBeats(16);
+    const auto result = dawhermes::core::resizeSelectedNotes(primary->midiNotes, resize);
+    EXPECT_TRUE(result.changed);
+    EXPECT_TRUE(std::abs(result.appliedDurationDeltaBeats - 0.25) < 0.0001);
+
+    const auto anchorIndex = dawhermes::core::findNoteIndexById(primary->midiNotes, anchorId).value();
+    const auto groupIndex = dawhermes::core::findNoteIndexById(primary->midiNotes, groupId).value();
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(anchorIndex).startBeat - 1.0) < 0.0001);
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(anchorIndex).durationBeats - 1.25) < 0.0001);
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(groupIndex).durationBeats - 0.75) < 0.0001);
+    EXPECT_EQ(primary->midiNotes.at(anchorIndex).pitch, 60);
+    EXPECT_EQ(primary->midiNotes.at(anchorIndex).velocity, 100);
+    EXPECT_EQ(project.findTrackById(comparisonId)->midiNotes, comparisonBefore);
+
+    dawhermes::core::ProjectHistory history;
+    history.pushExecuted(std::make_unique<TestReplaceMidiNotesCommand>(
+        project,
+        primaryId,
+        "Resize MIDI Notes",
+        beforeNotes,
+        primary->midiNotes));
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(history.undo());
+    EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, beforeNotes);
+    EXPECT_TRUE(history.redo());
+    EXPECT_TRUE(std::abs(project.findTrackById(primaryId)->midiNotes.at(anchorIndex).durationBeats - 1.25) < 0.0001);
+
+    auto scratch = beforeNotes;
+    dawhermes::core::ResizeSelectedNotesRequest minResize;
+    minResize.selectedNoteIds = { anchorId };
+    minResize.anchorNoteId = anchorId;
+    minResize.requestedAnchorEndBeat = 0.0;
+    minResize.gridStepBeats = dawhermes::core::gridStepBeats(32);
+    const auto minResult = dawhermes::core::resizeSelectedNotes(scratch, minResize);
+    EXPECT_TRUE(minResult.changed);
+    EXPECT_TRUE(std::abs(scratch.at(0).startBeat - 1.0) < 0.0001);
+    EXPECT_TRUE(std::abs(scratch.at(0).durationBeats - dawhermes::core::kMinimumMidiNoteDurationBeats) < 0.0001);
+
+    dawhermes::core::ProjectHistory canceledHistory;
+    auto noOpScratch = beforeNotes;
+    dawhermes::core::ResizeSelectedNotesRequest noOp;
+    noOp.selectedNoteIds = { anchorId };
+    noOp.anchorNoteId = anchorId;
+    noOp.requestedAnchorEndBeat = 2.0;
+    EXPECT_TRUE(!dawhermes::core::resizeSelectedNotes(noOpScratch, noOp).changed);
+    EXPECT_EQ(canceledHistory.size(), static_cast<std::size_t>(0));
+    return true;
+}
+
+bool testMidiNoteKeyboardNudgeBehaviour()
+{
+    ProjectModel project;
+    const auto primaryId = project.addTrack(TrackType::midi, "Primary").id;
+    const auto comparisonId = project.addTrack(TrackType::midi, "Comparison").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        primaryId,
+        {
+            makeMidiNote(60, 100, 1.0, 0.5, 1),
+            makeMidiNote(72, 100, 2.0, 0.5, 1),
+        }));
+    EXPECT_TRUE(project.replaceMidiNotes(comparisonId, { makeMidiNote(84, 100, 1.0, 0.5, 1) }));
+
+    auto* primary = project.findTrackById(primaryId);
+    EXPECT_TRUE(primary != nullptr);
+    const auto comparisonBefore = project.findTrackById(comparisonId)->midiNotes;
+    const auto firstId = primary->midiNotes.at(0).id;
+    const auto secondId = primary->midiNotes.at(1).id;
+
+    dawhermes::core::ProjectHistory history;
+    const auto pushMove = [&](double deltaBeats, int deltaSemitones, double gridStep) {
+        const auto before = primary->midiNotes;
+        dawhermes::core::MoveSelectedNotesRequest request;
+        request.selectedNoteIds = { firstId, secondId };
+        request.requestedDeltaBeats = deltaBeats;
+        request.requestedDeltaSemitones = deltaSemitones;
+        request.gridStepBeats = gridStep;
+        const auto result = dawhermes::core::moveSelectedNotes(primary->midiNotes, request);
+        if (result.changed) {
+            history.pushExecuted(std::make_unique<TestReplaceMidiNotesCommand>(
+                project,
+                primaryId,
+                "Move MIDI Notes",
+                before,
+                primary->midiNotes));
+        }
+    };
+
+    pushMove(dawhermes::core::gridStepBeats(8), 0, dawhermes::core::gridStepBeats(8));
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(0).startBeat - 1.5) < 0.0001);
+    pushMove(-dawhermes::core::gridStepBeats(8), 0, dawhermes::core::gridStepBeats(8));
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(0).startBeat - 1.0) < 0.0001);
+    pushMove(0.0, 1, dawhermes::core::gridStepBeats(16));
+    EXPECT_EQ(primary->midiNotes.at(0).pitch, 61);
+    pushMove(0.0, -1, dawhermes::core::gridStepBeats(16));
+    EXPECT_EQ(primary->midiNotes.at(0).pitch, 60);
+    pushMove(0.0, 12, dawhermes::core::gridStepBeats(16));
+    EXPECT_EQ(primary->midiNotes.at(0).pitch, 72);
+
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(5));
+    EXPECT_EQ(project.findTrackById(comparisonId)->midiNotes, comparisonBefore);
+
+    dawhermes::core::MoveSelectedNotesRequest clamp;
+    clamp.selectedNoteIds = { firstId, secondId };
+    clamp.requestedDeltaBeats = -100.0;
+    clamp.requestedDeltaSemitones = 100;
+    const auto clampResult = dawhermes::core::moveSelectedNotes(primary->midiNotes, clamp);
+    EXPECT_TRUE(clampResult.changed);
+    EXPECT_TRUE(primary->midiNotes.at(0).startBeat >= 0.0);
+    EXPECT_TRUE(primary->midiNotes.at(1).pitch <= 127);
+
+    std::vector<MidiNote> noSelectionNotes = primary->midiNotes;
+    dawhermes::core::MoveSelectedNotesRequest none;
+    none.requestedDeltaBeats = 1.0;
+    none.requestedDeltaSemitones = 1;
+    EXPECT_TRUE(!dawhermes::core::moveSelectedNotes(noSelectionNotes, none).changed);
+    EXPECT_EQ(noSelectionNotes, primary->midiNotes);
+    return true;
+}
+
+bool testMidiSnapControlEditingGridBehaviour()
+{
+    dawhermes::core::MidiNoteCreationRequest createSnapped;
+    createSnapped.clickedBeat = 1.13;
+    createSnapped.clickedPitch = 60;
+    createSnapped.snapEnabled = true;
+    createSnapped.gridStepBeats = dawhermes::core::gridStepBeats(16);
+    const auto snappedNote = dawhermes::core::makeCreatedMidiNote(createSnapped);
+    EXPECT_TRUE(std::abs(snappedNote.startBeat - 1.25) < 0.0001);
+
+    auto unsnappedCreate = createSnapped;
+    unsnappedCreate.snapEnabled = false;
+    const auto unsnappedNote = dawhermes::core::makeCreatedMidiNote(unsnappedCreate);
+    EXPECT_TRUE(std::abs(unsnappedNote.startBeat - 1.13) < 0.0001);
+
+    std::vector<MidiNote> snappedMoveNotes { MidiNote { 60, 100, 1.0, 0.5, 1, 11 } };
+    dawhermes::core::MoveSelectedNotesRequest snappedMove;
+    snappedMove.selectedNoteIds = { 11 };
+    snappedMove.requestedDeltaBeats = 0.37;
+    snappedMove.snapEnabled = true;
+    snappedMove.gridStepBeats = dawhermes::core::gridStepBeats(16);
+    const auto snappedMoveResult = dawhermes::core::moveSelectedNotes(snappedMoveNotes, snappedMove);
+    EXPECT_TRUE(snappedMoveResult.changed);
+    EXPECT_TRUE(std::abs(snappedMoveNotes.front().startBeat - 1.25) < 0.0001);
+
+    std::vector<MidiNote> unsnappedMoveNotes { MidiNote { 60, 100, 1.0, 0.5, 1, 11 } };
+    auto unsnappedMove = snappedMove;
+    unsnappedMove.snapEnabled = false;
+    const auto unsnappedMoveResult = dawhermes::core::moveSelectedNotes(unsnappedMoveNotes, unsnappedMove);
+    EXPECT_TRUE(unsnappedMoveResult.changed);
+    EXPECT_TRUE(std::abs(unsnappedMoveNotes.front().startBeat - 1.37) < 0.0001);
+
+    std::vector<MidiNote> snappedResizeNotes { MidiNote { 60, 100, 1.0, 1.0, 1, 12 } };
+    dawhermes::core::ResizeSelectedNotesRequest snappedResize;
+    snappedResize.selectedNoteIds = { 12 };
+    snappedResize.anchorNoteId = 12;
+    snappedResize.requestedAnchorEndBeat = 2.37;
+    snappedResize.snapEnabled = true;
+    snappedResize.gridStepBeats = dawhermes::core::gridStepBeats(16);
+    const auto snappedResizeResult = dawhermes::core::resizeSelectedNotes(snappedResizeNotes, snappedResize);
+    EXPECT_TRUE(snappedResizeResult.changed);
+    EXPECT_TRUE(std::abs(snappedResizeNotes.front().durationBeats - 1.25) < 0.0001);
+
+    std::vector<MidiNote> unsnappedResizeNotes { MidiNote { 60, 100, 1.0, 1.0, 1, 12 } };
+    auto unsnappedResize = snappedResize;
+    unsnappedResize.snapEnabled = false;
+    const auto unsnappedResizeResult = dawhermes::core::resizeSelectedNotes(unsnappedResizeNotes, unsnappedResize);
+    EXPECT_TRUE(unsnappedResizeResult.changed);
+    EXPECT_TRUE(std::abs(unsnappedResizeNotes.front().durationBeats - 1.37) < 0.0001);
+
+    std::vector<MidiNote> keyboardNudgeNotes { MidiNote { 60, 100, 1.0, 0.5, 1, 13 } };
+    dawhermes::core::MoveSelectedNotesRequest keyboardNudge;
+    keyboardNudge.selectedNoteIds = { 13 };
+    keyboardNudge.requestedDeltaBeats = dawhermes::core::gridStepBeats(8);
+    keyboardNudge.snapEnabled = true;
+    keyboardNudge.gridStepBeats = dawhermes::core::gridStepBeats(8);
+    EXPECT_TRUE(dawhermes::core::moveSelectedNotes(keyboardNudgeNotes, keyboardNudge).changed);
+    EXPECT_TRUE(std::abs(keyboardNudgeNotes.front().startBeat - 1.5) < 0.0001);
+
+    const auto gridBefore = dawhermes::core::buildGridBeatPositions(0.0, 1.0, 16);
+    bool snapEnabled = true;
+    dawhermes::core::ProjectHistory history;
+    snapEnabled = !snapEnabled;
+    const auto gridAfter = dawhermes::core::buildGridBeatPositions(0.0, 1.0, 16);
+    EXPECT_TRUE(!snapEnabled);
+    EXPECT_EQ(gridBefore, gridAfter);
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(0));
+    return true;
+}
+
+bool testMidiVelocityEditingBehaviour()
+{
+    ProjectModel project;
+    const auto primaryId = project.addTrack(TrackType::midi, "Primary").id;
+    const auto comparisonId = project.addTrack(TrackType::midi, "Comparison").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        primaryId,
+        {
+            makeMidiNote(60, 40, 0.0, 0.5, 1),
+            makeMidiNote(64, 50, 1.0, 0.5, 2),
+            makeMidiNote(67, 60, 2.0, 0.5, 3),
+        }));
+    EXPECT_TRUE(project.replaceMidiNotes(comparisonId, { makeMidiNote(72, 99, 0.0, 0.5, 4) }));
+
+    auto* primary = project.findTrackById(primaryId);
+    const auto* comparison = project.findTrackById(comparisonId);
+    EXPECT_TRUE(primary != nullptr);
+    EXPECT_TRUE(comparison != nullptr);
+    const auto comparisonBefore = comparison->midiNotes;
+    const auto firstId = primary->midiNotes.at(0).id;
+    const auto secondId = primary->midiNotes.at(1).id;
+    const auto thirdId = primary->midiNotes.at(2).id;
+    const auto beforeNotes = primary->midiNotes;
+
+    dawhermes::core::MidiNoteSelectionState selection;
+    EXPECT_EQ(dawhermes::core::applyVelocityToSelectedNotes(primary->midiNotes, selection.selectedNoteIds(), 88), static_cast<std::size_t>(0));
+    EXPECT_EQ(primary->midiNotes, beforeNotes);
+
+    selection.setSelection(primaryId, { firstId, secondId }, firstId);
+    EXPECT_EQ(selection.primarySelectedNoteId().value(), firstId);
+    EXPECT_EQ(primary->midiNotes.at(dawhermes::core::findNoteIndexById(primary->midiNotes, firstId).value()).velocity, 40);
+
+    const auto changedCount = dawhermes::core::applyVelocityToSelectedNotes(
+        primary->midiNotes,
+        selection.selectedNoteIds(),
+        200);
+    EXPECT_EQ(changedCount, static_cast<std::size_t>(2));
+    EXPECT_EQ(primary->midiNotes.at(dawhermes::core::findNoteIndexById(primary->midiNotes, firstId).value()).velocity, 127);
+    EXPECT_EQ(primary->midiNotes.at(dawhermes::core::findNoteIndexById(primary->midiNotes, secondId).value()).velocity, 127);
+    EXPECT_EQ(primary->midiNotes.at(dawhermes::core::findNoteIndexById(primary->midiNotes, thirdId).value()).velocity, 60);
+    EXPECT_EQ(project.findTrackById(comparisonId)->midiNotes, comparisonBefore);
+
+    const auto afterNotes = primary->midiNotes;
+    dawhermes::core::ProjectHistory history;
+    history.pushExecuted(std::make_unique<TestReplaceMidiNotesCommand>(
+        project,
+        primaryId,
+        "Set MIDI Note Velocity",
+        beforeNotes,
+        afterNotes));
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(history.undo());
+    EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, beforeNotes);
+    EXPECT_TRUE(history.redo());
+    EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, afterNotes);
+
+    EXPECT_EQ(dawhermes::core::applyVelocityToSelectedNotes(primary->midiNotes, { thirdId }, 0), static_cast<std::size_t>(1));
+    EXPECT_EQ(primary->midiNotes.at(dawhermes::core::findNoteIndexById(primary->midiNotes, thirdId).value()).velocity, 1);
+
+    std::vector<MidiNote> scratch = primary->midiNotes;
+    EXPECT_EQ(dawhermes::core::deleteSelectedNotes(scratch, selection.selectedNoteIds()), static_cast<std::size_t>(2));
+    selection.removeDeletedNotes(scratch);
+    EXPECT_TRUE(!selection.hasSelection());
+    return true;
+}
+
+bool testMidiQuantizeSelectedNotesBehaviour()
+{
+    ProjectModel project;
+    const auto primaryId = project.addTrack(TrackType::midi, "Primary").id;
+    const auto comparisonId = project.addTrack(TrackType::midi, "Comparison").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        primaryId,
+        {
+            makeMidiNote(60, 80, 0.24, 0.5, 1),
+            makeMidiNote(64, 90, 1.26, 0.75, 2),
+            makeMidiNote(67, 100, 2.00, 0.25, 3),
+        }));
+    EXPECT_TRUE(project.replaceMidiNotes(comparisonId, { makeMidiNote(60, 80, 0.24, 0.5, 1) }));
+
+    auto* primary = project.findTrackById(primaryId);
+    EXPECT_TRUE(primary != nullptr);
+    const auto comparisonBefore = project.findTrackById(comparisonId)->midiNotes;
+    const auto firstId = primary->midiNotes.at(0).id;
+    const auto secondId = primary->midiNotes.at(1).id;
+    const auto thirdId = primary->midiNotes.at(2).id;
+    const auto beforeNotes = primary->midiNotes;
+
+    std::vector<MidiNote> noSelection = primary->midiNotes;
+    dawhermes::core::ProjectHistory noSelectionHistory;
+    EXPECT_EQ(dawhermes::core::quantizeSelectedNoteStarts(noSelection, {}, dawhermes::core::gridStepBeats(16)), static_cast<std::size_t>(0));
+    EXPECT_EQ(noSelection, primary->midiNotes);
+    EXPECT_EQ(noSelectionHistory.size(), static_cast<std::size_t>(0));
+
+    const std::vector<std::pair<int, double>> denominatorCases {
+        { 4, 0.0 },
+        { 8, 0.0 },
+        { 16, 0.25 },
+        { 32, 0.25 },
+    };
+    for (const auto& [denominator, expectedStart] : denominatorCases) {
+        std::vector<MidiNote> notes { MidiNote { 60, 80, 0.24, 0.5, 1, 77 } };
+        const auto changed = dawhermes::core::quantizeSelectedNoteStarts(
+            notes,
+            { 77 },
+            dawhermes::core::gridStepBeats(denominator));
+        EXPECT_EQ(changed, static_cast<std::size_t>(1));
+        EXPECT_TRUE(std::abs(notes.front().startBeat - expectedStart) < 0.0001);
+    }
+
+    const auto changedCount = dawhermes::core::quantizeSelectedNoteStarts(
+        primary->midiNotes,
+        { firstId, secondId, thirdId },
+        dawhermes::core::gridStepBeats(16));
+    EXPECT_EQ(changedCount, static_cast<std::size_t>(2));
+    const auto firstIndex = dawhermes::core::findNoteIndexById(primary->midiNotes, firstId).value();
+    const auto secondIndex = dawhermes::core::findNoteIndexById(primary->midiNotes, secondId).value();
+    const auto thirdIndex = dawhermes::core::findNoteIndexById(primary->midiNotes, thirdId).value();
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(firstIndex).startBeat - 0.25) < 0.0001);
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(secondIndex).startBeat - 1.25) < 0.0001);
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(thirdIndex).startBeat - 2.0) < 0.0001);
+    EXPECT_TRUE(std::abs(primary->midiNotes.at(firstIndex).durationBeats - 0.5) < 0.0001);
+    EXPECT_EQ(primary->midiNotes.at(firstIndex).pitch, 60);
+    EXPECT_EQ(primary->midiNotes.at(secondIndex).velocity, 90);
+    EXPECT_EQ(primary->midiNotes.at(secondIndex).channel, 2);
+    EXPECT_EQ(project.findTrackById(comparisonId)->midiNotes, comparisonBefore);
+
+    const auto afterNotes = primary->midiNotes;
+    dawhermes::core::ProjectHistory history;
+    history.pushExecuted(std::make_unique<TestReplaceMidiNotesCommand>(
+        project,
+        primaryId,
+        "Quantize MIDI Notes",
+        beforeNotes,
+        afterNotes));
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(history.undo());
+    EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, beforeNotes);
+    EXPECT_TRUE(history.redo());
+    EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, afterNotes);
+
+    EXPECT_EQ(dawhermes::core::quantizeSelectedNoteStarts(primary->midiNotes, { firstId, secondId }, dawhermes::core::gridStepBeats(16)), static_cast<std::size_t>(0));
+    return true;
+}
+
+bool testMidiTrackExporterBasicsAndRoundTrip()
+{
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "Bass Edited").id;
+    const auto audioId = project.addTrack(TrackType::audio, "Audio").id;
+    const auto groupId = project.addTrack(TrackType::group, "Group").id;
+    const auto emptyMidiId = project.addTrack(TrackType::midi, "Empty").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        {
+            MidiNote { 60, 91, 1.25, 0.50, 2, 987654321 },
+            MidiNote { 64, 73, 2.00, 0.25, 3, 987654322 },
+        }));
+
+    const auto* midiTrack = project.findTrackById(midiId);
+    const auto* audioTrack = project.findTrackById(audioId);
+    const auto* groupTrack = project.findTrackById(groupId);
+    const auto* emptyTrack = project.findTrackById(emptyMidiId);
+    EXPECT_TRUE(midiTrack != nullptr);
+    EXPECT_TRUE(audioTrack != nullptr);
+    EXPECT_TRUE(groupTrack != nullptr);
+    EXPECT_TRUE(emptyTrack != nullptr);
+    EXPECT_TRUE(dawhermes::midi::canExportMidiTrack(*midiTrack));
+    EXPECT_TRUE(!dawhermes::midi::canExportMidiTrack(*audioTrack));
+    EXPECT_TRUE(!dawhermes::midi::canExportMidiTrack(*groupTrack));
+    EXPECT_TRUE(!dawhermes::midi::canExportMidiTrack(*emptyTrack));
+    EXPECT_TRUE(!dawhermes::midi::exportMidiTrackToFile(*emptyTrack, createTempDirectory("empty-export") / "empty.mid").ok);
+
+    const auto tempDir = createTempDirectory("midi-export-basics");
+    const auto outputPath = tempDir / "bass-edited.mid";
+    {
+        std::ofstream existingOutput(outputPath, std::ios::binary | std::ios::trunc);
+        existingOutput << std::string(65536, 'x');
+    }
+    const auto result = dawhermes::midi::exportMidiTrackToFile(*midiTrack, outputPath);
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.exportedNoteCount, static_cast<std::size_t>(2));
+    EXPECT_TRUE(std::filesystem::exists(outputPath));
+    EXPECT_TRUE(std::filesystem::file_size(outputPath) < static_cast<std::uintmax_t>(65536));
+
+    std::string parseError;
+    const auto document = dawhermes::ui::parseMidiImportDocument(outputPath, parseError);
+    EXPECT_TRUE(document.has_value());
+    EXPECT_TRUE(parseError.empty());
+    EXPECT_EQ(document->noteBearingTracks.size(), static_cast<std::size_t>(1));
+    const auto& candidate = document->noteBearingTracks.front();
+    EXPECT_EQ(candidate.sourceTrackName, std::string("Bass Edited"));
+    EXPECT_EQ(candidate.notes.size(), static_cast<std::size_t>(2));
+
+    const auto* first = findNoteByPitch(candidate.notes, 60);
+    const auto* second = findNoteByPitch(candidate.notes, 64);
+    EXPECT_TRUE(first != nullptr);
+    EXPECT_TRUE(second != nullptr);
+    EXPECT_EQ(first->velocity, 91);
+    EXPECT_EQ(first->channel, 2);
+    EXPECT_TRUE(approxEqual(first->startBeat, 1.25));
+    EXPECT_TRUE(approxEqual(first->durationBeats, 0.50));
+    EXPECT_EQ(second->velocity, 73);
+    EXPECT_EQ(second->channel, 3);
+    EXPECT_TRUE(approxEqual(second->startBeat, 2.00));
+    EXPECT_TRUE(approxEqual(second->durationBeats, 0.25));
+    EXPECT_EQ(first->id, static_cast<std::uint64_t>(0));
+    EXPECT_EQ(second->id, static_cast<std::uint64_t>(0));
+    EXPECT_TRUE(readBinaryFile(outputPath).find("987654321") == std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    return true;
+}
+
+bool testMidiTrackExporterTempoSignaturePpqAndOrdering()
+{
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "Metered").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        {
+            MidiNote { 72, 100, 0.0, 1.0, 1, 1 },
+            MidiNote { 60, 90, 1.0, 0.5, 1, 2 },
+            MidiNote { 60, 80, 0.0, 1.0, 1, 3 },
+            MidiNote { -4, 0, -1.0, 0.0, 99, 4 },
+        }));
+
+    dawhermes::core::MidiSourceMetadata metadata;
+    metadata.midiFileType = 1;
+    metadata.ticksPerQuarterNote = 480;
+    metadata.tempoMap = {
+        dawhermes::core::MidiTempoEvent { 0.0, 500000 },
+        dawhermes::core::MidiTempoEvent { 2.0, 600000 },
+    };
+    metadata.timeSignatureMap = {
+        dawhermes::core::MidiTimeSignatureEvent { 0.0, 3, 4 },
+        dawhermes::core::MidiTimeSignatureEvent { 4.0, 5, 8 },
+    };
+    EXPECT_TRUE(project.setMidiSourceMetadata(midiId, metadata));
+
+    const auto* track = project.findTrackById(midiId);
+    EXPECT_TRUE(track != nullptr);
+
+    dawhermes::midi::MidiTrackExportResult createResult;
+    const auto midiFile = dawhermes::midi::createMidiFileForTrack(*track, {}, createResult);
+    EXPECT_TRUE(midiFile.has_value());
+    EXPECT_TRUE(createResult.ok);
+    EXPECT_EQ(createResult.ticksPerQuarterNote, 480);
+    EXPECT_EQ(createResult.midiFileType, 1);
+    EXPECT_EQ(midiFile->getTimeFormat(), static_cast<short>(480));
+    EXPECT_EQ(midiFile->getNumTracks(), 2);
+
+    juce::MidiMessageSequence tempoEvents;
+    midiFile->findAllTempoEvents(tempoEvents);
+    EXPECT_EQ(tempoEvents.getNumEvents(), 2);
+    EXPECT_TRUE(approxEqual(tempoEvents.getEventPointer(1)->message.getTimeStamp(), 960.0));
+
+    juce::MidiMessageSequence timeSignatureEvents;
+    midiFile->findAllTimeSigEvents(timeSignatureEvents);
+    EXPECT_EQ(timeSignatureEvents.getNumEvents(), 2);
+    int numerator = 0;
+    int denominator = 0;
+    timeSignatureEvents.getEventPointer(1)->message.getTimeSignatureInfo(numerator, denominator);
+    EXPECT_EQ(numerator, 5);
+    EXPECT_EQ(denominator, 8);
+
+    const auto* noteTrack = midiFile->getTrack(1);
+    EXPECT_TRUE(noteTrack != nullptr);
+    bool sawNoteOffBeforeNoteOnAtSameTick = false;
+    for (int index = 0; index + 1 < noteTrack->getNumEvents(); ++index) {
+        const auto* current = noteTrack->getEventPointer(index);
+        const auto* next = noteTrack->getEventPointer(index + 1);
+        if (current == nullptr || next == nullptr) {
+            continue;
+        }
+
+        if (approxEqual(current->message.getTimeStamp(), 480.0)
+            && approxEqual(next->message.getTimeStamp(), 480.0)
+            && current->message.isNoteOff()
+            && next->message.isNoteOn()) {
+            sawNoteOffBeforeNoteOnAtSameTick = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(sawNoteOffBeforeNoteOnAtSameTick);
+
+    std::vector<int> zeroTickNoteOnPitches;
+    for (int index = 0; index < noteTrack->getNumEvents(); ++index) {
+        const auto* event = noteTrack->getEventPointer(index);
+        EXPECT_TRUE(event != nullptr);
+        EXPECT_TRUE(event->message.getTimeStamp() >= 0.0);
+        if (approxEqual(event->message.getTimeStamp(), 0.0) && event->message.isNoteOn()) {
+            zeroTickNoteOnPitches.push_back(event->message.getNoteNumber());
+        }
+    }
+
+    dawhermes::midi::MidiTrackExportResult secondCreateResult;
+    const auto secondMidiFile = dawhermes::midi::createMidiFileForTrack(*track, {}, secondCreateResult);
+    EXPECT_TRUE(secondMidiFile.has_value());
+    const auto* secondNoteTrack = secondMidiFile->getTrack(1);
+    EXPECT_TRUE(secondNoteTrack != nullptr);
+    std::vector<int> secondZeroTickNoteOnPitches;
+    for (int index = 0; index < secondNoteTrack->getNumEvents(); ++index) {
+        const auto* event = secondNoteTrack->getEventPointer(index);
+        EXPECT_TRUE(event != nullptr);
+        if (approxEqual(event->message.getTimeStamp(), 0.0) && event->message.isNoteOn()) {
+            secondZeroTickNoteOnPitches.push_back(event->message.getNoteNumber());
+        }
+    }
+    EXPECT_EQ(secondZeroTickNoteOnPitches, zeroTickNoteOnPitches);
+
+    const auto tempDir = createTempDirectory("midi-export-metadata");
+    const auto outputPath = tempDir / "metered.mid";
+    const auto writeResult = dawhermes::midi::exportMidiTrackToFile(*track, outputPath);
+    EXPECT_TRUE(writeResult.ok);
+
+    juce::FileInputStream stream(juce::File(outputPath.string()));
+    EXPECT_TRUE(stream.openedOk());
+    juce::MidiFile readBack;
+    int midiFileType = -1;
+    EXPECT_TRUE(readBack.readFrom(stream, true, &midiFileType));
+    EXPECT_EQ(midiFileType, 1);
+    EXPECT_EQ(readBack.getTimeFormat(), static_cast<short>(480));
+    juce::MidiMessageSequence readBackTempoEvents;
+    readBack.findAllTempoEvents(readBackTempoEvents);
+    EXPECT_EQ(readBackTempoEvents.getNumEvents(), 2);
+    juce::MidiMessageSequence readBackSignatures;
+    readBack.findAllTimeSigEvents(readBackSignatures);
+    EXPECT_EQ(readBackSignatures.getNumEvents(), 2);
+
+    dawhermes::core::Track fallbackTrack;
+    fallbackTrack.type = TrackType::midi;
+    fallbackTrack.name = "Fallback";
+    fallbackTrack.midiNotes = { MidiNote { 60, 100, 0.0, 0.25, 1, 9 } };
+    dawhermes::midi::MidiTrackExportResult fallbackResult;
+    const auto fallbackFile = dawhermes::midi::createMidiFileForTrack(fallbackTrack, {}, fallbackResult);
+    EXPECT_TRUE(fallbackFile.has_value());
+    EXPECT_EQ(fallbackResult.ticksPerQuarterNote, 960);
+    EXPECT_EQ(fallbackResult.midiFileType, 1);
+    juce::MidiMessageSequence fallbackTempos;
+    fallbackFile->findAllTempoEvents(fallbackTempos);
+    EXPECT_EQ(fallbackTempos.getNumEvents(), 1);
+
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    return true;
+}
+
+bool testMidiTrackExporterEditedStateAndRegressions()
+{
+    ProjectModel project;
+    const auto primaryId = project.addTrack(TrackType::midi, "Edited State").id;
+    const auto comparisonId = project.addTrack(TrackType::midi, "Comparison").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        primaryId,
+        {
+            MidiNote { 60, 70, 0.25, 0.50, 1, 1 },
+            MidiNote { 64, 80, 1.00, 0.50, 1, 2 },
+            MidiNote { 67, 90, 2.13, 0.25, 1, 3 },
+        }));
+    EXPECT_TRUE(project.replaceMidiNotes(comparisonId, { MidiNote { 60, 70, 0.25, 0.50, 1, 50 } }));
+
+    auto* primary = project.findTrackById(primaryId);
+    const auto* comparison = project.findTrackById(comparisonId);
+    EXPECT_TRUE(primary != nullptr);
+    EXPECT_TRUE(comparison != nullptr);
+
+    dawhermes::core::MidiSourceMetadata sourceMetadata;
+    sourceMetadata.sourceFileName = "source.mid";
+    sourceMetadata.sourceFilePath = (createTempDirectory("midi-export-source") / "source.mid").string();
+    sourceMetadata.ticksPerQuarterNote = 960;
+    EXPECT_TRUE(project.setMidiSourceMetadata(primaryId, sourceMetadata));
+    {
+        std::ofstream sourceOut(sourceMetadata.sourceFilePath, std::ios::binary | std::ios::trunc);
+        sourceOut << "source-midi-sentinel";
+    }
+    const auto sourceBefore = readBinaryFile(sourceMetadata.sourceFilePath);
+
+    const auto beforeNotes = primary->midiNotes;
+    const auto deletedId = primary->midiNotes.at(1).id;
+    const auto movedId = primary->midiNotes.at(0).id;
+    const auto quantizedId = primary->midiNotes.at(2).id;
+    const auto comparisonBefore = comparison->midiNotes;
+    const auto comparisonSummaryBefore = dawhermes::core::summarizeMidiComparison(
+        dawhermes::core::compareMidiNotes(primary->midiNotes, comparison->midiNotes));
+    const auto timelineGeometryBefore = dawhermes::core::buildTimelineLaneGeometry(project.tracks(), 30);
+
+    auto created = MidiNote { 72, 100, 3.00, 0.25, 2, project.allocateMidiNoteId() };
+    primary->midiNotes.push_back(created);
+    EXPECT_EQ(dawhermes::core::deleteSelectedNotes(primary->midiNotes, { deletedId }), static_cast<std::size_t>(1));
+    dawhermes::core::MoveSelectedNotesRequest move;
+    move.selectedNoteIds = { movedId };
+    move.requestedDeltaBeats = 0.25;
+    move.requestedDeltaSemitones = 2;
+    move.gridStepBeats = dawhermes::core::gridStepBeats(16);
+    EXPECT_TRUE(dawhermes::core::moveSelectedNotes(primary->midiNotes, move).changed);
+    dawhermes::core::ResizeSelectedNotesRequest resize;
+    resize.selectedNoteIds = { movedId };
+    resize.anchorNoteId = movedId;
+    resize.requestedAnchorEndBeat = 1.25;
+    resize.gridStepBeats = dawhermes::core::gridStepBeats(16);
+    EXPECT_TRUE(dawhermes::core::resizeSelectedNotes(primary->midiNotes, resize).changed);
+    EXPECT_EQ(dawhermes::core::applyVelocityToSelectedNotes(primary->midiNotes, { created.id }, 111), static_cast<std::size_t>(1));
+    EXPECT_EQ(dawhermes::core::quantizeSelectedNoteStarts(primary->midiNotes, { quantizedId }, dawhermes::core::gridStepBeats(16)), static_cast<std::size_t>(1));
+    const auto afterNotes = primary->midiNotes;
+
+    dawhermes::core::MidiNoteSelectionState selection;
+    selection.setSelection(primaryId, { movedId, created.id }, movedId);
+    const auto selectedBefore = selection.selectedNoteIds();
+
+    dawhermes::core::ProjectHistory history;
+    history.pushExecuted(std::make_unique<TestReplaceMidiNotesCommand>(
+        project,
+        primaryId,
+        "Edited MIDI Notes",
+        beforeNotes,
+        afterNotes));
+    const auto historySizeBeforeExport = history.size();
+
+    const auto tempDir = createTempDirectory("midi-export-edited");
+    const auto outputPath = tempDir / "edited.mid";
+    const auto exportResult = dawhermes::midi::exportMidiTrackToFile(*primary, outputPath);
+    EXPECT_TRUE(exportResult.ok);
+    EXPECT_EQ(history.size(), historySizeBeforeExport);
+    EXPECT_EQ(selection.selectedNoteIds(), selectedBefore);
+    EXPECT_EQ(project.findTrackById(comparisonId)->midiNotes, comparisonBefore);
+    const auto timelineGeometryAfter = dawhermes::core::buildTimelineLaneGeometry(project.tracks(), 30);
+    EXPECT_EQ(timelineGeometryAfter.size(), timelineGeometryBefore.size());
+    for (std::size_t index = 0; index < timelineGeometryBefore.size(); ++index) {
+        EXPECT_EQ(timelineGeometryAfter.at(index).trackId, timelineGeometryBefore.at(index).trackId);
+        EXPECT_EQ(timelineGeometryAfter.at(index).trackType, timelineGeometryBefore.at(index).trackType);
+        EXPECT_EQ(timelineGeometryAfter.at(index).rowIndex, timelineGeometryBefore.at(index).rowIndex);
+        EXPECT_EQ(timelineGeometryAfter.at(index).y, timelineGeometryBefore.at(index).y);
+        EXPECT_EQ(timelineGeometryAfter.at(index).height, timelineGeometryBefore.at(index).height);
+    }
+
+    const auto comparisonSummaryAfter = dawhermes::core::summarizeMidiComparison(
+        dawhermes::core::compareMidiNotes(primary->midiNotes, comparisonBefore));
+    EXPECT_EQ(comparisonSummaryBefore.unchangedCount, static_cast<std::size_t>(1));
+    EXPECT_TRUE(comparisonSummaryAfter.removedCount >= static_cast<std::size_t>(1));
+
+    EXPECT_EQ(readBinaryFile(sourceMetadata.sourceFilePath), sourceBefore);
+
+    std::string parseError;
+    const auto document = dawhermes::ui::parseMidiImportDocument(outputPath, parseError);
+    EXPECT_TRUE(document.has_value());
+    EXPECT_EQ(document->noteBearingTracks.size(), static_cast<std::size_t>(1));
+    const auto& notes = document->noteBearingTracks.front().notes;
+    EXPECT_EQ(notes.size(), static_cast<std::size_t>(3));
+    EXPECT_TRUE(findNoteByPitch(notes, 64) == nullptr);
+
+    const auto* moved = findNoteByPitch(notes, 62);
+    const auto* quantized = findNoteByPitch(notes, 67);
+    const auto* exportedCreated = findNoteByPitch(notes, 72);
+    EXPECT_TRUE(moved != nullptr);
+    EXPECT_TRUE(quantized != nullptr);
+    EXPECT_TRUE(exportedCreated != nullptr);
+    EXPECT_TRUE(approxEqual(moved->startBeat, 0.50));
+    EXPECT_TRUE(approxEqual(moved->durationBeats, 0.75));
+    EXPECT_TRUE(approxEqual(quantized->startBeat, 2.25));
+    EXPECT_EQ(exportedCreated->velocity, 111);
+    EXPECT_EQ(exportedCreated->channel, 2);
+
+    EXPECT_TRUE(history.undo());
+    EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, beforeNotes);
+    EXPECT_TRUE(history.redo());
+    EXPECT_EQ(project.findTrackById(primaryId)->midiNotes, afterNotes);
+
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    std::filesystem::remove_all(std::filesystem::path(sourceMetadata.sourceFilePath).parent_path(), ec);
     return true;
 }
 
@@ -2303,6 +3653,22 @@ int main(int argc, char* argv[])
         { "MIDI time map bar and grid", testMidiTimeMapBarAndGridResolution },
         { "Timeline lanes and note culling", testTimelineLaneGeometryAndVisibleNoteCulling },
         { "MIDI comparison tolerance", testMidiComparisonToleranceClassification },
+        { "MIDI note selection state stable IDs", testMidiNoteSelectionStateUsesStableIds },
+        { "MIDI note marquee selection geometry", testMidiNoteMarqueeSelectionGeometry },
+        { "MIDI note creation defaults/history", testMidiNoteCreationDefaultsAndHistory },
+        { "MIDI note deletion history/cleanup", testMidiNoteDeletionHistoryAndSelectionCleanup },
+        { "MIDI editing refresh regressions", testMidiEditingRefreshRegressions },
+        { "MIDI note mouse move snap/clamp/history", testMidiNoteMouseMoveSnapClampAndHistory },
+        { "MIDI note multi-move offsets/clamps", testMidiNoteMultiMoveOffsetsClampsAndClickedSelection },
+        { "MIDI note move snap denominators", testMidiNoteMoveSnapDenominators },
+        { "MIDI note resize snap/clamp/history", testMidiNoteResizeSnapClampAndHistory },
+        { "MIDI note keyboard nudge behaviour", testMidiNoteKeyboardNudgeBehaviour },
+        { "MIDI snap control editing grid behaviour", testMidiSnapControlEditingGridBehaviour },
+        { "MIDI velocity editing behaviour", testMidiVelocityEditingBehaviour },
+        { "MIDI quantize selected notes behaviour", testMidiQuantizeSelectedNotesBehaviour },
+        { "MIDI track exporter basics and round trip", testMidiTrackExporterBasicsAndRoundTrip },
+        { "MIDI track exporter tempo/signature/PPQ/ordering", testMidiTrackExporterTempoSignaturePpqAndOrdering },
+        { "MIDI track exporter edited state regressions", testMidiTrackExporterEditedStateAndRegressions },
         { "Delete group removes children", testDeleteGroupTrackRemovesChildren },
         { "Stub Hermes not implemented", testStubEngineNotImplemented },
         { "Hermes command enablement", testHermesCommandEnablementAudioVsMidi },

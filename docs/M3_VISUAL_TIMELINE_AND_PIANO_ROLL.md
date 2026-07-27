@@ -82,3 +82,11 @@ The current Timeline and Piano Roll styling is intentionally functional rather t
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
 This is not a defect and does not block Milestone 3.1 completion.
+
+## Follow-up implementation checkpoint
+
+Milestone 3.2 is now implemented locally on the WIP branch and awaits user manual acceptance.
+
+M3.2 builds on these visual surfaces with direct piano-roll MIDI editing and selected-track MIDI export. The M3.1 comparison surface remains read-only, and playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange remain deferred.
+
+See `docs/M3_2_MIDI_EDITING.md` for the local M3.2 implementation notes.

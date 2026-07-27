@@ -7,9 +7,11 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "core/MidiComparisonModel.h"
+#include "core/MidiNoteSelectionState.h"
 #include "core/MidiTimeMap.h"
 #include "core/MainLayoutGeometry.h"
 #include "core/ProjectController.h"
+#include "core/ProjectHistory.h"
 #include "core/TimelineGeometry.h"
 #include "core/TimelineViewport.h"
 #include "hermes/ComposerAssistantConnector.h"
@@ -37,6 +39,7 @@ public:
     void mouseDown(const juce::MouseEvent& event) override;
     void mouseDrag(const juce::MouseEvent& event) override;
     void mouseUp(const juce::MouseEvent& event) override;
+    bool keyPressed(const juce::KeyPress& key) override;
 
 private:
     enum class ActiveSplitter {
@@ -56,8 +59,11 @@ private:
         commandAddAudioTrack,
         commandAddMidiTrack,
         commandImportMidiTrack,
+        commandExportSelectedMidiTrack,
         commandAssignAudioFile,
         commandDeleteSelectedTrack,
+        commandDeleteSelectedNotes,
+        commandQuantizeSelectedNotes,
         commandAbout,
         commandHermesDrumsMakeMidi,
         commandHermesDrumMapping,
@@ -99,8 +105,38 @@ private:
     void addAudioTrack();
     void addMidiTrack();
     void importMidiTrack();
+    bool canExportSelectedMidiTrack() const;
+    void exportSelectedMidiTrack();
     void assignAudioFileToSelectedTrack();
     void deleteSelectedTrack();
+    bool canDeleteSelectedMidiNotes() const;
+    bool canEditSelectedMidiNotes() const;
+    void deleteSelectedMidiNotes(bool fromKeyboard);
+    void createMidiNoteAt(double beat, int pitch);
+    void moveSelectedMidiNotes(
+        std::vector<std::uint64_t> selectedNoteIds,
+        double deltaBeats,
+        int deltaSemitones,
+        juce::String statusPrefix,
+        bool snapEnabled);
+    void resizeSelectedMidiNotes(std::uint64_t anchorNoteId, std::vector<std::uint64_t> selectedNoteIds, double requestedAnchorEndBeat);
+    void nudgeSelectedMidiNotes(int deltaSemitones, double deltaBeats);
+    void applyVelocityEditorValue();
+    void applyVelocityToSelectedMidiNotes(int velocity);
+    void quantizeSelectedMidiNotesToGrid();
+    void selectMidiNote(std::uint64_t noteId, bool additive);
+    void clearMidiNoteSelectionFromEmptyClick(bool additive);
+    void applyMidiNoteMarqueeSelection(std::vector<std::uint64_t> noteIds, bool additive);
+    void refreshAfterMidiNoteMutation();
+    void synchronizeMidiNoteSelectionWithEditableTrack();
+    void updateStatusForMidiNoteSelection();
+    void updateVelocityControlState();
+    std::optional<int> primarySelectedMidiNoteVelocity() const;
+    std::optional<std::uint64_t> editableMidiTrackIdForPianoRoll() const;
+    core::Track* editableMidiTrackForPianoRoll();
+    const core::Track* editableMidiTrackForPianoRoll() const;
+    bool shouldIgnoreKeyboardDeletion() const;
+    bool shouldIgnoreKeyboardMidiEditing() const;
 
     void runHermesDrumsMakeMidi();
     void runHermesDrumMapping();
@@ -123,6 +159,8 @@ private:
     void applySplitterDrag(juce::Point<int> position);
     void loadPanelLayoutState();
     void savePanelLayoutState() const;
+    void loadMidiEditingSettings();
+    void saveMidiEditingSettings() const;
 
     bool isHermesJobRunning() const;
     void completeHermesJob(hermes::HermesJobResult result);
@@ -160,6 +198,8 @@ private:
 
     core::ProjectModel projectModel_;
     core::SelectionState selectionState_;
+    core::MidiNoteSelectionState midiNoteSelectionState_;
+    core::ProjectHistory projectHistory_;
     core::ProjectController projectController_;
 
     juce::MenuBarComponent menuBar_;
@@ -168,6 +208,7 @@ private:
     juce::Label tracksHeaderLabel_;
     juce::ListBox trackList_;
     juce::ComboBox gridCombo_;
+    juce::ToggleButton snapToggle_ { "Snap" };
     juce::TextButton horizontalZoomOutButton_ { "-" };
     juce::TextButton horizontalZoomInButton_ { "+" };
     juce::TextButton horizontalFitButton_ { "Fit" };
@@ -177,6 +218,8 @@ private:
     juce::TextButton pitchZoomOutButton_ { "Pitch -" };
     juce::TextButton pitchZoomInButton_ { "Pitch +" };
     juce::TextButton pitchFitButton_ { "Fit Notes" };
+    juce::Label velocityLabel_;
+    juce::TextEditor velocityEditor_;
     PianoKeyboardView pianoKeyboardView_;
     PianoRollView pianoRollView_;
     juce::Slider pianoPitchScrollSlider_;
@@ -188,6 +231,8 @@ private:
     core::PitchViewportState pitchViewportState_;
     core::ResolvedMidiTimelineInfo resolvedTimelineInfo_;
     int gridDenominator_ { 16 };
+    bool snapEnabled_ { true };
+    bool suppressVelocityEditorCallbacks_ { false };
     bool midiComparisonEnabled_ { false };
     bool suppressViewportControlCallbacks_ { false };
     core::MidiComparisonTolerance midiComparisonTolerance_;
