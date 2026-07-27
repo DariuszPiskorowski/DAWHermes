@@ -10,7 +10,19 @@ Cubase is a final production destination. Do not make Cubase-specific automation
 
 ## Current milestone
 
-The current scope is Milestone 1.1: Milestone 1 functionality plus workspace panel splitters (drag + persistence + reset command), non-blocking Hermes drums execution, real grouped-track hierarchy for grouped drum output, and correct enabled-empty-layer handling for embedded drums extraction.
+The current scope is Milestone 3.1: Visual Timeline, Piano Roll, and MIDI comparison.
+
+Milestone 3.1 is visual inspection only:
+
+- implement timeline lanes, ruler/grid, piano-roll visualization, and side-by-side/overlay MIDI comparison support;
+- keep shared horizontal viewport and zoom/scroll/fit behaviour deterministic and testable;
+- preserve accepted Milestone 2 Hermes workflows and pairing behaviour.
+
+Milestone 3.1 does not include MIDI editing, playback/transport integration, or DAW audio-engine changes.
+
+Milestone 3.1 visual functionality is accepted.
+
+Timeline and Piano Roll styling is intentionally functional at this stage; final visual polish is deferred until near the end of DAWHermes development.
 
 Do not implement later milestones unless the user explicitly changes the scope.
 

@@ -32,6 +32,12 @@ struct MidiTempoEvent {
     int microsecondsPerQuarterNote { 500000 };
 };
 
+struct MidiTimeSignatureEvent {
+    double beatPosition { 0.0 };
+    int numerator { 4 };
+    int denominator { 4 };
+};
+
 struct MidiSourceMetadata {
     std::string sourceFilePath;
     std::string sourceFileName;
@@ -40,6 +46,7 @@ struct MidiSourceMetadata {
     int midiFileType { 1 };
     int ticksPerQuarterNote { 960 };
     std::vector<MidiTempoEvent> tempoMap;
+    std::vector<MidiTimeSignatureEvent> timeSignatureMap;
     std::vector<int> channelsUsed;
     std::size_t noteCount { 0 };
     double approximateDurationBeats { 0.0 };

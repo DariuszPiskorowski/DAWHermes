@@ -6,9 +6,10 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 
 ## Current status
 
-Milestone 2 (correction + completion pass) extends Milestone 1.1 with real bass repair, real MIDI/WAV synchronization, and explicit real-assets verification tooling.
+Milestone 3.1 extends Milestone 2 with visual timeline/piano-roll inspection and deterministic MIDI comparison.
 
-Milestone 1.1 is complete. Milestone 2 functional integration is complete and manually accepted.
+Milestone 1.1 and Milestone 2 functional integration are complete and accepted.
+Milestone 3.1 visual functionality is accepted and focuses on read-only visual analysis before editing features.
 
 Currently implemented:
 
@@ -18,6 +19,12 @@ Currently implemented:
 - persistent workspace panel sizes with View -> Reset Panel Layout;
 - audio, MIDI, and group track models with file-backed audio source assignment;
 - File -> Import MIDI as Track... with note-bearing-track selection;
+- timeline ruler with bar labels and selectable beat grid (1/4, 1/8, 1/16, 1/32);
+- timeline lanes aligned to track-list ordering and row geometry;
+- static waveform thumbnails for audio tracks in timeline lanes (display only);
+- piano keyboard + piano-roll note visualization with shared horizontal viewport;
+- note hover diagnostics (pitch, velocity, start, duration, channel);
+- View -> Compare Selected MIDI Tracks mode with color-coded delta legend (read-only comparison);
 - track selection and deletion;
 - deliberate right-click context menus;
 - Hermes menu, option dialogs and validation;
@@ -41,7 +48,7 @@ Currently implemented:
 Not implemented yet:
 
 - audio playback or recording;
-- full MIDI playback or piano-roll editing;
+- MIDI note editing workflow;
 - Hermes set/fix BPM workflow;
 - VST3 hosting;
 - AI model connection;
@@ -50,8 +57,12 @@ Not implemented yet:
 
 Known limitation:
 
-Milestone 2 functional integration is accepted.
-Musical-quality comparison of original, repaired and synchronized MIDI remains pending visual piano-roll/timeline support in Milestone 3.
+Milestone 3.1 visual functionality is accepted.
+
+The current Timeline and Piano Roll styling is intentionally functional rather than final.
+Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
+
+Actual MIDI note editing actions (create/move/resize/delete) remain deferred to Milestone 3.2.
 
 ## Related projects
 

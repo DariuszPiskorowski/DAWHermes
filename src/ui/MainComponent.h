@@ -6,11 +6,20 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "core/MidiComparisonModel.h"
+#include "core/MidiTimeMap.h"
 #include "core/MainLayoutGeometry.h"
 #include "core/ProjectController.h"
+#include "core/TimelineGeometry.h"
+#include "core/TimelineViewport.h"
 #include "hermes/ComposerAssistantConnector.h"
 #include "hermes/HermesJobRunner.h"
 #include "hermes/HermesProjectResult.h"
+#include "ui/MidiComparisonLegend.h"
+#include "ui/PianoKeyboardView.h"
+#include "ui/PianoRollView.h"
+#include "ui/TimelineView.h"
+#include "ui/TimeRulerView.h"
 
 namespace dawhermes::ui {
 
@@ -43,6 +52,7 @@ private:
         commandUndo,
         commandRedo,
         commandResetPanelLayout,
+        commandToggleMidiComparison,
         commandAddAudioTrack,
         commandAddMidiTrack,
         commandImportMidiTrack,
@@ -100,6 +110,7 @@ private:
     void runUndo();
     void runRedo();
     void runResetPanelLayout();
+    void runToggleMidiComparison();
     void runClearHermesCache();
     void runComposerAssistantSettings();
     void runComposerAssistantProbe();
@@ -125,6 +136,17 @@ private:
     void loadComposerSettings();
     void saveComposerSettings() const;
 
+    void initializeVisualWorkspace();
+    void updateVisualWorkspace();
+    void updateHorizontalScrollRange();
+    void applyHorizontalZoom(double zoomFactor);
+    void fitHorizontalToProject();
+    void applyPitchZoom(double zoomFactor);
+    void fitPitchToActiveNotes();
+    double estimateProjectDurationBeats() const;
+    std::optional<std::pair<core::Track, core::Track>> selectedMidiComparisonPair() const;
+    std::optional<core::Track> activeMidiTrackForPianoRoll() const;
+
     void resetProject();
     void showAbout();
 
@@ -145,10 +167,30 @@ private:
     juce::Label transportLabel_;
     juce::Label tracksHeaderLabel_;
     juce::ListBox trackList_;
-    juce::Label timelineLabel_;
-    juce::Label midiEditorLabel_;
+    juce::ComboBox gridCombo_;
+    juce::TextButton horizontalZoomOutButton_ { "-" };
+    juce::TextButton horizontalZoomInButton_ { "+" };
+    juce::TextButton horizontalFitButton_ { "Fit" };
+    juce::Slider horizontalScrollSlider_;
+    TimeRulerView timeRulerView_;
+    TimelineView timelineView_;
+    juce::TextButton pitchZoomOutButton_ { "Pitch -" };
+    juce::TextButton pitchZoomInButton_ { "Pitch +" };
+    juce::TextButton pitchFitButton_ { "Fit Notes" };
+    PianoKeyboardView pianoKeyboardView_;
+    PianoRollView pianoRollView_;
+    juce::Slider pianoPitchScrollSlider_;
+    MidiComparisonLegend midiComparisonLegend_;
     juce::Label aiAssistantLabel_;
     juce::Label statusLabel_;
+
+    core::TimelineViewportState timelineViewportState_;
+    core::PitchViewportState pitchViewportState_;
+    core::ResolvedMidiTimelineInfo resolvedTimelineInfo_;
+    int gridDenominator_ { 16 };
+    bool midiComparisonEnabled_ { false };
+    bool suppressViewportControlCallbacks_ { false };
+    core::MidiComparisonTolerance midiComparisonTolerance_;
 
     core::MainPanelLayoutState panelLayoutState_;
     core::MainLayoutGeometry lastLayout_;

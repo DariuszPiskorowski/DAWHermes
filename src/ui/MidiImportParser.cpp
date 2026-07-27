@@ -70,6 +70,57 @@ std::vector<core::MidiTempoEvent> parseTempoMap(const juce::MidiFile& midiFile, 
     return tempoMap;
 }
 
+std::vector<core::MidiTimeSignatureEvent> parseTimeSignatureMap(
+    const juce::MidiFile& midiFile,
+    int ticksPerQuarterNote)
+{
+    std::vector<core::MidiTimeSignatureEvent> timeSignatures;
+
+    for (int trackIndex = 0; trackIndex < midiFile.getNumTracks(); ++trackIndex) {
+        const auto* sequence = midiFile.getTrack(trackIndex);
+        if (sequence == nullptr) {
+            continue;
+        }
+
+        for (int eventIndex = 0; eventIndex < sequence->getNumEvents(); ++eventIndex) {
+            const auto* event = sequence->getEventPointer(eventIndex);
+            if (event == nullptr || !event->message.isTimeSignatureMetaEvent()) {
+                continue;
+            }
+
+            int numerator = 4;
+            int denominator = 4;
+            event->message.getTimeSignatureInfo(numerator, denominator);
+
+            core::MidiTimeSignatureEvent signature;
+            signature.beatPosition = std::max(
+                0.0,
+                static_cast<double>(event->message.getTimeStamp()) / static_cast<double>(ticksPerQuarterNote));
+            signature.numerator = std::max(1, numerator);
+            signature.denominator = std::max(1, denominator);
+            timeSignatures.push_back(signature);
+        }
+    }
+
+    if (timeSignatures.empty()) {
+        timeSignatures.push_back(core::MidiTimeSignatureEvent {});
+    }
+
+    std::sort(timeSignatures.begin(), timeSignatures.end(), [](const auto& left, const auto& right) {
+        if (left.beatPosition == right.beatPosition) {
+            if (left.numerator == right.numerator) {
+                return left.denominator < right.denominator;
+            }
+
+            return left.numerator < right.numerator;
+        }
+
+        return left.beatPosition < right.beatPosition;
+    });
+
+    return timeSignatures;
+}
+
 }  // namespace
 
 std::optional<MidiImportDocument> parseMidiImportDocument(
@@ -110,6 +161,7 @@ std::optional<MidiImportDocument> parseMidiImportDocument(
     document.ticksPerQuarterNote = ticksPerQuarterNote;
     document.totalSourceTrackCount = midiFile.getNumTracks();
     document.tempoMap = parseTempoMap(midiFile, ticksPerQuarterNote);
+    document.timeSignatureMap = parseTimeSignatureMap(midiFile, ticksPerQuarterNote);
 
     for (int trackIndex = 0; trackIndex < midiFile.getNumTracks(); ++trackIndex) {
         const auto* sequence = midiFile.getTrack(trackIndex);
@@ -243,6 +295,7 @@ core::MidiSourceMetadata makeImportedMidiSourceMetadata(
     metadata.midiFileType = document.midiFileType;
     metadata.ticksPerQuarterNote = std::max(1, document.ticksPerQuarterNote);
     metadata.tempoMap = document.tempoMap;
+    metadata.timeSignatureMap = document.timeSignatureMap;
     metadata.channelsUsed = trackCandidate.channelsUsed;
     metadata.noteCount = trackCandidate.notes.size();
     metadata.approximateDurationBeats = trackCandidate.approximateDurationBeats;

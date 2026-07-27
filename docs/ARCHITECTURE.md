@@ -1,4 +1,4 @@
-# DAWHermes Architecture (Milestone 2)
+# DAWHermes Architecture (Milestone 3.1)
 
 ## Why a new Windows repository
 
@@ -17,8 +17,8 @@ A direct Swift port would not satisfy the Windows-native tooling, deployment, an
 The codebase is split into explicit layers:
 
 - `src/app` - application lifecycle, top-level window wiring, settings, logging bootstrap.
-- `src/core` - in-memory project and track model plus selection/controller state and extracted deterministic layout geometry.
-- `src/ui` - JUCE views, menu bar, context menus, workspace rendering, option dialogs, and MIDI/WAV import parsing utilities.
+- `src/core` - in-memory project and track model, selection/controller state, deterministic layout geometry, timeline viewport/time-map logic, piano-roll geometry, and MIDI comparison model.
+- `src/ui` - JUCE views, menu bar, context menus, timeline/piano-roll rendering, option dialogs, and MIDI/WAV import parsing utilities.
 - `src/hermes` - neutral Hermes contracts, command availability rules, option validation, embedded Python engine, and connector boundaries.
 - `tests` - non-GUI behavioural and validation tests.
 - `scripts` - configure/build/test/install/uninstall automation for Windows.
@@ -34,9 +34,9 @@ This separation keeps Hermes integration swappable and testable without rewritin
 
 This mirrors expected desktop DAW ergonomics and avoids disruptive automation.
 
-## Hermes integration in Milestone 2
+## Hermes integration in Milestone 3.1
 
-Milestone 2 keeps `IHermesEngine` as the UI boundary and expands `EmbeddedHermesEngine` to real in-process drums extraction, bass repair, and MIDI/WAV synchronization.
+Milestone 3.1 keeps the Milestone 2 `IHermesEngine` integration unchanged while adding read-only visual analysis surfaces.
 
 - The UI continues to call only the neutral interface.
 - Embedded Python uses pybind11::embed and CPython 3.11.
@@ -46,6 +46,13 @@ Milestone 2 keeps `IHermesEngine` as the UI boundary and expands `EmbeddedHermes
 - Hermes processing is run on a serialized background worker so the message thread remains responsive.
 - Project-model mutation still happens on the message thread when background processing completes.
 - Set/Fix BPM still returns explicit not-implemented status.
+
+Milestone 3.1 adds:
+
+- shared horizontal beat viewport consumed by timeline ruler, timeline lanes, and piano roll;
+- time-signature aware bar/ruler calculation sourced from imported MIDI metadata with fallback defaults;
+- deterministic MIDI comparison classification (`unchanged`, `timingAdjusted`, `velocityAdjusted`, `pitchChanged`, `added`, `removed`);
+- color-coded visual compare overlay and summary legend.
 
 For successful bass and sync operations, temporary Hermes cache job directories are deleted immediately. Failed operations preserve diagnostics in cache.
 
@@ -65,7 +72,10 @@ The install script deploys a runnable Release app to `%LOCALAPPDATA%\DAWHermes\a
 
 No PowerShell or terminal launcher is used for normal user launch.
 
-## Current limitations (Milestone 2)
+## Current limitations (Milestone 3.1)
+
+Milestone 2 functionality is complete.
+Milestone 3.1 visual functionality is accepted.
 
 Implemented now:
 
@@ -74,6 +84,9 @@ Implemented now:
 - extracted top-row-3-columns + full-width-bottom MIDI layout geometry;
 - draggable splitter geometry with persisted layout state and reset command;
 - embedded Hermes drums extraction, bass repair, and MIDI/WAV synchronization;
+- visual timeline lanes with waveform thumbnails and beat grid/ruler;
+- visual piano keyboard + piano-roll renderer with note hover diagnostics;
+- compare-mode overlay for two selected MIDI tracks;
 - grouped multitrack insertion as a real hierarchy (group track + child MIDI tracks);
 - enabled-empty-layer aware insertion for drums extraction;
 - transactional Hermes result insertion with rollback on validation failure;
@@ -85,10 +98,16 @@ Implemented now:
 Not implemented now:
 
 - audio playback/recording/device setup;
-- full MIDI playback/piano-roll editing;
+- MIDI note editing actions (move/resize/create/delete);
 - Hermes set/fix BPM workflow;
 - AI APIs;
 - ACE exchange;
 - Cubase export.
 
 Note: Milestone 2 includes minimal MIDI import for source-track creation and pairing workflows, but does not include full timeline/piano-roll editing.
+
+Additional Milestone 3.1 boundaries:
+
+- timeline ruler/lanes and piano roll share one horizontal beat viewport state;
+- waveform drawing is static visualization only and not a playback transport surface;
+- current Timeline and Piano Roll styling is intentionally functional rather than final, with visual polish deferred until near project end.

@@ -41,6 +41,10 @@ add_library(dawhermes_core
   src/core/ProjectModel.cpp
   src/core/ProjectController.cpp
   src/core/MainLayoutGeometry.cpp
+  src/core/TimelineViewport.cpp
+  src/core/MidiTimeMap.cpp
+  src/core/TimelineGeometry.cpp
+  src/core/MidiComparisonModel.cpp
 )
 target_include_directories(dawhermes_core PUBLIC src)
 set_project_warnings(dawhermes_core)
@@ -71,6 +75,11 @@ set_project_warnings(dawhermes_hermes)
 add_library(dawhermes_ui
   src/ui/MainComponent.cpp
   src/ui/MidiImportParser.cpp
+  src/ui/TimeRulerView.cpp
+  src/ui/TimelineView.cpp
+  src/ui/PianoKeyboardView.cpp
+  src/ui/PianoRollView.cpp
+  src/ui/MidiComparisonLegend.cpp
   src/ui/HermesDialogs.cpp
   src/ui/DrumMappingDialog.cpp
   src/app/MainWindow.cpp
@@ -80,7 +89,7 @@ add_library(dawhermes_ui
 target_include_directories(dawhermes_ui PUBLIC src)
 target_link_libraries(dawhermes_ui
   PUBLIC dawhermes_core dawhermes_hermes
-  PRIVATE juce::juce_gui_extra juce::juce_audio_formats)
+  PRIVATE juce::juce_gui_extra juce::juce_audio_formats juce::juce_audio_utils)
 target_compile_definitions(
   dawhermes_ui
   PRIVATE

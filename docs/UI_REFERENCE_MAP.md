@@ -1,6 +1,8 @@
-# UI Reference Map (Milestone 1.1)
+# UI Reference Map (Milestone 3.1)
 
-This document captures the structural UI alignment applied in Milestone 1.
+This document captures the structural UI alignment and visual-analysis surfaces active in Milestone 3.1.
+
+Milestone 3.1 visual functionality is accepted.
 
 ## Reference intent
 
@@ -10,16 +12,16 @@ DAWHermes does not copy Swift/SwiftUI code. It mirrors high-level layout semanti
 
 ## Structural mapping
 
-Milestone 1 layout in DAWHermes is now organized as:
+DAWHermes layout is organized as:
 
 1. Menu bar (top)
 2. Transport/status strip (under menu)
 3. Main workspace row with 3 columns:
    - left: tracks panel (header + track list)
-   - center: timeline/work area
+   - center: timeline workspace (controls + ruler + lanes)
    - right: AI assistant panel
 4. Bottom full-width row:
-   - MIDI editor panel spans the full workspace width
+   - piano editor workspace (controls + keyboard + piano roll + compare legend)
 5. Status strip (bottom)
 
 This matches the requested "top 3 columns + bottom full-width MIDI" structure.
@@ -40,6 +42,13 @@ Panel ratios are persisted to user settings and restored on launch.
 
 Layout geometry and panel-state sanitization are extracted into `core/MainLayoutGeometry` and consumed by `ui/MainComponent`.
 
+Timeline/piano-roll behaviour is extracted into reusable core units:
+
+- `core/TimelineViewport` for shared horizontal beat viewport mapping and zoom/scroll/fit;
+- `core/MidiTimeMap` for tempo/signature fallback resolution and bar/grid helpers;
+- `core/TimelineGeometry` for lane and pitch-space geometry/culling;
+- `core/MidiComparisonModel` for deterministic note-delta classification.
+
 Benefits:
 
 - deterministic and testable sizing behavior;
@@ -48,8 +57,41 @@ Benefits:
 
 ## Interaction behavior retained
 
-Milestone 1 keeps Milestone 0 deliberate interaction rules:
+Milestone 3.1 keeps deliberate desktop interaction rules:
 
 - track selection does not auto-open tools;
 - context menu opens only on right-click;
 - Hermes dialogs open only after explicit command selection.
+
+## Milestone 3.1 visual surfaces
+
+Center timeline workspace:
+
+- beat-grid selector: `1/4`, `1/8`, `1/16`, `1/32`;
+- horizontal zoom in/out + fit controls;
+- horizontal scroll control;
+- time ruler with bar markers;
+- lanes aligned to track-list order and row height;
+- waveform thumbnails for audio-track lanes;
+- mini note bars for MIDI-track lanes.
+
+Bottom piano workspace:
+
+- pitch zoom controls + fit-notes command;
+- piano keyboard at left;
+- piano roll with shared horizontal viewport;
+- hover diagnostics per note (pitch/velocity/start/duration/channel);
+- compare legend and color-coded overlay when compare mode is enabled.
+
+## Compare mode
+
+`View -> Compare Selected MIDI Tracks` is enabled only when exactly two MIDI tracks are selected.
+
+Comparison is read-only and visual only. It does not modify MIDI notes.
+
+## Visual boundary
+
+The current Timeline and Piano Roll styling is intentionally functional rather than final.
+Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
+
+MIDI note editing remains a Milestone 3.2 concern.

@@ -20,9 +20,13 @@
 #include <vector>
 
 #include "core/MainLayoutGeometry.h"
+#include "core/MidiComparisonModel.h"
+#include "core/MidiTimeMap.h"
 #include "core/ProjectController.h"
 #include "core/ProjectModel.h"
 #include "core/SelectionState.h"
+#include "core/TimelineGeometry.h"
+#include "core/TimelineViewport.h"
 #include "core/Track.h"
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/ComposerAssistantConnector.h"
@@ -577,6 +581,124 @@ bool testPanelLayoutStateRoundTripAndClamping()
 
     dawhermes::core::MainPanelLayoutState invalid;
     EXPECT_TRUE(!dawhermes::core::deserializeMainPanelLayoutState("invalid-state", invalid));
+    return true;
+}
+
+bool testTimelineViewportMappingAndZoom()
+{
+    dawhermes::core::TimelineViewportState viewport;
+    viewport.startBeat = 4.0;
+    viewport.visibleBeats = 8.0;
+    viewport = dawhermes::core::sanitizeTimelineViewportState(viewport);
+
+    EXPECT_TRUE(std::abs(dawhermes::core::timelineBeatToX(4.0, 800, viewport) - 0.0) < 0.0001);
+    EXPECT_TRUE(std::abs(dawhermes::core::timelineBeatToX(12.0, 800, viewport) - 800.0) < 0.0001);
+    EXPECT_TRUE(std::abs(dawhermes::core::timelineXToBeat(400.0, 800, viewport) - 8.0) < 0.0001);
+
+    const auto zoomed = dawhermes::core::zoomTimelineViewport(viewport, 8.0, 2.0, 20.0);
+    EXPECT_TRUE(std::abs(zoomed.visibleBeats - 4.0) < 0.0001);
+    EXPECT_TRUE(std::abs(zoomed.startBeat - 6.0) < 0.0001);
+
+    const auto scrolled = dawhermes::core::scrollTimelineViewport(zoomed, 3.0, 20.0);
+    EXPECT_TRUE(std::abs(scrolled.startBeat - 9.0) < 0.0001);
+    return true;
+}
+
+bool testMidiTimeMapBarAndGridResolution()
+{
+    std::vector<dawhermes::core::MidiTimeSignatureEvent> signatures {
+        dawhermes::core::MidiTimeSignatureEvent { 0.0, 4, 4 },
+        dawhermes::core::MidiTimeSignatureEvent { 16.0, 3, 4 },
+    };
+
+    signatures = dawhermes::core::sanitizeTimeSignatureMap(signatures);
+
+    EXPECT_TRUE(std::abs(dawhermes::core::beatsPerBarAt(2.0, signatures) - 4.0) < 0.0001);
+    EXPECT_TRUE(std::abs(dawhermes::core::beatsPerBarAt(18.0, signatures) - 3.0) < 0.0001);
+    EXPECT_EQ(dawhermes::core::barNumberAt(0.0, signatures), 1);
+    EXPECT_EQ(dawhermes::core::barNumberAt(15.9, signatures), 4);
+    EXPECT_EQ(dawhermes::core::barNumberAt(16.0, signatures), 5);
+
+    const auto bars = dawhermes::core::buildBarStartBeats(0.0, 22.0, signatures, 32);
+    EXPECT_TRUE(!bars.empty());
+    EXPECT_TRUE(std::find(bars.begin(), bars.end(), 16.0) != bars.end());
+    EXPECT_TRUE(std::find(bars.begin(), bars.end(), 19.0) != bars.end());
+
+    EXPECT_TRUE(std::abs(dawhermes::core::gridStepBeats(16) - 0.25) < 0.0001);
+    const auto grid = dawhermes::core::buildGridBeatPositions(0.0, 1.0, 16, 32);
+    EXPECT_TRUE(grid.size() >= 5);
+    EXPECT_TRUE(std::abs(grid.front() - 0.0) < 0.0001);
+    return true;
+}
+
+bool testTimelineLaneGeometryAndVisibleNoteCulling()
+{
+    ProjectModel project;
+    const auto audio = project.addTrack(TrackType::audio, "Audio 1");
+    const auto midi = project.addTrack(TrackType::midi, "MIDI 1");
+    EXPECT_TRUE(audio.id > 0);
+
+    auto* midiTrack = project.findTrackById(midi.id);
+    EXPECT_TRUE(midiTrack != nullptr);
+    midiTrack->midiNotes = {
+        makeMidiNote(60, 100, 1.0, 1.0),
+        makeMidiNote(72, 100, 12.0, 1.0),
+    };
+
+    const auto lanes = dawhermes::core::buildTimelineLaneGeometry(project.tracks(), 30, 10);
+    EXPECT_EQ(lanes.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(lanes[0].trackId, audio.id);
+    EXPECT_EQ(lanes[1].trackId, midi.id);
+    EXPECT_EQ(lanes[0].y, 10);
+    EXPECT_EQ(lanes[1].y, 40);
+
+    dawhermes::core::TimelineViewportState horizontal;
+    horizontal.startBeat = 0.0;
+    horizontal.visibleBeats = 8.0;
+
+    dawhermes::core::PitchViewportState vertical;
+    vertical.highestVisiblePitch = 84.0;
+    vertical.visiblePitchSpan = 24.0;
+
+    const auto geometry = dawhermes::core::computeVisibleNoteGeometry(
+        midiTrack->midiNotes,
+        800,
+        240,
+        horizontal,
+        vertical,
+        64);
+
+    EXPECT_EQ(geometry.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(geometry.front().noteIndex, static_cast<std::size_t>(0));
+
+    const auto y = dawhermes::core::pitchToY(72.0, 240, vertical);
+    const auto pitchRoundTrip = dawhermes::core::yToPitch(y, 240, vertical);
+    EXPECT_TRUE(std::abs(pitchRoundTrip - 72.0) < 0.001);
+    return true;
+}
+
+bool testMidiComparisonToleranceClassification()
+{
+    const std::vector<MidiNote> source {
+        makeMidiNote(60, 100, 0.0, 1.0),
+        makeMidiNote(64, 90, 2.0, 1.0),
+        makeMidiNote(70, 80, 6.0, 1.0),
+    };
+
+    const std::vector<MidiNote> target {
+        makeMidiNote(60, 102, 0.01, 1.0),
+        makeMidiNote(64, 90, 2.07, 0.90),
+        makeMidiNote(67, 100, 4.0, 1.0),
+    };
+
+    const auto result = dawhermes::core::compareMidiNotes(source, target);
+    const auto summary = dawhermes::core::summarizeMidiComparison(result);
+
+    EXPECT_EQ(summary.unchangedCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(summary.timingAdjustedCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(summary.pitchChangedCount, static_cast<std::size_t>(0));
+    EXPECT_EQ(summary.addedCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(summary.removedCount, static_cast<std::size_t>(1));
     return true;
 }
 
@@ -2177,6 +2299,10 @@ int main(int argc, char* argv[])
         { "Drums track context validation", testDrumsTrackContextValidation },
         { "Main layout geometry", testMainLayoutGeometry },
         { "Panel layout state clamp/roundtrip", testPanelLayoutStateRoundTripAndClamping },
+        { "Timeline viewport mapping and zoom", testTimelineViewportMappingAndZoom },
+        { "MIDI time map bar and grid", testMidiTimeMapBarAndGridResolution },
+        { "Timeline lanes and note culling", testTimelineLaneGeometryAndVisibleNoteCulling },
+        { "MIDI comparison tolerance", testMidiComparisonToleranceClassification },
         { "Delete group removes children", testDeleteGroupTrackRemovesChildren },
         { "Stub Hermes not implemented", testStubEngineNotImplemented },
         { "Hermes command enablement", testHermesCommandEnablementAudioVsMidi },

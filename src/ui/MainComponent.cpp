@@ -127,6 +127,19 @@ void addHermesMenuItem(
     menu.addItem(itemId, title, enabled);
 }
 
+int sanitizeGridDenominator(int value)
+{
+    switch (value) {
+    case 4:
+    case 8:
+    case 16:
+    case 32:
+        return value;
+    default:
+        return 16;
+    }
+}
+
 }  // namespace
 
 MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
@@ -161,17 +174,37 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     trackList_.setColour(juce::ListBox::textColourId, juce::Colours::white);
     addAndMakeVisible(trackList_);
 
-    timelineLabel_.setText("Timeline / Work Area", juce::dontSendNotification);
-    timelineLabel_.setJustificationType(juce::Justification::centred);
-    timelineLabel_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff20252b));
-    timelineLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible(timelineLabel_);
+    gridCombo_.addItem("1/4", 4);
+    gridCombo_.addItem("1/8", 8);
+    gridCombo_.addItem("1/16", 16);
+    gridCombo_.addItem("1/32", 32);
+    gridCombo_.setSelectedId(gridDenominator_, juce::dontSendNotification);
+    addAndMakeVisible(gridCombo_);
 
-    midiEditorLabel_.setText("MIDI Editor", juce::dontSendNotification);
-    midiEditorLabel_.setJustificationType(juce::Justification::centred);
-    midiEditorLabel_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff1d2127));
-    midiEditorLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible(midiEditorLabel_);
+    addAndMakeVisible(horizontalZoomOutButton_);
+    addAndMakeVisible(horizontalZoomInButton_);
+    addAndMakeVisible(horizontalFitButton_);
+
+    horizontalScrollSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
+    horizontalScrollSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    horizontalScrollSlider_.setRange(0.0, 64.0, 0.01);
+    addAndMakeVisible(horizontalScrollSlider_);
+
+    addAndMakeVisible(timeRulerView_);
+    addAndMakeVisible(timelineView_);
+
+    addAndMakeVisible(pitchZoomOutButton_);
+    addAndMakeVisible(pitchZoomInButton_);
+    addAndMakeVisible(pitchFitButton_);
+    addAndMakeVisible(pianoKeyboardView_);
+    addAndMakeVisible(pianoRollView_);
+
+    pianoPitchScrollSlider_.setSliderStyle(juce::Slider::LinearVertical);
+    pianoPitchScrollSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    pianoPitchScrollSlider_.setRange(12.0, 127.0, 1.0);
+    addAndMakeVisible(pianoPitchScrollSlider_);
+
+    addAndMakeVisible(midiComparisonLegend_);
 
     aiAssistantLabel_.setText("AI Assistant", juce::dontSendNotification);
     aiAssistantLabel_.setJustificationType(juce::Justification::centred);
@@ -185,9 +218,12 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     statusLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffc7ccd4));
     addAndMakeVisible(statusLabel_);
 
+    initializeVisualWorkspace();
+
     loadPanelLayoutState();
     loadComposerSettings();
     cleanupStaleHermesCacheOnStartup();
+    updateVisualWorkspace();
     updateStatusForSelection();
 }
 
@@ -199,6 +235,60 @@ MainComponent::~MainComponent()
 
     savePanelLayoutState();
     trackList_.setModel(nullptr);
+}
+
+void MainComponent::initializeVisualWorkspace()
+{
+    timelineViewportState_ = core::sanitizeTimelineViewportState(core::TimelineViewportState {});
+    pitchViewportState_ = core::sanitizePitchViewportState(core::PitchViewportState {});
+
+    resolvedTimelineInfo_.ticksPerQuarterNote = 960;
+    resolvedTimelineInfo_.tempoMap = core::sanitizeTempoMap({});
+    resolvedTimelineInfo_.timeSignatureMap = core::sanitizeTimeSignatureMap({});
+
+    gridCombo_.onChange = [this]() {
+        const auto selected = sanitizeGridDenominator(gridCombo_.getSelectedId());
+        if (selected == gridDenominator_) {
+            return;
+        }
+
+        gridDenominator_ = selected;
+        updateVisualWorkspace();
+    };
+
+    horizontalZoomOutButton_.onClick = [this]() { applyHorizontalZoom(0.80); };
+    horizontalZoomInButton_.onClick = [this]() { applyHorizontalZoom(1.25); };
+    horizontalFitButton_.onClick = [this]() { fitHorizontalToProject(); };
+
+    horizontalScrollSlider_.onValueChange = [this]() {
+        if (suppressViewportControlCallbacks_) {
+            return;
+        }
+
+        timelineViewportState_.startBeat = horizontalScrollSlider_.getValue();
+        timelineViewportState_ = core::sanitizeTimelineViewportState(timelineViewportState_);
+        updateVisualWorkspace();
+    };
+
+    pitchZoomOutButton_.onClick = [this]() { applyPitchZoom(0.85); };
+    pitchZoomInButton_.onClick = [this]() { applyPitchZoom(1.20); };
+    pitchFitButton_.onClick = [this]() { fitPitchToActiveNotes(); };
+
+    pianoPitchScrollSlider_.onValueChange = [this]() {
+        if (suppressViewportControlCallbacks_) {
+            return;
+        }
+
+        pitchViewportState_.highestVisiblePitch = pianoPitchScrollSlider_.getValue();
+        pitchViewportState_ = core::sanitizePitchViewportState(pitchViewportState_);
+        updateVisualWorkspace();
+    };
+
+    timelineView_.setTrackRowHeight(trackList_.getRowHeight());
+    timelineView_.setGridDenominator(gridDenominator_);
+    timeRulerView_.setGridDenominator(gridDenominator_);
+    pianoRollView_.setGridDenominator(gridDenominator_);
+    midiComparisonLegend_.setComparisonEnabled(false);
 }
 
 void MainComponent::paint(juce::Graphics& g)
@@ -237,18 +327,60 @@ void MainComponent::resized()
         layout.tracksHeader.width,
         layout.tracksHeader.height);
     trackList_.setBounds(layout.trackList.x, layout.trackList.y, layout.trackList.width, layout.trackList.height);
-    timelineLabel_.setBounds(layout.timeline.x, layout.timeline.y, layout.timeline.width, layout.timeline.height);
+
+    auto timelineBounds = juce::Rectangle<int>(layout.timeline.x, layout.timeline.y, layout.timeline.width, layout.timeline.height);
+    const auto headerHeight = std::max(24, layout.trackList.y - layout.timeline.y);
+    auto timelineHeader = timelineBounds.removeFromTop(std::min(headerHeight, timelineBounds.getHeight()));
+    const auto controlsWidth = std::min(350, timelineHeader.getWidth());
+    auto controlsArea = timelineHeader.removeFromLeft(controlsWidth).reduced(2);
+
+    gridCombo_.setBounds(controlsArea.removeFromLeft(58));
+    controlsArea.removeFromLeft(4);
+    horizontalZoomOutButton_.setBounds(controlsArea.removeFromLeft(28));
+    controlsArea.removeFromLeft(2);
+    horizontalZoomInButton_.setBounds(controlsArea.removeFromLeft(28));
+    controlsArea.removeFromLeft(2);
+    horizontalFitButton_.setBounds(controlsArea.removeFromLeft(42));
+    controlsArea.removeFromLeft(6);
+    horizontalScrollSlider_.setBounds(controlsArea);
+
+    timeRulerView_.setBounds(timelineHeader.reduced(2));
+
+    const auto timelineContentY = std::max(layout.trackList.y, timelineBounds.getY());
+    const auto timelineContentHeight = std::max(0, timelineBounds.getBottom() - timelineContentY);
+    timelineView_.setBounds(layout.timeline.x, timelineContentY, layout.timeline.width, timelineContentHeight);
+
     aiAssistantLabel_.setBounds(
         layout.aiAssistant.x,
         layout.aiAssistant.y,
         layout.aiAssistant.width,
         layout.aiAssistant.height);
-    midiEditorLabel_.setBounds(
-        layout.midiEditor.x,
-        layout.midiEditor.y,
-        layout.midiEditor.width,
-        layout.midiEditor.height);
+
+    auto midiBounds = juce::Rectangle<int>(layout.midiEditor.x, layout.midiEditor.y, layout.midiEditor.width, layout.midiEditor.height);
+    auto midiControls = midiBounds.removeFromTop(std::min(26, midiBounds.getHeight()));
+    auto midiLegend = midiBounds.removeFromBottom(std::min(34, midiBounds.getHeight()));
+
+    auto pitchControls = midiControls.reduced(2);
+    pitchZoomOutButton_.setBounds(pitchControls.removeFromLeft(60));
+    pitchControls.removeFromLeft(4);
+    pitchZoomInButton_.setBounds(pitchControls.removeFromLeft(60));
+    pitchControls.removeFromLeft(4);
+    pitchFitButton_.setBounds(pitchControls.removeFromLeft(84));
+
+    midiComparisonLegend_.setBounds(midiLegend);
+
+    auto midiContent = midiBounds;
+    const auto keyboardWidth = std::min(74, std::max(46, midiContent.getWidth() / 8));
+    const auto scrollWidth = 16;
+
+    pianoKeyboardView_.setBounds(midiContent.removeFromLeft(keyboardWidth));
+    midiContent.removeFromRight(2);
+    pianoPitchScrollSlider_.setBounds(midiContent.removeFromRight(std::min(scrollWidth, midiContent.getWidth())));
+    pianoRollView_.setBounds(midiContent);
+
     statusLabel_.setBounds(layout.statusBar.x, layout.statusBar.y, layout.statusBar.width, layout.statusBar.height);
+
+    updateVisualWorkspace();
 }
 
 void MainComponent::mouseMove(const juce::MouseEvent& event)
@@ -319,6 +451,11 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         break;
     case 2:
         menu.addItem(commandResetPanelLayout, "Reset Panel Layout");
+        menu.addItem(
+            commandToggleMidiComparison,
+            "Compare Selected MIDI Tracks",
+            selectedMidiComparisonPair().has_value(),
+            midiComparisonEnabled_);
         break;
     case 3:
         menu.addItem(commandAddAudioTrack, "Add Audio Track");
@@ -452,6 +589,9 @@ void MainComponent::executeCommand(int commandId)
             break;
         case commandResetPanelLayout:
             runResetPanelLayout();
+            break;
+        case commandToggleMidiComparison:
+            runToggleMidiComparison();
             break;
         case commandHermesDrumsMakeMidi:
             runHermesDrumsMakeMidi();
@@ -798,6 +938,10 @@ std::optional<hermes::HermesAudioMidiPairContext> MainComponent::selectedAudioMi
         metadata.tempoMap.push_back(core::MidiTempoEvent {});
     }
 
+    if (metadata.timeSignatureMap.empty()) {
+        metadata.timeSignatureMap.push_back(core::MidiTimeSignatureEvent {});
+    }
+
     if (metadata.origin == core::MidiTrackOrigin::unknown) {
         metadata.origin = core::MidiTrackOrigin::imported;
     }
@@ -837,6 +981,221 @@ void MainComponent::refreshTrackView()
 {
     trackList_.updateContent();
     trackList_.repaint();
+    updateVisualWorkspace();
+    menuBar_.repaint();
+}
+
+double MainComponent::estimateProjectDurationBeats() const
+{
+    double maxBeat = 16.0;
+
+    for (const auto& track : projectModel_.tracks()) {
+        if (track.type != core::TrackType::midi) {
+            continue;
+        }
+
+        for (const auto& note : track.midiNotes) {
+            maxBeat = std::max(maxBeat, note.startBeat + std::max(1.0 / 960.0, note.durationBeats));
+        }
+
+        if (track.midiSourceMetadata.has_value()) {
+            maxBeat = std::max(maxBeat, track.midiSourceMetadata->approximateDurationBeats);
+        }
+    }
+
+    return std::max(4.0, maxBeat);
+}
+
+std::optional<std::pair<core::Track, core::Track>> MainComponent::selectedMidiComparisonPair() const
+{
+    const auto selectedIds = projectController_.selectedTrackIds();
+    if (selectedIds.size() != 2) {
+        return std::nullopt;
+    }
+
+    const auto* first = projectModel_.findTrackById(selectedIds[0]);
+    const auto* second = projectModel_.findTrackById(selectedIds[1]);
+    if (first == nullptr || second == nullptr) {
+        return std::nullopt;
+    }
+
+    if (first->type != core::TrackType::midi || second->type != core::TrackType::midi) {
+        return std::nullopt;
+    }
+
+    return std::make_pair(*first, *second);
+}
+
+std::optional<core::Track> MainComponent::activeMidiTrackForPianoRoll() const
+{
+    if (const auto pair = selectedMidiComparisonPair(); pair.has_value() && midiComparisonEnabled_) {
+        return pair->first;
+    }
+
+    if (const auto selected = selectedTrack(); selected.has_value() && selected->type == core::TrackType::midi) {
+        return selected;
+    }
+
+    for (const auto& track : projectModel_.tracks()) {
+        if (track.type == core::TrackType::midi) {
+            return track;
+        }
+    }
+
+    return std::nullopt;
+}
+
+void MainComponent::updateHorizontalScrollRange()
+{
+    const auto projectEndBeat = estimateProjectDurationBeats();
+    const auto maxStartBeat = std::max(0.0, projectEndBeat - timelineViewportState_.visibleBeats);
+
+    timelineViewportState_.startBeat = std::clamp(timelineViewportState_.startBeat, 0.0, maxStartBeat);
+
+    suppressViewportControlCallbacks_ = true;
+    horizontalScrollSlider_.setRange(0.0, maxStartBeat, 0.01);
+    horizontalScrollSlider_.setValue(timelineViewportState_.startBeat, juce::dontSendNotification);
+    pianoPitchScrollSlider_.setValue(pitchViewportState_.highestVisiblePitch, juce::dontSendNotification);
+    gridCombo_.setSelectedId(gridDenominator_, juce::dontSendNotification);
+    suppressViewportControlCallbacks_ = false;
+}
+
+void MainComponent::applyHorizontalZoom(double zoomFactor)
+{
+    const auto pivotBeat = timelineViewportState_.startBeat + (timelineViewportState_.visibleBeats * 0.5);
+    timelineViewportState_ = core::zoomTimelineViewport(
+        timelineViewportState_,
+        pivotBeat,
+        zoomFactor,
+        estimateProjectDurationBeats());
+    updateVisualWorkspace();
+}
+
+void MainComponent::fitHorizontalToProject()
+{
+    double minBeat = 0.0;
+    double maxBeat = 0.0;
+    bool hasNotes = false;
+
+    for (const auto& track : projectModel_.tracks()) {
+        if (track.type != core::TrackType::midi) {
+            continue;
+        }
+
+        for (const auto& note : track.midiNotes) {
+            if (!hasNotes) {
+                minBeat = note.startBeat;
+                maxBeat = note.startBeat + note.durationBeats;
+                hasNotes = true;
+            } else {
+                minBeat = std::min(minBeat, note.startBeat);
+                maxBeat = std::max(maxBeat, note.startBeat + note.durationBeats);
+            }
+        }
+    }
+
+    if (!hasNotes) {
+        timelineViewportState_ = core::fitTimelineViewport(0.0, estimateProjectDurationBeats(), 0.5, 1.0, 512.0);
+    } else {
+        timelineViewportState_ = core::fitTimelineViewport(minBeat, maxBeat, 0.5, 1.0, 512.0);
+    }
+
+    updateVisualWorkspace();
+}
+
+void MainComponent::applyPitchZoom(double zoomFactor)
+{
+    const auto pivotPitch = pitchViewportState_.highestVisiblePitch - (pitchViewportState_.visiblePitchSpan * 0.5);
+    pitchViewportState_ = core::zoomPitchViewport(pitchViewportState_, pivotPitch, zoomFactor);
+    updateVisualWorkspace();
+}
+
+void MainComponent::fitPitchToActiveNotes()
+{
+    const auto activeTrack = activeMidiTrackForPianoRoll();
+    if (!activeTrack.has_value() || activeTrack->midiNotes.empty()) {
+        pitchViewportState_ = core::sanitizePitchViewportState(core::PitchViewportState {});
+    } else {
+        pitchViewportState_ = core::fitPitchViewportToNotes(activeTrack->midiNotes, 2.0);
+    }
+
+    updateVisualWorkspace();
+}
+
+void MainComponent::updateVisualWorkspace()
+{
+    timelineViewportState_ = core::sanitizeTimelineViewportState(timelineViewportState_);
+    pitchViewportState_ = core::sanitizePitchViewportState(pitchViewportState_);
+    gridDenominator_ = sanitizeGridDenominator(gridDenominator_);
+
+    std::vector<const core::Track*> prioritizedTracks;
+    prioritizedTracks.reserve(projectController_.selectedTrackIds().size());
+    for (const auto trackId : projectController_.selectedTrackIds()) {
+        const auto* track = projectModel_.findTrackById(trackId);
+        if (track != nullptr && track->type == core::TrackType::midi) {
+            prioritizedTracks.push_back(track);
+        }
+    }
+
+    resolvedTimelineInfo_ = core::resolveMidiTimelineInfo(prioritizedTracks, projectModel_.tracks());
+
+    updateHorizontalScrollRange();
+
+    timelineView_.setTrackRowHeight(trackList_.getRowHeight());
+    timelineView_.setTracks(projectModel_.tracks());
+    timelineView_.setSelectedTrackIds(projectController_.selectedTrackIds());
+    timelineView_.setViewportState(timelineViewportState_);
+    timelineView_.setGridDenominator(gridDenominator_);
+    timelineView_.setTempoMap(resolvedTimelineInfo_.tempoMap);
+    timelineView_.setVerticalScrollPixels(static_cast<int>(std::round(trackList_.getVerticalPosition())));
+
+    timeRulerView_.setViewportState(timelineViewportState_);
+    timeRulerView_.setGridDenominator(gridDenominator_);
+    timeRulerView_.setTimeSignatureMap(resolvedTimelineInfo_.timeSignatureMap);
+
+    pianoKeyboardView_.setPitchViewportState(pitchViewportState_);
+    pianoRollView_.setViewportState(timelineViewportState_);
+    pianoRollView_.setPitchViewportState(pitchViewportState_);
+    pianoRollView_.setGridDenominator(gridDenominator_);
+    pianoRollView_.setTimeSignatureMap(resolvedTimelineInfo_.timeSignatureMap);
+
+    std::vector<core::MidiNote> primaryNotes;
+    juce::String primaryName;
+    juce::String candidateName;
+    core::MidiComparisonResult comparisonResult;
+
+    bool comparisonActive = false;
+    if (midiComparisonEnabled_) {
+        const auto pair = selectedMidiComparisonPair();
+        if (pair.has_value()) {
+            comparisonResult = core::compareMidiNotes(pair->first.midiNotes, pair->second.midiNotes, midiComparisonTolerance_);
+            primaryNotes = pair->first.midiNotes;
+            primaryName = pair->first.name;
+            candidateName = pair->second.name;
+            comparisonActive = true;
+            pianoRollView_.setComparisonNotes(pair->second.midiNotes, comparisonResult, true);
+        } else {
+            midiComparisonEnabled_ = false;
+        }
+    }
+
+    if (!comparisonActive) {
+        const auto activeTrack = activeMidiTrackForPianoRoll();
+        if (activeTrack.has_value()) {
+            primaryNotes = activeTrack->midiNotes;
+            primaryName = activeTrack->name;
+        }
+
+        pianoRollView_.setComparisonNotes({}, core::MidiComparisonResult {}, false);
+    }
+
+    pianoRollView_.setPrimaryNotes(primaryNotes);
+
+    midiComparisonLegend_.setComparisonEnabled(comparisonActive);
+    midiComparisonLegend_.setTrackLabels(primaryName, candidateName);
+    midiComparisonLegend_.setComparisonSummary(
+        comparisonActive ? core::summarizeMidiComparison(comparisonResult) : core::MidiComparisonSummary {});
+
     menuBar_.repaint();
 }
 
@@ -887,6 +1246,15 @@ void MainComponent::updateStatusForSelection()
 
     if (isHermesJobRunning()) {
         status << "  |  " << describeActiveOperation() << " is running in background.";
+    }
+
+    if (midiComparisonEnabled_) {
+        if (const auto pair = selectedMidiComparisonPair(); pair.has_value()) {
+            status << "  |  Compare MIDI: " << juce::String(pair->first.name)
+                   << " vs " << juce::String(pair->second.name);
+        } else {
+            status << "  |  Compare MIDI: waiting for two selected MIDI tracks";
+        }
     }
 
     statusLabel_.setText(status, juce::dontSendNotification);
@@ -1513,6 +1881,54 @@ void MainComponent::runResetPanelLayout()
     statusLabel_.setText("Panel layout reset to defaults.", juce::dontSendNotification);
 }
 
+void MainComponent::runToggleMidiComparison()
+{
+    if (midiComparisonEnabled_) {
+        midiComparisonEnabled_ = false;
+        updateVisualWorkspace();
+        updateStatusForSelection();
+        return;
+    }
+
+    const auto pair = selectedMidiComparisonPair();
+    if (!pair.has_value()) {
+        showValidationError(this, "Select exactly two MIDI tracks to compare.");
+        return;
+    }
+
+    midiComparisonEnabled_ = true;
+
+    double minBeat = 0.0;
+    double maxBeat = 0.0;
+    bool hasNotes = false;
+
+    const auto includeTrackBounds = [&minBeat, &maxBeat, &hasNotes](const core::Track& track) {
+        for (const auto& note : track.midiNotes) {
+            if (!hasNotes) {
+                minBeat = note.startBeat;
+                maxBeat = note.startBeat + note.durationBeats;
+                hasNotes = true;
+            } else {
+                minBeat = std::min(minBeat, note.startBeat);
+                maxBeat = std::max(maxBeat, note.startBeat + note.durationBeats);
+            }
+        }
+    };
+
+    includeTrackBounds(pair->first);
+    includeTrackBounds(pair->second);
+
+    if (hasNotes) {
+        timelineViewportState_ = core::fitTimelineViewport(minBeat, maxBeat, 0.5, 1.0, 512.0);
+        std::vector<core::MidiNote> notes = pair->first.midiNotes;
+        notes.insert(notes.end(), pair->second.midiNotes.begin(), pair->second.midiNotes.end());
+        pitchViewportState_ = core::fitPitchViewportToNotes(notes, 2.0);
+    }
+
+    updateVisualWorkspace();
+    updateStatusForSelection();
+}
+
 void MainComponent::runClearHermesCache()
 {
     if (isHermesJobRunning()) {
@@ -1623,7 +2039,7 @@ void MainComponent::showAbout()
     juce::AlertWindow::showMessageBox(
         juce::AlertWindow::InfoIcon,
         "About DAWHermes",
-        "DAWHermes Milestone 2\nNative Windows DAW shell with embedded Hermes tools.");
+    "DAWHermes Milestone 3.1\nNative Windows DAW shell with embedded Hermes tools and visual MIDI comparison.");
 }
 
 }  // namespace dawhermes::ui
