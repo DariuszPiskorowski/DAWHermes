@@ -20,17 +20,15 @@ double sanitizedDuration(double durationSeconds) noexcept
 
 std::string formatUnderOneHourCurrent(double seconds)
 {
-    const auto totalMilliseconds = static_cast<long long>(
-        std::floor(std::max(0.0, seconds) * 1000.0 + 1.0e-6));
-    const auto minutes = totalMilliseconds / 60000;
-    const auto wholeSeconds = (totalMilliseconds / 1000) % 60;
-    const auto milliseconds = totalMilliseconds % 1000;
+    const auto totalSeconds = static_cast<long long>(
+        std::floor(std::max(0.0, seconds) + 1.0e-6));
+    const auto minutes = totalSeconds / 60;
+    const auto wholeSeconds = totalSeconds % 60;
 
     std::ostringstream text;
     text << std::setfill('0')
          << std::setw(2) << minutes << ":"
-         << std::setw(2) << wholeSeconds << ":"
-         << std::setw(3) << milliseconds;
+         << std::setw(2) << wholeSeconds;
     return text.str();
 }
 

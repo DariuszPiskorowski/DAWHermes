@@ -20,8 +20,8 @@ enum class PlaybackTempoSource {
     fallback
 };
 
-constexpr double kFallbackPlaybackBpm = 130.0;
-constexpr double kTransportSeekSeconds = 15.0;
+constexpr double kFallbackPlaybackBpm = 120.0;
+constexpr double kTransportSeekSeconds = 5.0;
 
 struct SelectionTransportCommandState {
     bool rewindEnabled { false };

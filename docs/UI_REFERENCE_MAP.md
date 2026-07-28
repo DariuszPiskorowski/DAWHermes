@@ -110,11 +110,11 @@ Milestone 3.4 audition surfaces:
   together;
 - audio-only and MIDI-only selection remain playable;
 - Pause/resume preserves the immutable playback selection and current position;
-- `<<` and `>>` seek by 15 seconds and clamp to the selection bounds;
+- `<<` and `>>` seek by 5 seconds and clamp to the selection bounds;
 - Stop, Panic, and Master Volume affect MIDI and WAV;
 - skipped unreadable audio is reported in the existing non-modal status strip;
 - the BPM readout prefers explicit MIDI tempo, then confidently detected WAV
-  tempo, then the 130 BPM audition fallback;
+  tempo, then the 120 BPM audition fallback;
 - Timeline and Piano Roll retain one shared orange playhead and viewport, with
   threshold-based follow during active playback;
 - no Record, mixer, mute/solo, looping, direct WAV import, or audio-editing

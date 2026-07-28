@@ -94,14 +94,14 @@ Milestone 3.4 extends the same device and callback into selected-stem audition:
 - retired decoded stem buffers are reclaimed outside the audio callback.
 - one shared transport state owns stopped/playing/paused mode, current time,
   selection duration, and the immutable playback snapshot;
-- Play, Pause/resume, Stop, Panic, and clamped 15-second seek operate on that
+- Play, Pause/resume, Stop, Panic, and clamped 5-second seek operate on that
   shared state without creating history entries;
 - resume and seek publish precomputed MIDI cursors and reconstruct only notes
   active at the target time, rather than scanning model data in the callback;
 - Timeline and Piano Roll use the same authoritative transport position and
   horizontal viewport, with threshold-based follow during active playback;
 - tempo resolution prefers explicit imported MIDI tempo metadata, then a
-  confident asynchronously detected WAV tempo, then a 130 BPM audition fallback;
+  confident asynchronously detected WAV tempo, then a 120 BPM audition fallback;
 - bounded WAV tempo analysis and its path/size/mtime session cache run outside
   the callback, while source audio always plays at original speed.
 
@@ -167,6 +167,6 @@ Additional Milestone 3.1 boundaries:
   for final user acceptance. Timeline editing, controller lanes, copy/paste,
   and Cubase-specific exchange remain deferred.
 - M3.4 playback is audition-grade: it includes Pause/resume, a counter,
-  15-second seeking, playhead follow, and BPM resolution, but no time stretching,
+  5-second seeking, playhead follow, and BPM resolution, but no time stretching,
   beat warping, looping, mixer, effects, direct WAV import, or final
   sample-accurate DAW mixing.

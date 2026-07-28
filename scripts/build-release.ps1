@@ -57,6 +57,28 @@ function Get-CMakeCacheValue {
     return ''
 }
 
+function Assert-NoLtcgReleaseTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CachePath
+    )
+
+    if (-not (Test-Path -LiteralPath $CachePath)) {
+        throw "Release build tree is not configured: $CachePath"
+    }
+
+    $ltcgSetting = Get-CMakeCacheValue `
+        -CachePath $CachePath `
+        -Name 'DAWHERMES_ENABLE_LTCG'
+    if ($ltcgSetting -ne 'OFF') {
+        $message =
+            "Unsafe Release build refused: DAWHERMES_ENABLE_LTCG must be exactly OFF " +
+            "in $CachePath (found '$ltcgSetting'). Reconfigure with " +
+            ".\scripts\configure.ps1 -EnableLtcg OFF."
+        throw $message
+    }
+}
+
 function Write-DiagnosticLine {
     param(
         [Parameter(Mandatory = $true)]
@@ -467,6 +489,11 @@ $buildDir = if ($usingDefaultBuildDirectory) {
     [System.IO.Path]::GetFullPath((Join-Path $repoRoot $BuildDirectory))
 }
 $cmake = Get-CMakePath -MinimumVersion ([version]'3.22.0')
+$cachePath = Join-Path $buildDir 'CMakeCache.txt'
+
+if (Test-Path -LiteralPath $cachePath) {
+    Assert-NoLtcgReleaseTree -CachePath $cachePath
+}
 
 $effectiveParallelJobs = $ParallelJobs
 if ($Diagnostic -and $effectiveParallelJobs -eq 0) {
@@ -503,7 +530,6 @@ if ($Diagnostic) {
     Write-DiagnosticLine "Requested parallel jobs: $effectiveParallelJobs"
     Write-DiagnosticLine "CMake: $($cmake.Path) ($($cmake.Version))"
 
-    $cachePath = Join-Path $buildDir 'CMakeCache.txt'
     Write-DiagnosticLine "Generator: $(Get-CMakeCacheValue -CachePath $cachePath -Name 'CMAKE_GENERATOR')"
     Write-DiagnosticLine "Generator instance: $(Get-CMakeCacheValue -CachePath $cachePath -Name 'CMAKE_GENERATOR_INSTANCE')"
     Write-DiagnosticLine "MSBuild: $(Get-CMakeCacheValue -CachePath $cachePath -Name 'CMAKE_VS_MSBUILD_COMMAND')"
@@ -532,7 +558,7 @@ try {
             Write-DiagnosticCommand (Join-Path $PSScriptRoot 'configure.ps1')
         }
 
-        & (Join-Path $PSScriptRoot 'configure.ps1')
+        & (Join-Path $PSScriptRoot 'configure.ps1') -EnableLtcg OFF
 
         if ($Diagnostic) {
             Write-SystemSnapshot -Label 'after-configure'
@@ -541,6 +567,8 @@ try {
     } elseif ($Diagnostic) {
         Write-DiagnosticLine 'PHASE SKIPPED: CONFIGURE (existing CMakeCache.txt)'
     }
+
+    Assert-NoLtcgReleaseTree -CachePath $cachePath
 
     $buildArguments = @(
         '--build',

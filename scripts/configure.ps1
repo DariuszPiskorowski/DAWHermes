@@ -2,8 +2,8 @@
 param(
     [string]$BuildDirectory = '',
 
-    [ValidateSet('', 'ON', 'OFF')]
-    [string]$EnableLtcg = ''
+    [ValidateSet('ON', 'OFF')]
+    [string]$EnableLtcg = 'OFF'
 )
 
 Set-StrictMode -Version Latest
@@ -44,9 +44,7 @@ $configureArguments = @(
     'x64'
 )
 
-if (-not [string]::IsNullOrWhiteSpace($EnableLtcg)) {
-    $configureArguments += "-DDAWHERMES_ENABLE_LTCG=$EnableLtcg"
-}
+$configureArguments += "-DDAWHERMES_ENABLE_LTCG=$EnableLtcg"
 
 & $cmake.Path @configureArguments
 if ($LASTEXITCODE -ne 0) {

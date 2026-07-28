@@ -32,7 +32,7 @@ its corresponding audio track, then press `Play`.
 
 The compact transport strip provides:
 
-- `<<` and `>>` to seek backward or forward by 15 seconds, clamped to the
+- `<<` and `>>` to seek backward or forward by 5 seconds, clamped to the
   selected material's duration;
 - `Play` to start the current selection from project time zero;
 - `Pause` to preserve the current position and immutable snapshot;
@@ -51,7 +51,8 @@ paused preserves the paused state. Transport actions do not create
 MIDI events and WAV frames use one transport clock starting at project time zero.
 Timeline and Piano Roll display the same playhead derived from that clock.
 
-The counter displays current milliseconds with a compact total duration. The
+The counter displays `MM:SS / MM:SS` below one hour and
+`H:MM:SS / H:MM:SS` for longer selections. The
 Timeline follows active playback only after the playhead crosses 80% of the
 visible viewport, repositioning it near 72% without changing zoom. Explicit
 seeks also make the new playhead position visible. The Piano Roll shares the
@@ -66,7 +67,7 @@ The displayed and playback MIDI tempo uses this deterministic priority:
 
 1. an explicit tempo event imported from the primary selected MIDI track;
 2. a confidently detected tempo from a selected readable WAV;
-3. the fixed audition fallback of 130 BPM.
+3. the fixed audition fallback of 120 BPM.
 
 Imported MIDI files record whether their source actually contained tempo meta
 events, so a parser fallback is never mistaken for an explicit source tempo.
@@ -117,7 +118,7 @@ This is audition-grade synchronization:
 
 - WAV time zero equals project time zero;
 - explicit MIDI tempo metadata has priority over WAV detection;
-- inconclusive analysis falls back to 130 BPM;
+- inconclusive analysis falls back to 120 BPM;
 - WAV speed never follows MIDI tempo;
 - there is no time stretching, beat warping, looping, ruler scrubbing, or claim
   of final sample-accurate DAW mixing.
@@ -134,3 +135,13 @@ Cubase/Reaper synchronization, direct WAV import, or visual redesign.
 WAV sources continue to enter the project only through the established
 file-assignment and Hermes workflows. The transport remains audition-grade,
 not a production mix engine.
+
+## Local Release Safety
+
+All local M3.4 Release configuration, builds, and installation use
+`DAWHERMES_ENABLE_LTCG=OFF`, retain normal `/O2` optimization, compile with
+`/GL-`, and link with `/LTCG:OFF`. Two earlier local LTCG builds caused
+repeatable hard Windows freezes, so the supported Release script refuses a
+cache where the option is missing or not exactly `OFF`. LTCG remains available
+only for a future dedicated CI diagnostic workflow; it must not be retried
+locally.

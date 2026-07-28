@@ -2375,14 +2375,19 @@ bool testTransportPauseResumeSeekAndCounter()
         dawhermes::audio::kTransportSeekSeconds,
         state.totalSeconds()));
     EXPECT_TRUE(state.isPaused());
-    EXPECT_TRUE(approxEqual(state.currentSeconds(), 27.25));
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 17.25));
     state.play();
     EXPECT_TRUE(state.isPlaying());
-    EXPECT_TRUE(approxEqual(state.currentSeconds(), 27.25));
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 17.25));
 
     state.seek(dawhermes::audio::seekTransportSeconds(
         state.currentSeconds(),
         dawhermes::audio::kTransportSeekSeconds,
+        state.totalSeconds()));
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 22.25));
+    state.seek(dawhermes::audio::seekTransportSeconds(
+        state.currentSeconds(),
+        100.0,
         state.totalSeconds()));
     EXPECT_TRUE(approxEqual(state.currentSeconds(), 30.0));
     state.seek(dawhermes::audio::seekTransportSeconds(
@@ -2398,19 +2403,20 @@ bool testTransportPauseResumeSeekAndCounter()
 
     EXPECT_EQ(
         dawhermes::audio::formatTransportCounter(42.0, 197.2),
-        std::string("00:42:000 / 03:18"));
+        std::string("00:42 / 03:18"));
     EXPECT_EQ(
         dawhermes::audio::formatTransportCounter(-10.0, 90.0),
-        std::string("00:00:000 / 01:30"));
+        std::string("00:00 / 01:30"));
     EXPECT_EQ(
         dawhermes::audio::formatTransportCounter(999.0, 90.0),
-        std::string("01:30:000 / 01:30"));
+        std::string("01:30 / 01:30"));
     EXPECT_EQ(
         dawhermes::audio::formatTransportCounter(3723.0, 3723.0),
         std::string("1:02:03 / 1:02:03"));
     EXPECT_EQ(
         dawhermes::audio::formatTransportCounter(0.0, 0.0),
         std::string("00:00 / 00:00"));
+    EXPECT_TRUE(approxEqual(dawhermes::audio::kTransportSeekSeconds, 5.0));
     EXPECT_EQ(history.size(), historySize);
     EXPECT_EQ(trackSelection.selectedTrackIds(), trackIdsBefore);
     EXPECT_EQ(noteSelection.selectedNoteIds(), noteIdsBefore);
@@ -2496,7 +2502,7 @@ bool testPlaybackTempoSourcePriorityAndDuration()
         dawhermes::audio::PlaybackTempoSource::fallback);
     EXPECT_TRUE(approxEqual(
         dawhermes::audio::selectionPlaybackBpm(0.0, fallback.snapshot),
-        130.0,
+        120.0,
         0.01));
 
     const auto activeFallbackTempo = fallback.snapshot.playheadTempoMap;
@@ -4719,6 +4725,11 @@ int main(int argc, char* argv[])
         return runM2RealAssetsMode(argc, argv);
     }
 
+    const auto skipEmbeddedHermesIntegration =
+        std::any_of(argv + 1, argv + argc, [](const char* argument) {
+            return std::string(argument) == "--skip-embedded-hermes-integration";
+        });
+
     struct NamedTest {
         const char* name;
         bool (*func)();
@@ -4797,6 +4808,13 @@ int main(int argc, char* argv[])
 
     int failed = 0;
     for (const auto& test : tests) {
+        if (skipEmbeddedHermesIntegration
+            && test.func == testEmbeddedHermesStructuredResultAndInsertion) {
+            std::cout << "[SKIP] " << test.name
+                      << " (explicit isolated-environment exclusion)\n";
+            continue;
+        }
+
         const bool passed = test.func();
         std::cout << "[" << (passed ? "PASS" : "FAIL") << "] " << test.name << "\n";
         if (!passed) {

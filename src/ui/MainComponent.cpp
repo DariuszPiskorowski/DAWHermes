@@ -2516,6 +2516,8 @@ void MainComponent::startSelectedMidiPlayback()
         return;
     }
 
+    const auto usesFallbackTempo =
+        snapshotResult.snapshot.tempoSource == audio::PlaybackTempoSource::fallback;
     auto startSeconds = midiAuditionEngine_.playheadSeconds();
     if (startSeconds >= snapshotResult.snapshot.durationSeconds - 1.0e-9) {
         startSeconds = 0.0;
@@ -2546,6 +2548,9 @@ void MainComponent::startSelectedMidiPlayback()
             status << " (+" << static_cast<int>(snapshotResult.skippedAudioTracks.size() - 1)
                    << " more)";
         }
+    }
+    if (usesFallbackTempo) {
+        status << " | Using 120.0 BPM fallback for this playback.";
     }
     statusLabel_.setText(status, juce::dontSendNotification);
     updateTransportControlState();
@@ -2606,7 +2611,7 @@ void MainComponent::seekPlayback(double deltaSeconds)
     updatePlaybackPlayhead(true);
     updateTransportDisplays();
     statusLabel_.setText(
-        deltaSeconds < 0.0 ? "Seek: -15 seconds" : "Seek: +15 seconds",
+        deltaSeconds < 0.0 ? "Seek: -5 seconds" : "Seek: +5 seconds",
         juce::dontSendNotification);
     updateTransportControlState();
 }
@@ -2633,7 +2638,8 @@ void MainComponent::refreshTransportSelectionState()
         options);
     transportSelectionSummary_ = summary;
     if (const auto snapshot = midiAuditionEngine_.playbackSnapshot();
-        snapshot != nullptr) {
+        snapshot != nullptr
+        && midiAuditionEngine_.transportMode() != audio::TransportMode::stopped) {
         resolvedTimelineInfo_.tempoMap = snapshot->playheadTempoMap;
     } else if (!summary.tempoMap.empty()) {
         resolvedTimelineInfo_.tempoMap = summary.tempoMap;
@@ -2701,7 +2707,7 @@ void MainComponent::processCompletedWavBpmAnalysis()
         && transportSelectionSummary_.tempoSource
             != audio::PlaybackTempoSource::explicitMidi) {
         statusLabel_.setText(
-            "WAV BPM uncertain; using 130.0 BPM fallback.",
+            "WAV BPM uncertain; using 120.0 BPM fallback.",
             juce::dontSendNotification);
     }
     updateTransportDisplays();
@@ -2724,8 +2730,9 @@ void MainComponent::updateTransportDisplays()
         return;
     }
 
-    if (snapshot != nullptr
-        && snapshot->tempoSource == audio::PlaybackTempoSource::explicitMidi) {
+    const auto activeSnapshot = snapshot != nullptr
+        && midiAuditionEngine_.transportMode() != audio::TransportMode::stopped;
+    if (activeSnapshot) {
         bpmLabel_.setText(
             "BPM " + juce::String(
                 audio::selectionPlaybackBpm(
@@ -2733,7 +2740,15 @@ void MainComponent::updateTransportDisplays()
                     *snapshot),
                 1),
             juce::dontSendNotification);
-        bpmLabel_.setTooltip("Explicit MIDI tempo map.");
+        if (snapshot->tempoSource == audio::PlaybackTempoSource::explicitMidi) {
+            bpmLabel_.setTooltip("Explicit MIDI tempo map.");
+        } else if (snapshot->tempoSource == audio::PlaybackTempoSource::detectedWav) {
+            bpmLabel_.setTooltip(
+                "Detected WAV tempo estimate; audio remains at original speed.");
+        } else {
+            bpmLabel_.setTooltip(
+                "120.0 BPM fallback for this immutable playback snapshot.");
+        }
         return;
     }
 
@@ -2785,7 +2800,7 @@ void MainComponent::updateTransportDisplays()
         return;
     }
 
-    bpmLabel_.setText("BPM 130.0", juce::dontSendNotification);
+    bpmLabel_.setText("BPM 120.0", juce::dontSendNotification);
     bpmLabel_.setTooltip("Fallback transport tempo; WAV detection was unavailable or uncertain.");
 }
 

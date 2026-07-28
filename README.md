@@ -8,6 +8,8 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 
 Milestone 3.2 MIDI editing and selected-track export is complete, manually accepted, and published.
 Milestone 3.3 MIDI audition playback is complete, manually accepted, and published.
+Core Milestone 3.4 synchronized WAV/MIDI playback is manually accepted; its
+completed transport workflow awaits a final installed-app acceptance pass.
 
 Milestone 1.1 and Milestone 2 functional integration are complete and accepted.
 Milestone 3.1 visual functionality is accepted.
@@ -28,7 +30,9 @@ Currently implemented:
 - note hover diagnostics (pitch, velocity, start, duration, channel);
 - View -> Compare Selected MIDI Tracks mode with color-coded delta legend (read-only comparison);
 - piano-roll note selection, marquee selection, creation, deletion, mouse movement, right-edge duration resize, keyboard nudging, Snap, velocity editing, and quantize selected notes to grid;
-- selected-track MIDI audition through the system default audio output with Play, Stop, Panic, safe volume, and Timeline/Piano Roll playheads;
+- synchronized selected-track MIDI and assigned-WAV audition through the system
+  default audio output with Play, Pause/resume, Stop, Panic, 5-second seeking,
+  safe volume, BPM, a time counter, and shared Timeline/Piano Roll playheads;
 - track selection and deletion;
 - deliberate right-click context menus;
 - Hermes menu, option dialogs and validation;
@@ -51,7 +55,7 @@ Currently implemented:
 
 Not implemented yet:
 
-- WAV/audio-track playback or recording;
+- recording;
 - Hermes set/fix BPM workflow;
 - VST3 hosting;
 - AI model connection;
@@ -66,7 +70,8 @@ Milestone 3.3 audition uses a deliberately simple internal sine synth. Its funct
 The current Timeline and Piano Roll styling is intentionally functional rather than final.
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
-WAV playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange remain deferred.
+Direct WAV import, Timeline editing, controller lanes, copy/paste, and
+Cubase-specific exchange remain deferred.
 
 ## Related projects
 
@@ -137,13 +142,20 @@ binary logs under the ignored `build\diagnostics` directory:
 ```
 
 Diagnostic mode builds only the `DAWHermes` Release target. It does not run
-tests, install files or launch the application. Omitting `-Diagnostic` and
-`-ParallelJobs` preserves the normal Release build command.
+tests, install files or launch the application.
 
-Release LTCG is enabled by default through the
-`DAWHERMES_ENABLE_LTCG` CMake option. To isolate Release compiler/linker
-failures without changing the production default, configure a fresh diagnostic
-tree with LTCG disabled and build only that tree:
+The `DAWHERMES_ENABLE_LTCG` CMake option remains available and defaults to
+`ON` for future CI/toolchain investigation. The supported local scripts are
+deliberately safer: `configure.ps1` explicitly configures `OFF`, and
+`build-release.ps1` refuses to build unless the selected cache contains exactly
+`DAWHERMES_ENABLE_LTCG=OFF`. This prevents the normal local build and install
+workflow from starting the `/GL`/`/LTCG` path that repeatedly froze Windows.
+After an already verified Release build, `install-local.ps1 -SkipBuild`
+installs that artifact without initiating another build and still verifies the
+no-LTCG cache setting. `-BuildDirectory` can select a fresh verified tree
+instead of reusing an older local Release tree.
+
+To use a fresh isolated no-LTCG diagnostic tree:
 
 ```powershell
 .\scripts\configure.ps1 `
@@ -166,6 +178,14 @@ Run tests:
 
 ```powershell
 .\scripts\test.ps1
+```
+
+The standard test script skips the environment-dependent embedded Hermes
+integration test while running the deterministic suite. Run that integration
+explicitly only in a prepared Hermes environment:
+
+```powershell
+.\scripts\test.ps1 -IncludeEmbeddedHermesIntegration
 ```
 
 Run opt-in Milestone 2 real-assets verification (embedded Hermes path, hash and cache checks):

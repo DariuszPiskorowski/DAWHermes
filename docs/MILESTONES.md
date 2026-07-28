@@ -31,10 +31,10 @@ completion is implemented for installed native acceptance:
 - preload immutable mono/stereo WAV data and safely handle 44.1/48 kHz
   source/device-rate differences;
 - share transport time zero and the Timeline/Piano Roll playhead across MIDI and audio;
-- provide Pause/resume, a current/total counter, clamped 15-second seeking, and
+- provide Pause/resume, a current/total counter, clamped 5-second seeking, and
   threshold-based shared playhead follow;
 - resolve BPM from explicit MIDI tempo metadata, then cached asynchronous WAV
-  detection, then a 130 BPM fallback;
+  detection, then a 120 BPM fallback;
 - apply Stop, Panic, and Master Volume to both sources;
 - skip missing/unreadable audio without modal errors;
 - keep WAV at original speed with no stretching, warping, mixer, recording,

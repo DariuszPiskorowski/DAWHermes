@@ -1,3 +1,8 @@
+[CmdletBinding()]
+param(
+    [switch]$IncludeEmbeddedHermesIntegration
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -21,14 +26,26 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Push-Location $repoRoot
-try {
-    & $ctestExe --test-dir $buildDir -C Debug --output-on-failure
+if ($IncludeEmbeddedHermesIntegration) {
+    Push-Location $repoRoot
+    try {
+        & $ctestExe --test-dir $buildDir -C Debug --output-on-failure
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+    } finally {
+        Pop-Location
+    }
+} else {
+    $testExecutable = Join-Path $buildDir 'Debug\DAWHermesTests.exe'
+    if (-not (Test-Path -LiteralPath $testExecutable)) {
+        throw "Test executable not found at $testExecutable"
+    }
+
+    & $testExecutable --skip-embedded-hermes-integration
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
-} finally {
-    Pop-Location
 }
 
 Write-Host 'All tests passed.'
