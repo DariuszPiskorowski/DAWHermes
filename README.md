@@ -140,6 +140,28 @@ Diagnostic mode builds only the `DAWHermes` Release target. It does not run
 tests, install files or launch the application. Omitting `-Diagnostic` and
 `-ParallelJobs` preserves the normal Release build command.
 
+Release LTCG is enabled by default through the
+`DAWHERMES_ENABLE_LTCG` CMake option. To isolate Release compiler/linker
+failures without changing the production default, configure a fresh diagnostic
+tree with LTCG disabled and build only that tree:
+
+```powershell
+.\scripts\configure.ps1 `
+    -BuildDirectory build\diagnostic-variants\no-ltcg `
+    -EnableLtcg OFF
+
+.\scripts\build-release.ps1 `
+    -Diagnostic `
+    -ParallelJobs 1 `
+    -BuildDirectory build\diagnostic-variants\no-ltcg
+```
+
+The no-LTCG configuration omits JUCE's recommended LTO flags, disables Release
+interprocedural optimization, compiles participating DAWHermes targets with
+`/GL-`, and links the final executable with `/LTCG:OFF`. Inspect the generated
+projects before executing the diagnostic build. Generated projects, outputs and
+logs remain under the ignored `build` directory.
+
 Run tests:
 
 ```powershell

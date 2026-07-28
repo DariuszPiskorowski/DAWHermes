@@ -3,7 +3,9 @@ param(
     [switch]$Diagnostic,
 
     [ValidateRange(0, 256)]
-    [int]$ParallelJobs = 0
+    [int]$ParallelJobs = 0,
+
+    [string]$BuildDirectory = ''
 )
 
 Set-StrictMode -Version Latest
@@ -234,6 +236,49 @@ function Write-BuildArtifactSnapshot {
     Write-DiagnosticLine "ARTIFACT SNAPSHOT END: $Label"
 }
 
+function Write-GeneratedProjectFlagSnapshot {
+    if (-not $Diagnostic) {
+        return
+    }
+
+    $projectNames = @(
+        'dawhermes_core.vcxproj',
+        'dawhermes_audio.vcxproj',
+        'dawhermes_midi.vcxproj',
+        'dawhermes_hermes.vcxproj',
+        'dawhermes_ui.vcxproj',
+        'DAWHermes.vcxproj'
+    )
+    $patterns = @(
+        'WholeProgramOptimization',
+        'InterproceduralOptimization',
+        'Optimization>',
+        'AdditionalOptions>',
+        'AdditionalDependencies>',
+        'LinkTimeCodeGeneration'
+    )
+
+    foreach ($projectName in $projectNames) {
+        $projectPath = Join-Path $buildDir $projectName
+        Add-Content -LiteralPath $script:generatedFlagLogPath `
+            -Value "===== $projectPath =====" `
+            -Encoding UTF8
+
+        if (-not (Test-Path -LiteralPath $projectPath)) {
+            Add-Content -LiteralPath $script:generatedFlagLogPath `
+                -Value 'MISSING' `
+                -Encoding UTF8
+            continue
+        }
+
+        Select-String -LiteralPath $projectPath -Pattern $patterns |
+            ForEach-Object {
+                '{0}:{1}: {2}' -f $_.Path, $_.LineNumber, $_.Line.Trim()
+            } |
+            Add-Content -LiteralPath $script:generatedFlagLogPath -Encoding UTF8
+    }
+}
+
 function Start-ResourceMonitor {
     if (-not $Diagnostic) {
         return $null
@@ -413,7 +458,14 @@ function Write-ResourceSummary {
 }
 
 $repoRoot = Get-RepoRoot -ScriptRoot $PSScriptRoot
-$buildDir = Get-BuildDir -RepoRoot $repoRoot
+$usingDefaultBuildDirectory = [string]::IsNullOrWhiteSpace($BuildDirectory)
+$buildDir = if ($usingDefaultBuildDirectory) {
+    Get-BuildDir -RepoRoot $repoRoot
+} elseif ([System.IO.Path]::IsPathRooted($BuildDirectory)) {
+    [System.IO.Path]::GetFullPath($BuildDirectory)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $BuildDirectory))
+}
 $cmake = Get-CMakePath -MinimumVersion ([version]'3.22.0')
 
 $effectiveParallelJobs = $ParallelJobs
@@ -437,6 +489,7 @@ if ($Diagnostic) {
     $script:resourceMonitorPath = Join-Path $diagnosticDir 'resource-samples.csv'
     $script:resourceMonitorStopPath = Join-Path $diagnosticDir 'resource-monitor.stop'
     $script:resourceSummaryPath = Join-Path $diagnosticDir 'resource-summary.txt'
+    $script:generatedFlagLogPath = Join-Path $diagnosticDir 'generated-project-flags.log'
     $binaryLogPath = Join-Path $diagnosticDir 'msbuild.binlog'
     $textLogPath = Join-Path $diagnosticDir 'msbuild-diagnostic.log'
     $transcriptPath = Join-Path $diagnosticDir 'powershell-transcript.log'
@@ -446,6 +499,7 @@ if ($Diagnostic) {
 
     Write-DiagnosticLine 'SCRIPT START'
     Write-DiagnosticLine "Diagnostic directory: $diagnosticDir"
+    Write-DiagnosticLine "Build directory: $buildDir"
     Write-DiagnosticLine "Requested parallel jobs: $effectiveParallelJobs"
     Write-DiagnosticLine "CMake: $($cmake.Path) ($($cmake.Version))"
 
@@ -458,14 +512,20 @@ if ($Diagnostic) {
     Write-DiagnosticLine "MSVC installation: $($msvc.InstallationPath) ($($msvc.InstallationVersion))"
     Write-DiagnosticLine "Logical processors: $([Environment]::ProcessorCount)"
     Write-DiagnosticLine "CMAKE_BUILD_PARALLEL_LEVEL: $($env:CMAKE_BUILD_PARALLEL_LEVEL)"
+    Write-DiagnosticLine "DAWHERMES_ENABLE_LTCG: $(Get-CMakeCacheValue -CachePath $cachePath -Name 'DAWHERMES_ENABLE_LTCG')"
 
     Write-SystemSnapshot -Label 'script-start'
     Write-BuildArtifactSnapshot -Label 'before-build'
+    Write-GeneratedProjectFlagSnapshot
     $resourceMonitorJob = Start-ResourceMonitor
 }
 
 try {
     if (-not (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
+        if (-not $usingDefaultBuildDirectory) {
+            throw "Custom build directory is not configured: $buildDir"
+        }
+
         if ($Diagnostic) {
             Write-DiagnosticLine 'PHASE START: CONFIGURE'
             Write-SystemSnapshot -Label 'before-configure'
