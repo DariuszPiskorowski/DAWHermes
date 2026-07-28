@@ -53,7 +53,9 @@ set_project_warnings(dawhermes_core)
 
 add_library(dawhermes_audio
   src/audio/MidiPlaybackModel.cpp
+  src/audio/TransportModel.cpp
   src/audio/SelectionPlaybackModel.cpp
+  src/audio/WavBpmDetector.cpp
   src/audio/MidiAuditionEngine.cpp
 )
 target_include_directories(dawhermes_audio PUBLIC src)

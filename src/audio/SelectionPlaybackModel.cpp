@@ -29,6 +29,21 @@ std::string countLabel(std::size_t count, const char* singular, const char* plur
     return std::to_string(count) + " " + (count == 1 ? singular : plural);
 }
 
+double sanitizedFallbackBpm(double bpm)
+{
+    return std::isfinite(bpm) && bpm > 0.0 ? bpm : kFallbackPlaybackBpm;
+}
+
+std::vector<core::MidiTempoEvent> singleTempoMap(double bpm)
+{
+    const auto sanitizedBpm = sanitizedFallbackBpm(bpm);
+    const auto microseconds = static_cast<int>(std::clamp(
+        std::llround(60000000.0 / sanitizedBpm),
+        1LL,
+        static_cast<long long>(std::numeric_limits<int>::max())));
+    return core::sanitizeTempoMap({ core::MidiTempoEvent { 0.0, microseconds } });
+}
+
 const core::Track* primarySelectedMidiTrack(
     const core::ProjectModel& project,
     const core::SelectionState& selection)
@@ -43,6 +58,68 @@ const core::Track* primarySelectedMidiTrack(
     }
 
     return nullptr;
+}
+
+std::vector<core::MidiTempoEvent> playbackTempoMapForSelection(
+    const core::Track* midiTrack,
+    const SelectionPlaybackOptions& options,
+    PlaybackTempoSource& source)
+{
+    if (midiTrack != nullptr && hasExplicitMidiTempo(*midiTrack)) {
+        source = PlaybackTempoSource::explicitMidi;
+        return core::sanitizeTempoMap(midiTrack->midiSourceMetadata->tempoMap);
+    }
+
+    if (options.detectedWavBpm.has_value()
+        && std::isfinite(options.detectedWavBpm.value())
+        && options.detectedWavBpm.value() >= 60.0
+        && options.detectedWavBpm.value() <= 200.0) {
+        source = PlaybackTempoSource::detectedWav;
+        return singleTempoMap(options.detectedWavBpm.value());
+    }
+
+    source = PlaybackTempoSource::fallback;
+    return singleTempoMap(options.fallbackBpm);
+}
+
+std::optional<double> inspectAudioStemDuration(
+    const core::Track& track,
+    SkippedAudioTrack& skipped)
+{
+    skipped.sourceTrackId = track.id;
+    skipped.sourceTrackName = track.name;
+    skipped.sourceFileName = sourceFileName(track.audioSourcePath);
+
+    if (track.audioSourcePath.empty()) {
+        skipped.reason = "no WAV source is assigned";
+        return std::nullopt;
+    }
+
+    const juce::File sourceFile(track.audioSourcePath);
+    if (!sourceFile.existsAsFile()) {
+        skipped.reason = "file is missing";
+        return std::nullopt;
+    }
+
+    juce::WavAudioFormat wavFormat;
+    auto inputStream = sourceFile.createInputStream();
+    if (inputStream == nullptr) {
+        skipped.reason = "file could not be opened";
+        return std::nullopt;
+    }
+
+    std::unique_ptr<juce::AudioFormatReader> reader(
+        wavFormat.createReaderFor(inputStream.release(), true));
+    if (reader == nullptr
+        || reader->sampleRate <= 0.0
+        || reader->lengthInSamples <= 0
+        || reader->numChannels < 1
+        || reader->numChannels > 2) {
+        skipped.reason = "file is not a readable mono or stereo WAV";
+        return std::nullopt;
+    }
+
+    return static_cast<double>(reader->lengthInSamples) / reader->sampleRate;
 }
 
 std::optional<AudioStemPlaybackSnapshot> loadAudioStem(
@@ -180,56 +257,23 @@ std::size_t SelectionPlaybackSnapshot::audioTrackCount() const noexcept
         [](const auto& stem) { return stem.isPlayable(); }));
 }
 
-void SelectionPlaybackState::start(
-    std::shared_ptr<const SelectionPlaybackSnapshot> snapshot) noexcept
-{
-    const auto playable = snapshot != nullptr && snapshot->isPlayable();
-    snapshot_.store(playable ? std::move(snapshot) : nullptr, std::memory_order_release);
-    playing_.store(playable, std::memory_order_release);
-}
-
-void SelectionPlaybackState::stop() noexcept
-{
-    snapshot_.store(nullptr, std::memory_order_release);
-    playing_.store(false, std::memory_order_release);
-}
-
-void SelectionPlaybackState::panic() noexcept
-{
-    stop();
-}
-
-void SelectionPlaybackState::finish() noexcept
-{
-    playing_.store(false, std::memory_order_release);
-}
-
-bool SelectionPlaybackState::isPlaying() const noexcept
-{
-    return playing_.load(std::memory_order_acquire);
-}
-
-bool SelectionPlaybackState::hasPreparedPlayback() const noexcept
-{
-    return snapshot_.load(std::memory_order_acquire) != nullptr;
-}
-
-std::shared_ptr<const SelectionPlaybackSnapshot> SelectionPlaybackState::snapshot() const noexcept
-{
-    return snapshot_.load(std::memory_order_acquire);
-}
-
 SelectionPlaybackSnapshotResult createSelectionPlaybackSnapshot(
     const core::ProjectModel& project,
-    const core::SelectionState& selection)
+    const core::SelectionState& selection,
+    const SelectionPlaybackOptions& options)
 {
     SelectionPlaybackSnapshotResult result;
+    const auto* midiTrack = primarySelectedMidiTrack(project, selection);
+    result.snapshot.playheadTempoMap = playbackTempoMapForSelection(
+        midiTrack,
+        options,
+        result.snapshot.tempoSource);
 
-    if (const auto* midiTrack = primarySelectedMidiTrack(project, selection);
-        midiTrack != nullptr) {
-        auto midiResult = createMidiPlaybackSnapshot(*midiTrack);
+    if (midiTrack != nullptr) {
+        auto midiResult = createMidiPlaybackSnapshot(
+            *midiTrack,
+            result.snapshot.playheadTempoMap);
         if (midiResult.ok) {
-            result.snapshot.playheadTempoMap = midiResult.snapshot.tempoMap;
             result.snapshot.durationSeconds = midiResult.snapshot.durationSeconds;
             result.snapshot.midi = std::move(midiResult.snapshot);
         }
@@ -256,14 +300,6 @@ SelectionPlaybackSnapshotResult createSelectionPlaybackSnapshot(
         result.snapshot.audioStems.push_back(std::move(stem.value()));
     }
 
-    if (result.snapshot.midi.has_value()) {
-        result.snapshot.playheadTempoMap = result.snapshot.midi->tempoMap;
-    } else {
-        result.snapshot.playheadTempoMap = core::resolveMidiTimelineInfo(
-            {},
-            project.tracks()).tempoMap;
-    }
-
     result.ok = result.snapshot.isPlayable();
     result.message = result.ok
         ? describeSelectionPlayback(result.snapshot)
@@ -273,14 +309,66 @@ SelectionPlaybackSnapshotResult createSelectionPlaybackSnapshot(
     return result;
 }
 
+SelectionPlaybackSummary createSelectionPlaybackSummary(
+    const core::ProjectModel& project,
+    const core::SelectionState& selection,
+    const SelectionPlaybackOptions& options)
+{
+    SelectionPlaybackSummary summary;
+    const auto* midiTrack = primarySelectedMidiTrack(project, selection);
+    summary.tempoMap = playbackTempoMapForSelection(
+        midiTrack,
+        options,
+        summary.tempoSource);
+
+    if (midiTrack != nullptr) {
+        const auto midi = createMidiPlaybackSnapshot(*midiTrack, summary.tempoMap);
+        if (midi.ok) {
+            summary.midiTrackCount = 1;
+            summary.durationSeconds = midi.snapshot.durationSeconds;
+        }
+    }
+
+    for (const auto selectedId : selection.selectedTrackIds()) {
+        const auto* track = project.findTrackById(selectedId);
+        if (track == nullptr
+            || track->type != core::TrackType::audio
+            || track->audioSourcePath.empty()) {
+            continue;
+        }
+
+        SkippedAudioTrack skipped;
+        const auto duration = inspectAudioStemDuration(*track, skipped);
+        if (!duration.has_value()) {
+            summary.skippedAudioTracks.push_back(std::move(skipped));
+            continue;
+        }
+
+        ++summary.audioTrackCount;
+        summary.durationSeconds = std::max(summary.durationSeconds, duration.value());
+        if (!summary.firstReadableAudioPath.has_value()) {
+            summary.firstReadableAudioPath = track->audioSourcePath;
+        }
+    }
+
+    summary.playable = summary.midiTrackCount > 0 || summary.audioTrackCount > 0;
+    return summary;
+}
+
 SelectionTransportCommandState selectionTransportCommandState(
     const core::ProjectModel& project,
     const core::SelectionState& selection,
-    bool isPlaying)
+    TransportMode mode,
+    double playableDurationSeconds)
 {
     SelectionTransportCommandState state;
-    state.playEnabled = !isPlaying && selectionHasPotentialPlayback(project, selection);
-    state.stopEnabled = isPlaying;
+    state.playEnabled = mode == TransportMode::paused
+        || (mode == TransportMode::stopped
+            && selectionHasPotentialPlayback(project, selection));
+    state.pauseEnabled = mode == TransportMode::playing;
+    state.stopEnabled = mode != TransportMode::stopped;
+    state.rewindEnabled = playableDurationSeconds > 0.0;
+    state.fastForwardEnabled = playableDurationSeconds > 0.0;
     state.panicEnabled = true;
     return state;
 }
@@ -290,6 +378,75 @@ double selectionPlayheadBeat(
     const SelectionPlaybackSnapshot& snapshot)
 {
     return midiSecondsToBeat(transportSeconds, snapshot.playheadTempoMap);
+}
+
+double playbackBpmAtBeat(
+    double beat,
+    const std::vector<core::MidiTempoEvent>& tempoMap)
+{
+    const auto map = core::sanitizeTempoMap(tempoMap);
+    const auto targetBeat = std::isfinite(beat) ? std::max(0.0, beat) : 0.0;
+    auto active = map.front();
+    for (const auto& event : map) {
+        if (event.beatPosition > targetBeat + 1.0e-9) {
+            break;
+        }
+        active = event;
+    }
+
+    return 60000000.0
+        / static_cast<double>(std::max(1, active.microsecondsPerQuarterNote));
+}
+
+double selectionPlaybackBpm(
+    double transportSeconds,
+    const SelectionPlaybackSnapshot& snapshot)
+{
+    const auto beat = selectionPlayheadBeat(transportSeconds, snapshot);
+    return playbackBpmAtBeat(beat, snapshot.playheadTempoMap);
+}
+
+bool hasExplicitMidiTempo(const core::Track& track) noexcept
+{
+    return track.type == core::TrackType::midi
+        && track.midiSourceMetadata.has_value()
+        && track.midiSourceMetadata->containsExplicitTempoEvents.value_or(
+            !track.midiSourceMetadata->tempoMap.empty());
+}
+
+MidiResumeState createMidiResumeState(
+    const MidiPlaybackSnapshot& snapshot,
+    double transportSeconds)
+{
+    MidiResumeState state;
+    const auto target = clampTransportSeconds(
+        transportSeconds,
+        snapshot.durationSeconds);
+
+    for (const auto& event : snapshot.events) {
+        if (event.timeSeconds > target + 1.0e-9) {
+            break;
+        }
+
+        ++state.nextEventIndex;
+        const auto existing = std::find_if(
+            state.activeNoteOns.begin(),
+            state.activeNoteOns.end(),
+            [&event](const auto& active) {
+                return active.noteInstanceId == event.noteInstanceId;
+            });
+
+        if (event.kind == MidiPlaybackEventKind::noteOn) {
+            if (existing == state.activeNoteOns.end()) {
+                state.activeNoteOns.push_back(event);
+            } else {
+                *existing = event;
+            }
+        } else if (existing != state.activeNoteOns.end()) {
+            state.activeNoteOns.erase(existing);
+        }
+    }
+    return state;
 }
 
 double audioSourceFramePosition(

@@ -114,6 +114,56 @@ TimelineViewportState fitTimelineViewport(
     return state;
 }
 
+TimelineViewportState followTimelinePlayhead(
+    const TimelineViewportState& state,
+    double playheadBeat,
+    double contentEndBeat,
+    double followThreshold,
+    double targetPosition)
+{
+    auto output = sanitizeTimelineViewportState(state);
+    if (!std::isfinite(playheadBeat)) {
+        return output;
+    }
+
+    const auto threshold = std::clamp(followThreshold, 0.0, 1.0);
+    const auto target = std::clamp(targetPosition, 0.0, 1.0);
+    const auto thresholdBeat = output.startBeat + (output.visibleBeats * threshold);
+    if (playheadBeat <= thresholdBeat) {
+        return output;
+    }
+
+    output.startBeat = playheadBeat - (output.visibleBeats * target);
+    return clampToContent(output, contentEndBeat);
+}
+
+TimelineViewportState ensureTimelineBeatVisible(
+    const TimelineViewportState& state,
+    double beat,
+    double contentEndBeat,
+    double leadingContext,
+    double trailingContext)
+{
+    auto output = sanitizeTimelineViewportState(state);
+    if (!std::isfinite(beat)) {
+        return output;
+    }
+
+    const auto leading = std::clamp(leadingContext, 0.0, 0.49);
+    const auto trailing = std::clamp(trailingContext, 0.0, 0.49);
+    const auto visibleStart = output.startBeat;
+    const auto visibleEnd = output.startBeat + output.visibleBeats;
+    if (beat < visibleStart) {
+        output.startBeat = beat - (output.visibleBeats * leading);
+    } else if (beat > visibleEnd) {
+        output.startBeat = beat - (output.visibleBeats * (1.0 - trailing));
+    } else {
+        return output;
+    }
+
+    return clampToContent(output, contentEndBeat);
+}
+
 TimelineVisibleRange timelineVisibleRange(const TimelineViewportState& state)
 {
     const auto sanitized = sanitizeTimelineViewportState(state);

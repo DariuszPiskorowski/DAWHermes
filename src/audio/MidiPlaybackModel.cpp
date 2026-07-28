@@ -78,7 +78,9 @@ bool canAuditionMidiTrack(const core::Track& track)
     return track.type == core::TrackType::midi && !track.midiNotes.empty();
 }
 
-MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(const core::Track& track)
+MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(
+    const core::Track& track,
+    const std::vector<core::MidiTempoEvent>& playbackTempoMapOverride)
 {
     MidiPlaybackSnapshotResult result;
     if (track.type != core::TrackType::midi) {
@@ -93,9 +95,7 @@ MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(const core::Track& track)
 
     result.snapshot.sourceTrackId = track.id;
     result.snapshot.sourceTrackName = track.name;
-    result.snapshot.tempoMap = track.midiSourceMetadata.has_value()
-        ? playbackTempoMap(track.midiSourceMetadata->tempoMap)
-        : playbackTempoMap({});
+    result.snapshot.tempoMap = playbackTempoMap(playbackTempoMapOverride);
     result.snapshot.events.reserve(track.midiNotes.size() * 2);
 
     std::uint64_t instanceId = 1;
@@ -148,6 +148,14 @@ MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(const core::Track& track)
     result.ok = true;
     result.message = "MIDI playback snapshot created.";
     return result;
+}
+
+MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(const core::Track& track)
+{
+    const auto tempoMap = track.midiSourceMetadata.has_value()
+        ? track.midiSourceMetadata->tempoMap
+        : std::vector<core::MidiTempoEvent> {};
+    return createMidiPlaybackSnapshot(track, tempoMap);
 }
 
 MidiTransportCommandState midiTransportCommandState(

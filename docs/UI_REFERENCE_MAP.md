@@ -104,14 +104,21 @@ Accepted Milestone 3.3 audition surfaces:
 
 Milestone 3.4 audition surfaces:
 
-- the transport action is labelled `Play Selection`;
+- compact `<<`, `Play`, `Pause`, `Stop`, `>>`, counter, BPM, `Panic`, and Master
+  Volume controls are present in the transport strip;
 - one selected MIDI track and all selected readable assigned WAV tracks can play
   together;
 - audio-only and MIDI-only selection remain playable;
+- Pause/resume preserves the immutable playback selection and current position;
+- `<<` and `>>` seek by 15 seconds and clamp to the selection bounds;
 - Stop, Panic, and Master Volume affect MIDI and WAV;
 - skipped unreadable audio is reported in the existing non-modal status strip;
-- Timeline and Piano Roll retain one shared orange playhead;
-- no Record, mixer, mute/solo, seeking, looping, or audio-editing controls are added.
+- the BPM readout prefers explicit MIDI tempo, then confidently detected WAV
+  tempo, then the 130 BPM audition fallback;
+- Timeline and Piano Roll retain one shared orange playhead and viewport, with
+  threshold-based follow during active playback;
+- no Record, mixer, mute/solo, looping, direct WAV import, or audio-editing
+  controls are added.
 
 ## Compare mode
 
@@ -126,5 +133,7 @@ Visual polish, spacing, colours and presentation will be revisited near the end 
 
 MIDI note editing is accepted Milestone 3.2 functionality.
 M3.4 adds selected assigned-WAV playback alongside the M3.3 internal MIDI synth.
-It does not add time stretching, BPM detection, final sample-accurate mixing,
-Timeline editing, controller lanes, copy/paste, or Cubase-specific exchange.
+Its asynchronous cached BPM detector changes beat/time mapping only; it does not
+change WAV speed. M3.4 does not add time stretching, final sample-accurate
+mixing, Timeline editing, controller lanes, copy/paste, or Cubase-specific
+exchange.

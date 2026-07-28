@@ -331,15 +331,26 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     addAndMakeVisible(menuBar_);
 
     transportLabel_.setText(
-        "Selection Audition",
+        "Transport",
         juce::dontSendNotification);
     transportLabel_.setJustificationType(juce::Justification::centredLeft);
     transportLabel_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff2b323b));
     transportLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(transportLabel_);
 
+    addAndMakeVisible(rewindButton_);
     addAndMakeVisible(playButton_);
+    addAndMakeVisible(pauseButton_);
     addAndMakeVisible(stopButton_);
+    addAndMakeVisible(fastForwardButton_);
+    timeCounterLabel_.setText("00:00 / 00:00", juce::dontSendNotification);
+    timeCounterLabel_.setJustificationType(juce::Justification::centred);
+    timeCounterLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
+    addAndMakeVisible(timeCounterLabel_);
+    bpmLabel_.setText("BPM --", juce::dontSendNotification);
+    bpmLabel_.setJustificationType(juce::Justification::centred);
+    bpmLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
+    addAndMakeVisible(bpmLabel_);
     addAndMakeVisible(panicButton_);
     volumeLabel_.setText("Vol", juce::dontSendNotification);
     volumeLabel_.setJustificationType(juce::Justification::centredRight);
@@ -433,6 +444,7 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
 MainComponent::~MainComponent()
 {
     stopTimer();
+    wavBpmAnalysisService_.stop();
     midiAuditionEngine_.panic();
 
     if (hermesJobRunner_ != nullptr) {
@@ -452,8 +464,11 @@ void MainComponent::initializeVisualWorkspace()
     resolvedTimelineInfo_.tempoMap = core::sanitizeTempoMap({});
     resolvedTimelineInfo_.timeSignatureMap = core::sanitizeTimeSignatureMap({});
 
+    rewindButton_.onClick = [this]() { seekPlayback(-audio::kTransportSeekSeconds); };
     playButton_.onClick = [this]() { startSelectedMidiPlayback(); };
+    pauseButton_.onClick = [this]() { pausePlayback(); };
     stopButton_.onClick = [this]() { stopMidiPlayback(); };
+    fastForwardButton_.onClick = [this]() { seekPlayback(audio::kTransportSeekSeconds); };
     panicButton_.onClick = [this]() { panicMidiPlayback(); };
     volumeSlider_.onValueChange = [this]() {
         midiAuditionEngine_.setVolume(static_cast<float>(volumeSlider_.getValue() / 100.0));
@@ -586,16 +601,26 @@ void MainComponent::resized()
         layout.transportBar.y,
         layout.transportBar.width,
         layout.transportBar.height).reduced(6, 3);
-    transportLabel_.setBounds(transportControls.removeFromLeft(std::min(120, transportControls.getWidth())));
+    transportLabel_.setBounds(transportControls.removeFromLeft(std::min(92, transportControls.getWidth())));
+    transportControls.removeFromLeft(5);
+    rewindButton_.setBounds(transportControls.removeFromLeft(std::min(36, transportControls.getWidth())));
+    transportControls.removeFromLeft(3);
+    playButton_.setBounds(transportControls.removeFromLeft(std::min(52, transportControls.getWidth())));
+    transportControls.removeFromLeft(3);
+    pauseButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
+    transportControls.removeFromLeft(3);
+    stopButton_.setBounds(transportControls.removeFromLeft(std::min(52, transportControls.getWidth())));
+    transportControls.removeFromLeft(3);
+    fastForwardButton_.setBounds(transportControls.removeFromLeft(std::min(36, transportControls.getWidth())));
     transportControls.removeFromLeft(6);
-    playButton_.setBounds(transportControls.removeFromLeft(std::min(105, transportControls.getWidth())));
-    transportControls.removeFromLeft(4);
-    stopButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
-    transportControls.removeFromLeft(4);
-    panicButton_.setBounds(transportControls.removeFromLeft(std::min(62, transportControls.getWidth())));
-    transportControls.removeFromLeft(8);
+    timeCounterLabel_.setBounds(transportControls.removeFromLeft(std::min(168, transportControls.getWidth())));
+    transportControls.removeFromLeft(5);
+    bpmLabel_.setBounds(transportControls.removeFromLeft(std::min(102, transportControls.getWidth())));
+    transportControls.removeFromLeft(5);
+    panicButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
+    transportControls.removeFromLeft(6);
     volumeLabel_.setBounds(transportControls.removeFromLeft(std::min(28, transportControls.getWidth())));
-    volumeSlider_.setBounds(transportControls.removeFromLeft(std::min(190, transportControls.getWidth())));
+    volumeSlider_.setBounds(transportControls.removeFromLeft(std::min(150, transportControls.getWidth())));
     tracksHeaderLabel_.setBounds(
         layout.tracksHeader.x,
         layout.tracksHeader.y,
@@ -1383,7 +1408,7 @@ std::optional<core::Track> MainComponent::activeMidiTrackForPianoRoll() const
 
 void MainComponent::updateHorizontalScrollRange()
 {
-    const auto projectEndBeat = estimateProjectDurationBeats();
+    const auto projectEndBeat = estimateHorizontalContentEndBeat();
     const auto maxStartBeat = std::max(0.0, projectEndBeat - timelineViewportState_.visibleBeats);
 
     timelineViewportState_.startBeat = std::clamp(timelineViewportState_.startBeat, 0.0, maxStartBeat);
@@ -1396,6 +1421,29 @@ void MainComponent::updateHorizontalScrollRange()
     suppressViewportControlCallbacks_ = false;
 }
 
+double MainComponent::estimateHorizontalContentEndBeat() const
+{
+    auto endBeat = estimateProjectDurationBeats();
+    const auto duration = midiAuditionEngine_.totalDurationSeconds();
+    if (duration <= 0.0) {
+        return endBeat;
+    }
+
+    if (const auto snapshot = midiAuditionEngine_.playbackSnapshot();
+        snapshot != nullptr) {
+        endBeat = std::max(
+            endBeat,
+            audio::selectionPlayheadBeat(duration, *snapshot));
+    } else {
+        endBeat = std::max(
+            endBeat,
+            audio::midiSecondsToBeat(
+                duration,
+                transportSelectionSummary_.tempoMap));
+    }
+    return endBeat;
+}
+
 void MainComponent::applyHorizontalZoom(double zoomFactor)
 {
     const auto pivotBeat = timelineViewportState_.startBeat + (timelineViewportState_.visibleBeats * 0.5);
@@ -1403,7 +1451,7 @@ void MainComponent::applyHorizontalZoom(double zoomFactor)
         timelineViewportState_,
         pivotBeat,
         zoomFactor,
-        estimateProjectDurationBeats());
+        estimateHorizontalContentEndBeat());
     updateVisualWorkspace();
 }
 
@@ -1540,6 +1588,7 @@ void MainComponent::updateVisualWorkspace()
     snapToggle_.setToggleState(snapEnabled_, juce::dontSendNotification);
     updateVelocityControlState();
     menuBar_.repaint();
+    refreshTransportSelectionState();
     updateTransportControlState();
 }
 
@@ -2425,9 +2474,40 @@ void MainComponent::completeHermesJob(hermes::HermesJobResult result)
 
 void MainComponent::startSelectedMidiPlayback()
 {
+    if (midiAuditionEngine_.isPaused()) {
+        std::string error;
+        if (!midiAuditionEngine_.resume(error)) {
+            statusLabel_.setText(
+                "Audio output unavailable: " + juce::String(error),
+                juce::dontSendNotification);
+            updateTransportControlState();
+            return;
+        }
+
+        previousTransportMode_ = audio::TransportMode::playing;
+        playheadFollowActive_ = false;
+        updatePlaybackPlayhead(false);
+        updateTransportDisplays();
+        statusLabel_.setText("Playing: resumed", juce::dontSendNotification);
+        updateTransportControlState();
+        return;
+    }
+
+    refreshTransportSelectionState();
+    audio::SelectionPlaybackOptions options;
+    if (selectedWavBpmResult_.has_value()
+        && selectedWavBpmResult_->estimate.isConfident()
+        && transportSelectionSummary_.firstReadableAudioPath.has_value()
+        && requestedWavFingerprint_.has_value()
+        && requestedWavFingerprint_->sourcePath
+            == selectedWavBpmResult_->fingerprint.sourcePath) {
+        options.detectedWavBpm = selectedWavBpmResult_->estimate.bpm;
+    }
+
     auto snapshotResult = audio::createSelectionPlaybackSnapshot(
         projectModel_,
-        selectionState_);
+        selectionState_,
+        options);
     if (!snapshotResult.ok) {
         statusLabel_.setText(
             juce::String(snapshotResult.message),
@@ -2436,8 +2516,16 @@ void MainComponent::startSelectedMidiPlayback()
         return;
     }
 
+    auto startSeconds = midiAuditionEngine_.playheadSeconds();
+    if (startSeconds >= snapshotResult.snapshot.durationSeconds - 1.0e-9) {
+        startSeconds = 0.0;
+    }
+
     std::string error;
-    if (!midiAuditionEngine_.startPlayback(std::move(snapshotResult.snapshot), error)) {
+    if (!midiAuditionEngine_.startPlayback(
+            std::move(snapshotResult.snapshot),
+            startSeconds,
+            error)) {
         statusLabel_.setText(
             "Audio output unavailable: " + juce::String(error),
             juce::dontSendNotification);
@@ -2445,10 +2533,10 @@ void MainComponent::startSelectedMidiPlayback()
         return;
     }
 
-    playbackPlayheadBeat_ = 0.0;
-    transportWasPlaying_ = true;
-    timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
-    pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
+    previousTransportMode_ = audio::TransportMode::playing;
+    playheadFollowActive_ = false;
+    updatePlaybackPlayhead(true);
+    updateTransportDisplays();
     juce::String status(snapshotResult.message);
     if (!snapshotResult.skippedAudioTracks.empty()) {
         status << " | "
@@ -2463,13 +2551,28 @@ void MainComponent::startSelectedMidiPlayback()
     updateTransportControlState();
 }
 
+void MainComponent::pausePlayback()
+{
+    if (!midiAuditionEngine_.isPlaying()) {
+        return;
+    }
+
+    midiAuditionEngine_.pause();
+    previousTransportMode_ = audio::TransportMode::paused;
+    playheadFollowActive_ = false;
+    updatePlaybackPlayhead(false);
+    updateTransportDisplays();
+    statusLabel_.setText("Paused playback", juce::dontSendNotification);
+    updateTransportControlState();
+}
+
 void MainComponent::stopMidiPlayback()
 {
     midiAuditionEngine_.stop();
-    playbackPlayheadBeat_.reset();
-    transportWasPlaying_ = false;
-    timelineView_.setPlayheadBeat(std::nullopt);
-    pianoRollView_.setPlayheadBeat(std::nullopt);
+    previousTransportMode_ = audio::TransportMode::stopped;
+    playheadFollowActive_ = false;
+    updatePlaybackPlayhead(false);
+    updateTransportDisplays();
     statusLabel_.setText("Stopped playback", juce::dontSendNotification);
     updateTransportControlState();
 }
@@ -2477,12 +2580,249 @@ void MainComponent::stopMidiPlayback()
 void MainComponent::panicMidiPlayback()
 {
     midiAuditionEngine_.panic();
-    playbackPlayheadBeat_.reset();
-    transportWasPlaying_ = false;
-    timelineView_.setPlayheadBeat(std::nullopt);
-    pianoRollView_.setPlayheadBeat(std::nullopt);
+    midiAuditionEngine_.setPreviewDuration(
+        transportSelectionSummary_.durationSeconds);
+    previousTransportMode_ = audio::TransportMode::stopped;
+    playheadFollowActive_ = false;
+    updatePlaybackPlayhead(false);
+    updateTransportDisplays();
     statusLabel_.setText("Panic: all playback silenced", juce::dontSendNotification);
     updateTransportControlState();
+}
+
+void MainComponent::seekPlayback(double deltaSeconds)
+{
+    const auto total = midiAuditionEngine_.totalDurationSeconds();
+    if (total <= 0.0) {
+        return;
+    }
+
+    const auto target = audio::seekTransportSeconds(
+        midiAuditionEngine_.playheadSeconds(),
+        deltaSeconds,
+        total);
+    midiAuditionEngine_.seekTo(target);
+    playheadFollowActive_ = false;
+    updatePlaybackPlayhead(true);
+    updateTransportDisplays();
+    statusLabel_.setText(
+        deltaSeconds < 0.0 ? "Seek: -15 seconds" : "Seek: +15 seconds",
+        juce::dontSendNotification);
+    updateTransportControlState();
+}
+
+void MainComponent::refreshTransportSelectionState()
+{
+    transportSelectionSummary_ = audio::createSelectionPlaybackSummary(
+        projectModel_,
+        selectionState_);
+    requestSelectedWavBpmIfNeeded();
+
+    audio::SelectionPlaybackOptions options;
+    if (selectedWavBpmResult_.has_value()
+        && selectedWavBpmResult_->estimate.isConfident()
+        && requestedWavFingerprint_.has_value()
+        && requestedWavFingerprint_->sourcePath
+            == selectedWavBpmResult_->fingerprint.sourcePath) {
+        options.detectedWavBpm = selectedWavBpmResult_->estimate.bpm;
+    }
+
+    const auto summary = audio::createSelectionPlaybackSummary(
+        projectModel_,
+        selectionState_,
+        options);
+    transportSelectionSummary_ = summary;
+    if (const auto snapshot = midiAuditionEngine_.playbackSnapshot();
+        snapshot != nullptr) {
+        resolvedTimelineInfo_.tempoMap = snapshot->playheadTempoMap;
+    } else if (!summary.tempoMap.empty()) {
+        resolvedTimelineInfo_.tempoMap = summary.tempoMap;
+    }
+    timelineView_.setTempoMap(resolvedTimelineInfo_.tempoMap);
+    if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped) {
+        midiAuditionEngine_.setPreviewDuration(summary.durationSeconds);
+        updatePlaybackPlayhead(false);
+    }
+    updateTransportDisplays();
+}
+
+void MainComponent::requestSelectedWavBpmIfNeeded()
+{
+    if (!transportSelectionSummary_.firstReadableAudioPath.has_value()) {
+        requestedWavFingerprint_.reset();
+        selectedWavBpmResult_.reset();
+        wavBpmRequestGeneration_ = 0;
+        return;
+    }
+
+    const auto fingerprint = audio::fingerprintWavFile(
+        transportSelectionSummary_.firstReadableAudioPath.value());
+    if (!fingerprint.has_value()) {
+        requestedWavFingerprint_.reset();
+        selectedWavBpmResult_.reset();
+        wavBpmRequestGeneration_ = 0;
+        return;
+    }
+
+    if (requestedWavFingerprint_.has_value()
+        && requestedWavFingerprint_.value() == fingerprint.value()) {
+        return;
+    }
+
+    requestedWavFingerprint_ = fingerprint;
+    selectedWavBpmResult_.reset();
+    wavBpmRequestGeneration_ = wavBpmAnalysisService_.request(
+        fingerprint->sourcePath);
+    if (const auto cached = wavBpmAnalysisService_.pollCompleted();
+        cached.has_value()
+        && cached->requestGeneration == wavBpmRequestGeneration_
+        && cached->fingerprint == fingerprint.value()) {
+        selectedWavBpmResult_ = cached;
+    }
+}
+
+void MainComponent::processCompletedWavBpmAnalysis()
+{
+    const auto completed = wavBpmAnalysisService_.pollCompleted();
+    if (!completed.has_value()
+        || completed->requestGeneration != wavBpmRequestGeneration_
+        || !requestedWavFingerprint_.has_value()
+        || !(completed->fingerprint == requestedWavFingerprint_.value())) {
+        return;
+    }
+
+    selectedWavBpmResult_ = completed;
+    if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped) {
+        refreshTransportSelectionState();
+    }
+
+    if (!completed->estimate.isConfident()
+        && transportSelectionSummary_.playable
+        && transportSelectionSummary_.tempoSource
+            != audio::PlaybackTempoSource::explicitMidi) {
+        statusLabel_.setText(
+            "WAV BPM uncertain; using 130.0 BPM fallback.",
+            juce::dontSendNotification);
+    }
+    updateTransportDisplays();
+}
+
+void MainComponent::updateTransportDisplays()
+{
+    timeCounterLabel_.setText(
+        juce::String(audio::formatTransportCounter(
+            midiAuditionEngine_.playheadSeconds(),
+            midiAuditionEngine_.totalDurationSeconds())),
+        juce::dontSendNotification);
+
+    const auto snapshot = midiAuditionEngine_.playbackSnapshot();
+    const auto hasPlayableSelection = midiAuditionEngine_.totalDurationSeconds() > 0.0
+        || transportSelectionSummary_.playable;
+    if (!hasPlayableSelection) {
+        bpmLabel_.setText("BPM --", juce::dontSendNotification);
+        bpmLabel_.setTooltip("No playable selection.");
+        return;
+    }
+
+    if (snapshot != nullptr
+        && snapshot->tempoSource == audio::PlaybackTempoSource::explicitMidi) {
+        bpmLabel_.setText(
+            "BPM " + juce::String(
+                audio::selectionPlaybackBpm(
+                    midiAuditionEngine_.playheadSeconds(),
+                    *snapshot),
+                1),
+            juce::dontSendNotification);
+        bpmLabel_.setTooltip("Explicit MIDI tempo map.");
+        return;
+    }
+
+    if (snapshot == nullptr
+        && transportSelectionSummary_.tempoSource
+            == audio::PlaybackTempoSource::explicitMidi) {
+        const auto beat = audio::midiSecondsToBeat(
+            midiAuditionEngine_.playheadSeconds(),
+            transportSelectionSummary_.tempoMap);
+        bpmLabel_.setText(
+            "BPM " + juce::String(
+                audio::playbackBpmAtBeat(
+                    beat,
+                    transportSelectionSummary_.tempoMap),
+                1),
+            juce::dontSendNotification);
+        bpmLabel_.setTooltip("Explicit MIDI tempo map.");
+        return;
+    }
+
+    const auto resultMatchesSelection = selectedWavBpmResult_.has_value()
+        && selectedWavBpmResult_->estimate.isConfident()
+        && requestedWavFingerprint_.has_value()
+        && selectedWavBpmResult_->fingerprint
+            == requestedWavFingerprint_.value();
+    const auto resultMatchesPlayback = snapshot == nullptr
+        || (requestedWavFingerprint_.has_value()
+            && !snapshot->audioStems.empty()
+            && std::filesystem::path(snapshot->audioStems.front().sourcePath)
+                    .lexically_normal()
+                == std::filesystem::path(
+                       requestedWavFingerprint_->sourcePath)
+                       .lexically_normal());
+    if (resultMatchesSelection && resultMatchesPlayback) {
+        bpmLabel_.setText(
+            "BPM " + juce::String(
+                selectedWavBpmResult_->estimate.bpm.value(),
+                1),
+            juce::dontSendNotification);
+        bpmLabel_.setTooltip(
+            "Detected WAV tempo estimate; audio remains at original speed.");
+        return;
+    }
+
+    if (wavBpmAnalysisService_.isAnalyzing()
+        && requestedWavFingerprint_.has_value()) {
+        bpmLabel_.setText("BPM analyzing...", juce::dontSendNotification);
+        bpmLabel_.setTooltip("Analyzing a bounded WAV segment outside the audio callback.");
+        return;
+    }
+
+    bpmLabel_.setText("BPM 130.0", juce::dontSendNotification);
+    bpmLabel_.setTooltip("Fallback transport tempo; WAV detection was unavailable or uncertain.");
+}
+
+void MainComponent::updatePlaybackPlayhead(bool ensureVisible)
+{
+    const auto total = midiAuditionEngine_.totalDurationSeconds();
+    if (total <= 0.0) {
+        playbackPlayheadBeat_.reset();
+    } else if (const auto snapshot = midiAuditionEngine_.playbackSnapshot();
+               snapshot != nullptr) {
+        playbackPlayheadBeat_ = audio::selectionPlayheadBeat(
+            midiAuditionEngine_.playheadSeconds(),
+            *snapshot);
+    } else {
+        playbackPlayheadBeat_ = audio::midiSecondsToBeat(
+            midiAuditionEngine_.playheadSeconds(),
+            transportSelectionSummary_.tempoMap);
+    }
+
+    timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
+    pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
+
+    if (ensureVisible && playbackPlayheadBeat_.has_value()) {
+        timelineViewportState_ = core::ensureTimelineBeatVisible(
+            timelineViewportState_,
+            playbackPlayheadBeat_.value(),
+            estimateHorizontalContentEndBeat());
+        updateHorizontalViewportViews();
+    }
+}
+
+void MainComponent::updateHorizontalViewportViews()
+{
+    updateHorizontalScrollRange();
+    timelineView_.setViewportState(timelineViewportState_);
+    timeRulerView_.setViewportState(timelineViewportState_);
+    pianoRollView_.setViewportState(timelineViewportState_);
 }
 
 void MainComponent::updateTransportControlState()
@@ -2490,28 +2830,58 @@ void MainComponent::updateTransportControlState()
     const auto state = audio::selectionTransportCommandState(
         projectModel_,
         selectionState_,
-        midiAuditionEngine_.isPlaying());
+        midiAuditionEngine_.transportMode(),
+        midiAuditionEngine_.totalDurationSeconds());
+    rewindButton_.setEnabled(state.rewindEnabled);
     playButton_.setEnabled(state.playEnabled);
+    pauseButton_.setEnabled(state.pauseEnabled);
     stopButton_.setEnabled(state.stopEnabled);
+    fastForwardButton_.setEnabled(state.fastForwardEnabled);
     panicButton_.setEnabled(state.panicEnabled);
 }
 
 void MainComponent::timerCallback()
 {
     midiAuditionEngine_.collectRetiredSnapshots();
-    const auto playing = midiAuditionEngine_.isPlaying();
-    if (playing) {
-        playbackPlayheadBeat_ = midiAuditionEngine_.playheadBeat();
-        timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
-        pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
-    } else if (transportWasPlaying_) {
-        playbackPlayheadBeat_ = midiAuditionEngine_.playheadBeat();
-        timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
-        pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
+    processCompletedWavBpmAnalysis();
+
+    const auto mode = midiAuditionEngine_.transportMode();
+    updatePlaybackPlayhead(false);
+    if (audio::shouldAutomaticallyFollowPlayhead(mode)
+        && playbackPlayheadBeat_.has_value()) {
+        const auto visible = core::timelineVisibleRange(timelineViewportState_);
+        const auto thresholdBeat = visible.startBeat
+            + (timelineViewportState_.visibleBeats * 0.80);
+        if (playbackPlayheadBeat_.value() >= thresholdBeat) {
+            playheadFollowActive_ = true;
+        }
+
+        if (playheadFollowActive_) {
+            const auto followed = core::followTimelinePlayhead(
+                timelineViewportState_,
+                playbackPlayheadBeat_.value(),
+                estimateHorizontalContentEndBeat(),
+                0.0,
+                0.72);
+            if (std::abs(followed.startBeat - timelineViewportState_.startBeat) > 1.0e-9) {
+                timelineViewportState_ = followed;
+                updateHorizontalViewportViews();
+            }
+        }
+    } else if (previousTransportMode_ == audio::TransportMode::playing
+               && mode == audio::TransportMode::stopped
+               && midiAuditionEngine_.totalDurationSeconds() > 0.0
+               && midiAuditionEngine_.playheadSeconds()
+                   >= midiAuditionEngine_.totalDurationSeconds() - 1.0e-6) {
         statusLabel_.setText("Selection playback finished.", juce::dontSendNotification);
     }
 
-    transportWasPlaying_ = playing;
+    if (!audio::shouldAutomaticallyFollowPlayhead(mode)) {
+        playheadFollowActive_ = false;
+    }
+
+    previousTransportMode_ = mode;
+    updateTransportDisplays();
     updateTransportControlState();
 }
 

@@ -28,9 +28,13 @@ bool isNoteOffMessage(const juce::MidiMessage& message)
     return message.isNoteOn() && message.getVelocity() <= 0;
 }
 
-std::vector<core::MidiTempoEvent> parseTempoMap(const juce::MidiFile& midiFile, int ticksPerQuarterNote)
+std::vector<core::MidiTempoEvent> parseTempoMap(
+    const juce::MidiFile& midiFile,
+    int ticksPerQuarterNote,
+    bool& containsExplicitTempoEvents)
 {
     std::vector<core::MidiTempoEvent> tempoMap;
+    containsExplicitTempoEvents = false;
 
     for (int trackIndex = 0; trackIndex < midiFile.getNumTracks(); ++trackIndex) {
         const auto* sequence = midiFile.getTrack(trackIndex);
@@ -52,6 +56,7 @@ std::vector<core::MidiTempoEvent> parseTempoMap(const juce::MidiFile& midiFile, 
                 1,
                 static_cast<int>(std::llround(event->message.getTempoSecondsPerQuarterNote() * 1000000.0)));
             tempoMap.push_back(tempoEvent);
+            containsExplicitTempoEvents = true;
         }
     }
 
@@ -160,7 +165,10 @@ std::optional<MidiImportDocument> parseMidiImportDocument(
     document.midiFileType = midiFileType;
     document.ticksPerQuarterNote = ticksPerQuarterNote;
     document.totalSourceTrackCount = midiFile.getNumTracks();
-    document.tempoMap = parseTempoMap(midiFile, ticksPerQuarterNote);
+    document.tempoMap = parseTempoMap(
+        midiFile,
+        ticksPerQuarterNote,
+        document.containsExplicitTempoEvents);
     document.timeSignatureMap = parseTimeSignatureMap(midiFile, ticksPerQuarterNote);
 
     for (int trackIndex = 0; trackIndex < midiFile.getNumTracks(); ++trackIndex) {
@@ -295,6 +303,7 @@ core::MidiSourceMetadata makeImportedMidiSourceMetadata(
     metadata.midiFileType = document.midiFileType;
     metadata.ticksPerQuarterNote = std::max(1, document.ticksPerQuarterNote);
     metadata.tempoMap = document.tempoMap;
+    metadata.containsExplicitTempoEvents = document.containsExplicitTempoEvents;
     metadata.timeSignatureMap = document.timeSignatureMap;
     metadata.channelsUsed = trackCandidate.channelsUsed;
     metadata.noteCount = trackCandidate.notes.size();

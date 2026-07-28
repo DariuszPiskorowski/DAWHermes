@@ -1,13 +1,12 @@
 #pragma once
 
-#include <atomic>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "audio/MidiPlaybackModel.h"
+#include "audio/TransportModel.h"
 #include "core/ProjectModel.h"
 #include "core/SelectionState.h"
 
@@ -36,6 +35,7 @@ struct SelectionPlaybackSnapshot {
     std::optional<MidiPlaybackSnapshot> midi;
     std::vector<AudioStemPlaybackSnapshot> audioStems;
     std::vector<core::MidiTempoEvent> playheadTempoMap;
+    PlaybackTempoSource tempoSource { PlaybackTempoSource::fallback };
     double durationSeconds { 0.0 };
 
     bool isPlayable() const noexcept;
@@ -50,40 +50,57 @@ struct SelectionPlaybackSnapshotResult {
     std::vector<SkippedAudioTrack> skippedAudioTracks;
 };
 
-struct SelectionTransportCommandState {
-    bool playEnabled { false };
-    bool stopEnabled { false };
-    bool panicEnabled { true };
+struct SelectionPlaybackOptions {
+    std::optional<double> detectedWavBpm;
+    double fallbackBpm { kFallbackPlaybackBpm };
 };
 
-class SelectionPlaybackState {
-public:
-    void start(std::shared_ptr<const SelectionPlaybackSnapshot> snapshot) noexcept;
-    void stop() noexcept;
-    void panic() noexcept;
-    void finish() noexcept;
+struct SelectionPlaybackSummary {
+    bool playable { false };
+    std::size_t midiTrackCount { 0 };
+    std::size_t audioTrackCount { 0 };
+    double durationSeconds { 0.0 };
+    std::vector<core::MidiTempoEvent> tempoMap;
+    PlaybackTempoSource tempoSource { PlaybackTempoSource::fallback };
+    std::optional<std::string> firstReadableAudioPath;
+    std::vector<SkippedAudioTrack> skippedAudioTracks;
+};
 
-    bool isPlaying() const noexcept;
-    bool hasPreparedPlayback() const noexcept;
-    std::shared_ptr<const SelectionPlaybackSnapshot> snapshot() const noexcept;
-
-private:
-    std::atomic<std::shared_ptr<const SelectionPlaybackSnapshot>> snapshot_;
-    std::atomic<bool> playing_ { false };
+struct MidiResumeState {
+    std::size_t nextEventIndex { 0 };
+    std::vector<MidiPlaybackEvent> activeNoteOns;
 };
 
 SelectionPlaybackSnapshotResult createSelectionPlaybackSnapshot(
     const core::ProjectModel& project,
-    const core::SelectionState& selection);
+    const core::SelectionState& selection,
+    const SelectionPlaybackOptions& options = {});
+
+SelectionPlaybackSummary createSelectionPlaybackSummary(
+    const core::ProjectModel& project,
+    const core::SelectionState& selection,
+    const SelectionPlaybackOptions& options = {});
 
 SelectionTransportCommandState selectionTransportCommandState(
     const core::ProjectModel& project,
     const core::SelectionState& selection,
-    bool isPlaying);
+    TransportMode mode,
+    double playableDurationSeconds);
 
 double selectionPlayheadBeat(
     double transportSeconds,
     const SelectionPlaybackSnapshot& snapshot);
+
+double playbackBpmAtBeat(
+    double beat,
+    const std::vector<core::MidiTempoEvent>& tempoMap);
+double selectionPlaybackBpm(
+    double transportSeconds,
+    const SelectionPlaybackSnapshot& snapshot);
+bool hasExplicitMidiTempo(const core::Track& track) noexcept;
+MidiResumeState createMidiResumeState(
+    const MidiPlaybackSnapshot& snapshot,
+    double transportSeconds);
 
 double audioSourceFramePosition(
     double transportSeconds,

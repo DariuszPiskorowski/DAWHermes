@@ -46,6 +46,9 @@ double midiBeatToSeconds(double beat, const std::vector<core::MidiTempoEvent>& t
 double midiSecondsToBeat(double seconds, const std::vector<core::MidiTempoEvent>& tempoMap);
 
 MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(const core::Track& track);
+MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(
+    const core::Track& track,
+    const std::vector<core::MidiTempoEvent>& playbackTempoMapOverride);
 bool canAuditionMidiTrack(const core::Track& track);
 MidiTransportCommandState midiTransportCommandState(
     const std::optional<core::Track>& primarySelectedTrack,

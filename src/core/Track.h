@@ -41,6 +41,8 @@ enum class MidiTrackOrigin {
 struct MidiTempoEvent {
     double beatPosition { 0.0 };
     int microsecondsPerQuarterNote { 500000 };
+
+    bool operator==(const MidiTempoEvent& other) const = default;
 };
 
 struct MidiTimeSignatureEvent {
@@ -57,6 +59,7 @@ struct MidiSourceMetadata {
     int midiFileType { 1 };
     int ticksPerQuarterNote { 960 };
     std::vector<MidiTempoEvent> tempoMap;
+    std::optional<bool> containsExplicitTempoEvents;
     std::vector<MidiTimeSignatureEvent> timeSignatureMap;
     std::vector<int> channelsUsed;
     std::size_t noteCount { 0 };

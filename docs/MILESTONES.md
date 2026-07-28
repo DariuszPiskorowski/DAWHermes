@@ -21,19 +21,24 @@ No network-delivery milestone is defined in this plan.
 
 ## Current milestone scope
 
-Milestone 3.4 audio-stem playback is implemented and installed for manual acceptance:
+Core Milestone 3.4 WAV/MIDI playback is manually accepted. Its transport
+completion is implemented for installed native acceptance:
 
 - preserve accepted Milestones 2, 3.1, 3.2, and 3.3;
-- `Play Selection` auditions one primary selected MIDI track plus all selected
+- `Play` auditions one primary selected MIDI track plus all selected
   readable assigned WAV tracks;
 - preserve MIDI-only playback and allow audio-only playback;
 - preload immutable mono/stereo WAV data and safely handle 44.1/48 kHz
   source/device-rate differences;
 - share transport time zero and the Timeline/Piano Roll playhead across MIDI and audio;
+- provide Pause/resume, a current/total counter, clamped 15-second seeking, and
+  threshold-based shared playhead follow;
+- resolve BPM from explicit MIDI tempo metadata, then cached asynchronous WAV
+  detection, then a 130 BPM fallback;
 - apply Stop, Panic, and Master Volume to both sources;
 - skip missing/unreadable audio without modal errors;
-- keep WAV at original speed with no stretching, warping, BPM detection, mixer,
-  recording, or audio editing.
+- keep WAV at original speed with no stretching, warping, mixer, recording,
+  direct WAV import, or audio editing.
 
 Milestone 3.3 MIDI audition playback is complete:
 
@@ -46,4 +51,5 @@ Milestone 3.3 MIDI audition playback is complete:
 Milestone 3.1 visual functionality is accepted.
 Milestone 3.2 is accepted and published.
 Milestone 3.3 is manually accepted and published.
-Milestone 3.4 awaits the user's installed native audio test.
+Milestone 3.4 core WAV/MIDI playback is manually accepted. Transport completion
+awaits the user's final installed native acceptance.
