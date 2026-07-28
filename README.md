@@ -128,6 +128,18 @@ Build Release:
 .\scripts\build-release.ps1
 ```
 
+For a bounded diagnostic Release build with explicit single-job project and
+compiler parallelism plus persistent resource, text, transcript and MSBuild
+binary logs under the ignored `build\diagnostics` directory:
+
+```powershell
+.\scripts\build-release.ps1 -Diagnostic -ParallelJobs 1
+```
+
+Diagnostic mode builds only the `DAWHermes` Release target. It does not run
+tests, install files or launch the application. Omitting `-Diagnostic` and
+`-ParallelJobs` preserves the normal Release build command.
+
 Run tests:
 
 ```powershell
