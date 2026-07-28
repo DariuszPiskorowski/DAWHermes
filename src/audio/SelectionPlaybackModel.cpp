@@ -91,7 +91,7 @@ std::optional<double> inspectAudioStemDuration(
     skipped.sourceFileName = sourceFileName(track.audioSourcePath);
 
     if (track.audioSourcePath.empty()) {
-        skipped.reason = "no WAV source is assigned";
+        skipped.reason = "audio file is unavailable";
         return std::nullopt;
     }
 
@@ -131,7 +131,7 @@ std::optional<AudioStemPlaybackSnapshot> loadAudioStem(
     skipped.sourceFileName = sourceFileName(track.audioSourcePath);
 
     if (track.audioSourcePath.empty()) {
-        skipped.reason = "no WAV source is assigned";
+        skipped.reason = "audio file is unavailable";
         return std::nullopt;
     }
 
@@ -304,7 +304,7 @@ SelectionPlaybackSnapshotResult createSelectionPlaybackSnapshot(
     result.message = result.ok
         ? describeSelectionPlayback(result.snapshot)
         : (result.skippedAudioTracks.empty()
-               ? "No playable MIDI or assigned audio track is selected."
+               ? "No playable MIDI or imported audio track is selected."
                : describeSkippedAudioTrack(result.skippedAudioTracks.front()));
     return result;
 }

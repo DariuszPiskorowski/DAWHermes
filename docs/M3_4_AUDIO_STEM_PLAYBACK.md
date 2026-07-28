@@ -5,7 +5,7 @@
 Core Milestone 3.4 WAV/MIDI playback has been manually accepted. The completed
 transport controls are implemented for a new installed-app acceptance pass.
 
-It allows an assigned WAV stem to be heard with the current edited MIDI state so
+It allows an imported WAV stem to be heard with the current edited MIDI state so
 Hermes repair and synchronization results can be judged against the source audio.
 Milestone 3.3 MIDI-only audition remains supported.
 
@@ -14,10 +14,10 @@ Milestone 3.3 MIDI-only audition remains supported.
 `Play` captures an immutable playback snapshot:
 
 - one primary selected non-empty MIDI track plays through the internal synth;
-- every selected audio track with an assigned readable WAV plays with it;
+- every selected audio track with a readable imported WAV plays with it;
 - audio-only and MIDI-only selections are playable;
-- group tracks, empty MIDI tracks, and audio tracks without an assigned source are ignored;
-- missing or unreadable assigned WAV files are skipped with a non-modal status;
+- group tracks, empty MIDI tracks, and audio tracks without a readable file are ignored;
+- missing or unreadable WAV files are skipped with a non-modal status;
 - non-selected tracks do not play.
 
 The first selected playable MIDI track is the primary MIDI track. When multiple
@@ -27,6 +27,35 @@ the visual ghost. The Piano Roll comparison ghost never adds notes to playback.
 
 The intended review workflow is to Ctrl-select an edited/repaired MIDI track and
 its corresponding audio track, then press `Play`.
+
+## Direct Audio Import
+
+The only user-facing WAV entry point is:
+
+```text
+File
+-> Import Audio as Track...
+-> select one or more WAV files
+-> tracks and waveforms appear automatically
+-> select audio and optionally MIDI
+-> Play
+```
+
+No empty audio track or separate source-selection command is required. Each
+valid WAV creates one audio track named from the filename without `.wav`, stores
+the original absolute path plus sample rate, channel count, frame count, bit
+depth, file size, and duration, and connects the existing Timeline waveform and
+transport at project time zero.
+
+For a batch, valid files retain chooser order where practical and unreadable
+files are skipped without cancelling valid imports. One aggregate status is
+shown. All created tracks are selected and the batch is one `ProjectHistory`
+transaction: Undo removes the imported set and Redo restores names, paths, and
+metadata.
+
+WAVs are referenced in place. Import never copies, converts, normalizes, moves,
+renames, deletes, or writes to source files, and analysis creates no sidecar
+files.
 
 ## Transport Controls
 
@@ -130,11 +159,8 @@ but it is not a production mix engine.
 
 M3.4 does not add VST hosting, recording, a metronome, looping, mute/solo,
 mixer channels, effects, fades, crossfades, audio editing, time stretching,
-Cubase/Reaper synchronization, direct WAV import, or visual redesign.
-
-WAV sources continue to enter the project only through the established
-file-assignment and Hermes workflows. The transport remains audition-grade,
-not a production mix engine.
+Cubase/Reaper synchronization, or visual redesign. The transport remains
+audition-grade, not a production mix engine.
 
 ## Local Release Safety
 

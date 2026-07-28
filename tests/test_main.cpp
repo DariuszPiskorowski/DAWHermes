@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "core/MainLayoutGeometry.h"
+#include "core/AudioTrackImport.h"
 #include "core/MidiComparisonModel.h"
 #include "core/MidiNoteEditing.h"
 #include "core/MidiNoteSelectionState.h"
@@ -35,6 +36,7 @@
 #include "core/TimelineViewport.h"
 #include "core/Track.h"
 #include "audio/MidiAuditionEngine.h"
+#include "audio/AudioTrackImporter.h"
 #include "audio/MidiPlaybackModel.h"
 #include "audio/SelectionPlaybackModel.h"
 #include "audio/TransportModel.h"
@@ -50,6 +52,7 @@
 #include "hermes/StubHermesEngine.h"
 #include "midi/MidiTrackExporter.h"
 #include "ui/MidiImportParser.h"
+#include "ui/CommandLabels.h"
 
 namespace {
 
@@ -647,6 +650,195 @@ bool testAudioSourceAssignment()
     const auto* audioTrack = project.findTrackById(audioId);
     EXPECT_TRUE(audioTrack != nullptr);
     EXPECT_EQ(audioTrack->audioSourcePath, std::string("C:/tmp/drums.wav"));
+    return true;
+}
+
+bool testDirectAudioImportCommandPolicy()
+{
+    const auto& fileMenu = dawhermes::ui::command_labels::fileMenu;
+    const auto& trackMenu = dawhermes::ui::command_labels::trackMenu;
+    EXPECT_TRUE(std::find(
+        fileMenu.begin(),
+        fileMenu.end(),
+        dawhermes::ui::command_labels::importAudioAsTrack) != fileMenu.end());
+    EXPECT_TRUE(std::find(
+        fileMenu.begin(),
+        fileMenu.end(),
+        dawhermes::ui::command_labels::importMidiAsTrack) != fileMenu.end());
+
+    constexpr std::array obsoleteAudioCommands {
+        std::string_view { "Assign Audio Source" },
+        std::string_view { "Assign WAV" },
+        std::string_view { "Assign WAV to selected audio track" },
+        std::string_view { "Choose Audio Source" },
+        std::string_view { "Replace Audio Source" },
+        std::string_view { "Add Audio Track" },
+    };
+    for (const auto obsolete : obsoleteAudioCommands) {
+        EXPECT_TRUE(std::find(fileMenu.begin(), fileMenu.end(), obsolete) == fileMenu.end());
+        EXPECT_TRUE(std::find(trackMenu.begin(), trackMenu.end(), obsolete) == trackMenu.end());
+    }
+    return true;
+}
+
+bool testSingleAudioTrackImportMetadataPlaybackAndHistory()
+{
+    const auto sourcePath = createSyntheticPlaybackWavFixture(
+        "import-single",
+        48000,
+        2,
+        96000);
+    const auto sourceBefore = readBinaryFile(sourcePath);
+    const auto preparation = dawhermes::audio::prepareAudioTrackImports(
+        { sourcePath });
+    EXPECT_EQ(preparation.validTracks.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(preparation.skippedFiles.empty());
+
+    ProjectModel project;
+    SelectionState selection;
+    dawhermes::core::ProjectHistory history;
+    auto command = std::make_unique<dawhermes::core::ImportAudioTracksCommand>(
+        project,
+        selection,
+        preparation.validTracks);
+    EXPECT_TRUE(command->redo());
+    EXPECT_EQ(command->createdTrackIds().size(), static_cast<std::size_t>(1));
+    const auto createdId = command->createdTrackIds().front();
+    history.pushExecuted(std::move(command));
+
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(selection.isSelected(createdId));
+
+    const auto* imported = project.findTrackById(createdId);
+    EXPECT_TRUE(imported != nullptr);
+    EXPECT_EQ(imported->type, TrackType::audio);
+    EXPECT_EQ(imported->name, sourcePath.stem().string());
+    EXPECT_EQ(
+        std::filesystem::path(imported->audioSourcePath).lexically_normal(),
+        std::filesystem::absolute(sourcePath).lexically_normal());
+    EXPECT_TRUE(imported->audioSourceMetadata.has_value());
+    EXPECT_TRUE(approxEqual(imported->audioSourceMetadata->sampleRate, 48000.0));
+    EXPECT_EQ(imported->audioSourceMetadata->channelCount, 2);
+    EXPECT_TRUE(approxEqual(imported->audioSourceMetadata->durationSeconds, 2.0));
+    EXPECT_EQ(
+        imported->audioSourceMetadata->frameCount,
+        static_cast<std::uint64_t>(96000));
+    EXPECT_EQ(imported->audioSourceMetadata->bitsPerSample, 16);
+    EXPECT_TRUE(std::filesystem::exists(imported->audioSourcePath));
+
+    const auto summary = dawhermes::audio::createSelectionPlaybackSummary(
+        project,
+        selection);
+    EXPECT_TRUE(summary.playable);
+    EXPECT_EQ(summary.audioTrackCount, static_cast<std::size_t>(1));
+    EXPECT_TRUE(approxEqual(summary.durationSeconds, 2.0, 0.001));
+    EXPECT_TRUE(summary.firstReadableAudioPath.has_value());
+    EXPECT_TRUE(dawhermes::audio::fingerprintWavFile(
+        summary.firstReadableAudioPath.value()).has_value());
+    EXPECT_EQ(readBinaryFile(sourcePath), sourceBefore);
+
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(history.undo());
+    EXPECT_TRUE(project.empty());
+    EXPECT_TRUE(!selection.hasSelection());
+    EXPECT_TRUE(history.redo());
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(project.tracks().front().audioSourceMetadata.has_value());
+    EXPECT_EQ(project.tracks().front().name, sourcePath.stem().string());
+    EXPECT_EQ(
+        std::filesystem::path(project.tracks().front().audioSourcePath).lexically_normal(),
+        std::filesystem::absolute(sourcePath).lexically_normal());
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(readBinaryFile(sourcePath), sourceBefore);
+
+    std::error_code error;
+    std::filesystem::remove(sourcePath, error);
+    return true;
+}
+
+bool testBatchAudioTrackImportSkipsInvalidAndRestoresSelection()
+{
+    const auto firstPath = createSyntheticPlaybackWavFixture(
+        "import-batch-first",
+        44100,
+        1,
+        44100);
+    const auto secondPath = createSyntheticPlaybackWavFixture(
+        "import-batch-second",
+        48000,
+        2,
+        96000);
+    const auto invalidPath = createTempWavFixture("import-batch-invalid");
+    const auto firstBefore = readBinaryFile(firstPath);
+    const auto secondBefore = readBinaryFile(secondPath);
+    const auto invalidBefore = readBinaryFile(invalidPath);
+
+    const auto preparation = dawhermes::audio::prepareAudioTrackImports(
+        { firstPath, invalidPath, secondPath });
+    EXPECT_EQ(preparation.validTracks.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(preparation.skippedFiles.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        std::filesystem::path(preparation.validTracks.at(0).sourcePath).lexically_normal(),
+        std::filesystem::absolute(firstPath).lexically_normal());
+    EXPECT_EQ(
+        std::filesystem::path(preparation.validTracks.at(1).sourcePath).lexically_normal(),
+        std::filesystem::absolute(secondPath).lexically_normal());
+
+    ProjectModel project;
+    const auto existingMidiId = project.addTrack(TrackType::midi, "Existing MIDI").id;
+    SelectionState selection;
+    selection.selectTrack(existingMidiId);
+    dawhermes::core::ProjectHistory history;
+    auto command = std::make_unique<dawhermes::core::ImportAudioTracksCommand>(
+        project,
+        selection,
+        preparation.validTracks);
+    EXPECT_TRUE(command->redo());
+    EXPECT_EQ(command->createdTrackIds().size(), static_cast<std::size_t>(2));
+    const auto importedIds = command->createdTrackIds();
+    history.pushExecuted(std::move(command));
+
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(3));
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(selection.isSelected(importedIds.at(0)));
+    EXPECT_TRUE(selection.isSelected(importedIds.at(1)));
+    EXPECT_EQ(
+        project.findTrackById(importedIds.at(0))->name,
+        firstPath.stem().string());
+    EXPECT_EQ(
+        project.findTrackById(importedIds.at(1))->name,
+        secondPath.stem().string());
+
+    const auto summary = dawhermes::audio::createSelectionPlaybackSummary(
+        project,
+        selection);
+    EXPECT_TRUE(summary.playable);
+    EXPECT_EQ(summary.audioTrackCount, static_cast<std::size_t>(2));
+    EXPECT_TRUE(approxEqual(summary.durationSeconds, 2.0, 0.001));
+    EXPECT_EQ(
+        std::filesystem::path(summary.firstReadableAudioPath.value()).lexically_normal(),
+        std::filesystem::absolute(firstPath).lexically_normal());
+
+    EXPECT_TRUE(history.undo());
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(selection.isSelected(existingMidiId));
+    EXPECT_TRUE(history.redo());
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(3));
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(2));
+    EXPECT_EQ(readBinaryFile(firstPath), firstBefore);
+    EXPECT_EQ(readBinaryFile(secondPath), secondBefore);
+    EXPECT_EQ(readBinaryFile(invalidPath), invalidBefore);
+
+    const auto invalidOnly = dawhermes::audio::prepareAudioTrackImports(
+        { invalidPath });
+    EXPECT_TRUE(invalidOnly.validTracks.empty());
+    EXPECT_EQ(invalidOnly.skippedFiles.size(), static_cast<std::size_t>(1));
+
+    std::error_code error;
+    std::filesystem::remove(firstPath, error);
+    std::filesystem::remove(secondPath, error);
+    std::filesystem::remove(invalidPath, error);
     return true;
 }
 
@@ -3202,7 +3394,7 @@ bool testHermesCommandEnablementAudioVsMidi()
             selection),
         HermesCommandAvailability::requiresAudioFile);
 
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(audio.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(audio.id, wavFixture.string()));
 
     EXPECT_EQ(
         dawhermes::hermes::getHermesCommandAvailability(
@@ -3258,7 +3450,7 @@ bool testHermesCommandEnablementValidAudioMidiPair()
     const auto audioId = controller.addTrack(TrackType::audio, "Audio Pair").id;
     const auto midiId = controller.addTrack(TrackType::midi, "MIDI Pair").id;
 
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(audioId, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(audioId, wavFixture.string()));
     EXPECT_TRUE(controller.replaceMidiNotesOnTrack(
         midiId,
         { makeMidiNote(40, 100, 0.0, 0.5) }));
@@ -3423,7 +3615,7 @@ bool testSeparateLayoutCreatesSeparateMidiTracks()
 
     const auto wavFixture = createTempWavFixture("layout-separate");
     const auto& source = controller.addTrack(TrackType::audio, "Source Drums");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -3476,7 +3668,7 @@ bool testGroupedLayoutCreatesSharedProjectHierarchy()
 
     const auto wavFixture = createTempWavFixture("layout-grouped");
     const auto& source = controller.addTrack(TrackType::audio, "Grouped Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -3538,7 +3730,7 @@ bool testSingleTrackLayoutCreatesOneMidiTrack()
 
     const auto wavFixture = createTempWavFixture("layout-single");
     const auto& source = controller.addTrack(TrackType::audio, "Single Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -3593,7 +3785,7 @@ bool testFailureLeavesNoPartialProjectResult()
 
     const auto wavFixture = createTempWavFixture("rollback");
     const auto& source = controller.addTrack(TrackType::audio, "Rollback Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -3637,7 +3829,7 @@ bool testEnabledEmptyLayerCanCreateTrack()
 
     const auto wavFixture = createTempWavFixture("empty-enabled-layer");
     const auto& source = controller.addTrack(TrackType::audio, "Empty Enabled Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -3687,7 +3879,7 @@ bool testZeroNoteResultWithoutMeaningfulLayerIsRejected()
 
     const auto wavFixture = createTempWavFixture("empty-not-meaningful");
     const auto& source = controller.addTrack(TrackType::audio, "Empty Rejected Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -3730,7 +3922,7 @@ bool testUndoRedoRestoresHermesResultWithoutReanalysis()
 
     const auto wavFixture = createTempWavFixture("undo-redo");
     const auto& source = controller.addTrack(TrackType::audio, "Undo Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -3867,7 +4059,7 @@ bool testEmbeddedHermesStructuredResultAndInsertion()
     SelectionState selection;
     ProjectController controller(project, selection);
     const auto& source = controller.addTrack(TrackType::audio, "Embedded Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     dawhermes::hermes::EmbeddedHermesEngine engine;
     dawhermes::hermes::HermesDrumsOptions options;
@@ -4737,7 +4929,10 @@ int main(int argc, char* argv[])
 
     const std::vector<NamedTest> tests {
         { "Track creation", testTrackCreationAudioAndMidi },
-        { "Audio source assignment", testAudioSourceAssignment },
+        { "Audio source model compatibility", testAudioSourceAssignment },
+        { "Direct audio import command policy", testDirectAudioImportCommandPolicy },
+        { "Single audio import metadata/playback/history", testSingleAudioTrackImportMetadataPlaybackAndHistory },
+        { "Batch audio import invalid-skip/selection/history", testBatchAudioTrackImportSkipsInvalidAndRestoresSelection },
         { "MIDI note replacement", testMidiNoteReplacement },
         { "Stable track IDs", testStableTrackIds },
         { "Selection state", testSelectionState },

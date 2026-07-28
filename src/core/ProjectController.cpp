@@ -67,20 +67,6 @@ bool ProjectController::deleteTrackById(std::uint64_t trackId)
     return removed;
 }
 
-bool ProjectController::assignAudioSourceToTrack(std::uint64_t trackId, std::string audioSourcePath)
-{
-    return project_.setAudioSourcePath(trackId, std::move(audioSourcePath));
-}
-
-bool ProjectController::assignAudioSourceToSelectedTrack(std::string audioSourcePath)
-{
-    if (!selection_.hasSelection()) {
-        return false;
-    }
-
-    return assignAudioSourceToTrack(selection_.selectedTrackId().value(), std::move(audioSourcePath));
-}
-
 bool ProjectController::replaceMidiNotesOnTrack(std::uint64_t trackId, std::vector<MidiNote> midiNotes)
 {
     return project_.replaceMidiNotes(trackId, std::move(midiNotes));

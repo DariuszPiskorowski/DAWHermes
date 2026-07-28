@@ -108,7 +108,7 @@ std::string describeAvailability(HermesCommand command, HermesCommandAvailabilit
     case HermesCommandAvailability::requiresAudioTrack:
         return "Requires a selected audio track.";
     case HermesCommandAvailability::requiresAudioFile:
-        return "Selected audio track requires an assigned WAV source file.";
+        return "Selected audio track requires an imported WAV file.";
     case HermesCommandAvailability::requiresMidiTrack:
         return "Requires a selected MIDI track.";
     case HermesCommandAvailability::requiresAudioAndMidi:

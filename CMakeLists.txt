@@ -43,6 +43,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(pybind11)
 
 add_library(dawhermes_core
+  src/core/AudioTrackImport.cpp
   src/core/ProjectModel.cpp
   src/core/ProjectController.cpp
   src/core/MainLayoutGeometry.cpp
@@ -57,6 +58,7 @@ target_include_directories(dawhermes_core PUBLIC src)
 set_project_warnings(dawhermes_core)
 
 add_library(dawhermes_audio
+  src/audio/AudioTrackImporter.cpp
   src/audio/MidiPlaybackModel.cpp
   src/audio/TransportModel.cpp
   src/audio/SelectionPlaybackModel.cpp

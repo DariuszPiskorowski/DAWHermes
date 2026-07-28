@@ -20,7 +20,8 @@ Currently implemented:
 - workspace layout with top 3-column work area plus full-width bottom MIDI panel;
 - draggable workspace separators (left/center, center/right, top/bottom split);
 - persistent workspace panel sizes with View -> Reset Panel Layout;
-- audio, MIDI, and group track models with file-backed audio source assignment;
+- File -> Import Audio as Track... for one or more in-place WAV sources, with
+  automatic audio-track creation and waveform connection;
 - File -> Import MIDI as Track... with note-bearing-track selection;
 - File -> Export Selected MIDI Track... for the selected non-empty MIDI track;
 - timeline ruler with bar labels and selectable beat grid (1/4, 1/8, 1/16, 1/32);
@@ -30,7 +31,7 @@ Currently implemented:
 - note hover diagnostics (pitch, velocity, start, duration, channel);
 - View -> Compare Selected MIDI Tracks mode with color-coded delta legend (read-only comparison);
 - piano-roll note selection, marquee selection, creation, deletion, mouse movement, right-edge duration resize, keyboard nudging, Snap, velocity editing, and quantize selected notes to grid;
-- synchronized selected-track MIDI and assigned-WAV audition through the system
+- synchronized selected-track MIDI and imported-WAV audition through the system
   default audio output with Play, Pause/resume, Stop, Panic, 5-second seeking,
   safe volume, BPM, a time counter, and shared Timeline/Piano Roll playheads;
 - track selection and deletion;
@@ -70,8 +71,8 @@ Milestone 3.3 audition uses a deliberately simple internal sine synth. Its funct
 The current Timeline and Piano Roll styling is intentionally functional rather than final.
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
-Direct WAV import, Timeline editing, controller lanes, copy/paste, and
-Cubase-specific exchange remain deferred.
+Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange
+remain deferred.
 
 ## Related projects
 
@@ -229,6 +230,7 @@ Initial command structure:
 
 ```text
 File
+|-- Import Audio as Track...
 └── Import MIDI as Track...
 
 Hermes
@@ -243,6 +245,22 @@ Hermes
 
 Command availability for bass/sync requires a selected audio+MIDI pair, non-empty MIDI notes, and an existing audio source file.
 
+The audio workflow is:
+
+```text
+File
+-> Import Audio as Track...
+-> select one or more WAV files
+-> tracks and waveforms appear automatically
+-> select audio and optionally MIDI
+-> Play
+```
+
+Each valid WAV remains referenced at its original absolute path. A multi-file
+import creates one track per valid file, selects the created tracks, and is one
+Undo/Redo transaction. Unreadable files are skipped with one aggregate status;
+source files are never copied, converted, or modified.
+
 Composer Assistant connector defaults in Milestone 1:
 
 - disabled by default;
@@ -256,6 +274,7 @@ The application is divided into:
 
 - `app` - lifecycle and application wiring;
 - `core` - project and track models;
+- `audio` - immutable playback preparation and WAV import/BPM analysis;
 - `midi` - testable selected-track MIDI export;
 - `ui` - JUCE desktop interface;
 - `hermes` - neutral integration contracts and engine implementation;

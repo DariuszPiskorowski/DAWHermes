@@ -25,8 +25,11 @@ Core Milestone 3.4 WAV/MIDI playback is manually accepted. Its transport
 completion is implemented for installed native acceptance:
 
 - preserve accepted Milestones 2, 3.1, 3.2, and 3.3;
+- import one or more WAV files from File -> Import Audio as Track..., creating
+  named tracks, waveform sources, stored metadata, selection, and one batch
+  Undo/Redo transaction;
 - `Play` auditions one primary selected MIDI track plus all selected
-  readable assigned WAV tracks;
+  readable imported WAV tracks;
 - preserve MIDI-only playback and allow audio-only playback;
 - preload immutable mono/stereo WAV data and safely handle 44.1/48 kHz
   source/device-rate differences;
@@ -38,7 +41,7 @@ completion is implemented for installed native acceptance:
 - apply Stop, Panic, and Master Volume to both sources;
 - skip missing/unreadable audio without modal errors;
 - keep WAV at original speed with no stretching, warping, mixer, recording,
-  direct WAV import, or audio editing.
+  or audio editing.
 
 Milestone 3.3 MIDI audition playback is complete:
 

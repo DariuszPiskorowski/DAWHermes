@@ -59,11 +59,10 @@ private:
         commandRedo,
         commandResetPanelLayout,
         commandToggleMidiComparison,
-        commandAddAudioTrack,
         commandAddMidiTrack,
+        commandImportAudioTrack,
         commandImportMidiTrack,
         commandExportSelectedMidiTrack,
-        commandAssignAudioFile,
         commandDeleteSelectedTrack,
         commandDeleteSelectedNotes,
         commandQuantizeSelectedNotes,
@@ -105,12 +104,11 @@ private:
     void refreshTrackView();
     void updateStatusForSelection();
 
-    void addAudioTrack();
     void addMidiTrack();
+    void importAudioTracks();
     void importMidiTrack();
     bool canExportSelectedMidiTrack() const;
     void exportSelectedMidiTrack();
-    void assignAudioFileToSelectedTrack();
     void deleteSelectedTrack();
     bool canDeleteSelectedMidiNotes() const;
     bool canEditSelectedMidiNotes() const;

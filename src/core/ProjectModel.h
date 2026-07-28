@@ -14,6 +14,10 @@ public:
     Track& addTrack(TrackType type, std::string name = {}, std::uint64_t parentTrackId = 0);
     bool removeTrackById(std::uint64_t id);
     bool setAudioSourcePath(std::uint64_t id, std::string audioSourcePath);
+    bool setAudioSource(
+        std::uint64_t id,
+        std::string audioSourcePath,
+        AudioSourceMetadata metadata);
     bool replaceMidiNotes(std::uint64_t id, std::vector<MidiNote> midiNotes);
     bool appendMidiNote(std::uint64_t id, MidiNote midiNote);
     bool setMidiSourceMetadata(std::uint64_t id, MidiSourceMetadata metadata);

@@ -104,9 +104,13 @@ Accepted Milestone 3.3 audition surfaces:
 
 Milestone 3.4 audition surfaces:
 
+- `File -> Import Audio as Track...` opens the native multi-file WAV chooser;
+- each valid WAV creates a filename-named audio track, stores source metadata,
+  connects its Timeline waveform, and participates in one batch Undo/Redo;
+- unreadable batch members are skipped with one non-modal aggregate status;
 - compact `<<`, `Play`, `Pause`, `Stop`, `>>`, counter, BPM, `Panic`, and Master
   Volume controls are present in the transport strip;
-- one selected MIDI track and all selected readable assigned WAV tracks can play
+- one selected MIDI track and all selected readable imported WAV tracks can play
   together;
 - audio-only and MIDI-only selection remain playable;
 - Pause/resume preserves the immutable playback selection and current position;
@@ -117,7 +121,7 @@ Milestone 3.4 audition surfaces:
   tempo, then the 120 BPM audition fallback;
 - Timeline and Piano Roll retain one shared orange playhead and viewport, with
   threshold-based follow during active playback;
-- no Record, mixer, mute/solo, looping, direct WAV import, or audio-editing
+- no Record, mixer, mute/solo, looping, or audio-editing
   controls are added.
 
 ## Compare mode

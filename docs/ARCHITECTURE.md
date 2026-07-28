@@ -79,7 +79,7 @@ Accepted Milestone 3.3 adds selected-track MIDI audition:
 Milestone 3.4 extends the same device and callback into selected-stem audition:
 
 - `SelectionPlaybackModel` chooses one primary selected non-empty MIDI track and
-  every selected audio track with a readable assigned WAV;
+  every selected audio track with a readable imported WAV;
 - WAV data is decoded before playback into immutable mono/stereo sample storage;
 - the callback maps one shared transport clock to MIDI events and WAV source
   frames, using linear interpolation when device and source sample rates differ;
@@ -104,6 +104,20 @@ Milestone 3.4 extends the same device and callback into selected-stem audition:
   confident asynchronously detected WAV tempo, then a 120 BPM audition fallback;
 - bounded WAV tempo analysis and its path/size/mtime session cache run outside
   the callback, while source audio always plays at original speed.
+
+Direct WAV import is a prepared batch operation:
+
+- the native File chooser supplies one or more source paths;
+- `AudioTrackImporter` validates mono/stereo WAV metadata without decoding on
+  the audio callback and prepares filename-derived names plus absolute paths;
+- one core `ImportAudioTracksCommand` creates and selects all valid tracks as a
+  single `ProjectHistory` transaction;
+- imported tracks retain sample rate, channel count, duration, frame count, bit
+  depth, and source size metadata;
+- Timeline waveform thumbnails, selection playback duration, and asynchronous
+  BPM analysis consume the imported source path through their existing paths;
+- Undo removes the batch and Redo recreates names, paths, and metadata;
+- WAV sources remain in place and are never copied or modified.
 
 For successful bass and sync operations, temporary Hermes cache job directories are deleted immediately. Failed operations preserve diagnostics in cache.
 
@@ -131,7 +145,7 @@ Milestone 3.1 visual functionality is accepted.
 Implemented now:
 
 - workspace shell and command surfaces;
-- file-backed audio source assignment and MIDI import into track model;
+- direct multi-WAV audio-track import and MIDI import into the track model;
 - extracted top-row-3-columns + full-width-bottom MIDI layout geometry;
 - draggable splitter geometry with persisted layout state and reset command;
 - embedded Hermes drums extraction, bass repair, and MIDI/WAV synchronization;
@@ -168,5 +182,5 @@ Additional Milestone 3.1 boundaries:
   and Cubase-specific exchange remain deferred.
 - M3.4 playback is audition-grade: it includes Pause/resume, a counter,
   5-second seeking, playhead follow, and BPM resolution, but no time stretching,
-  beat warping, looping, mixer, effects, direct WAV import, or final
+  beat warping, looping, mixer, effects, or final
   sample-accurate DAW mixing.

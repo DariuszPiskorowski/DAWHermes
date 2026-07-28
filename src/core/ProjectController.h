@@ -23,8 +23,6 @@ public:
     bool deleteSelectedTrack();
     bool deleteTrackById(std::uint64_t trackId);
 
-    bool assignAudioSourceToTrack(std::uint64_t trackId, std::string audioSourcePath);
-    bool assignAudioSourceToSelectedTrack(std::string audioSourcePath);
     bool replaceMidiNotesOnTrack(std::uint64_t trackId, std::vector<MidiNote> midiNotes);
     bool setMidiSourceMetadata(std::uint64_t trackId, MidiSourceMetadata metadata);
     bool clearMidiSourceMetadata(std::uint64_t trackId);

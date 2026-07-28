@@ -67,12 +67,24 @@ struct MidiSourceMetadata {
     MidiTrackOrigin origin { MidiTrackOrigin::unknown };
 };
 
+struct AudioSourceMetadata {
+    double sampleRate { 0.0 };
+    int channelCount { 0 };
+    double durationSeconds { 0.0 };
+    std::uint64_t frameCount { 0 };
+    int bitsPerSample { 0 };
+    std::uint64_t fileSizeBytes { 0 };
+
+    bool operator==(const AudioSourceMetadata& other) const = default;
+};
+
 struct Track {
     std::uint64_t id{};
     std::string name;
     TrackType type { TrackType::audio };
     std::uint64_t parentTrackId { 0 };
     std::string audioSourcePath;
+    std::optional<AudioSourceMetadata> audioSourceMetadata;
     std::vector<MidiNote> midiNotes;
     std::optional<MidiSourceMetadata> midiSourceMetadata;
     std::string generatedGroupId;

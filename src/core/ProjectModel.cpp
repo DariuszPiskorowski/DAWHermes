@@ -66,6 +66,28 @@ bool ProjectModel::setAudioSourcePath(std::uint64_t id, std::string audioSourceP
     }
 
     track->audioSourcePath = std::move(audioSourcePath);
+    track->audioSourceMetadata.reset();
+    return true;
+}
+
+bool ProjectModel::setAudioSource(
+    std::uint64_t id,
+    std::string audioSourcePath,
+    AudioSourceMetadata metadata)
+{
+    auto* track = findTrackById(id);
+    if (track == nullptr
+        || track->type != TrackType::audio
+        || audioSourcePath.empty()
+        || metadata.sampleRate <= 0.0
+        || metadata.channelCount < 1
+        || metadata.durationSeconds <= 0.0
+        || metadata.frameCount == 0) {
+        return false;
+    }
+
+    track->audioSourcePath = std::move(audioSourcePath);
+    track->audioSourceMetadata = std::move(metadata);
     return true;
 }
 

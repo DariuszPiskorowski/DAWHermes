@@ -118,7 +118,7 @@ ValidationResult validateTrackContextForDrums(const HermesTrackContext& context)
     }
 
     if (context.audioSourcePath.empty()) {
-        return ValidationResult::fail("Selected audio track has no assigned WAV source file.");
+        return ValidationResult::fail("Selected audio track has no imported WAV file.");
     }
 
     std::error_code ec;
