@@ -12,6 +12,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -35,6 +36,7 @@
 #include "core/Track.h"
 #include "audio/MidiAuditionEngine.h"
 #include "audio/MidiPlaybackModel.h"
+#include "audio/SelectionPlaybackModel.h"
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/ComposerAssistantConnector.h"
 #include "hermes/EmbeddedHermesEngine.h"
@@ -161,6 +163,55 @@ void writeLe32(std::ofstream& out, std::uint32_t value)
         static_cast<char>((value >> 24) & 0xff)
     };
     out.write(bytes, sizeof(bytes));
+}
+
+std::filesystem::path createSyntheticPlaybackWavFixture(
+    const std::string& stem,
+    int sampleRate,
+    int channelCount,
+    int frameCount)
+{
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path()
+        / ("dawhermes-playback-" + stem + "-" + std::to_string(unique) + ".wav");
+    std::vector<std::int16_t> samples(
+        static_cast<std::size_t>(frameCount * channelCount),
+        0);
+    for (int frame = 0; frame < frameCount; ++frame) {
+        for (int channel = 0; channel < channelCount; ++channel) {
+            const auto value = ((frame + channel) % 32) * 512 - 8192;
+            samples[static_cast<std::size_t>((frame * channelCount) + channel)]
+                = static_cast<std::int16_t>(value);
+        }
+    }
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const int bitsPerSample = 16;
+    const std::uint32_t dataSize = static_cast<std::uint32_t>(
+        samples.size() * sizeof(std::int16_t));
+    out.write("RIFF", 4);
+    writeLe32(out, 36u + dataSize);
+    out.write("WAVE", 4);
+    out.write("fmt ", 4);
+    writeLe32(out, 16u);
+    writeLe16(out, 1u);
+    writeLe16(out, static_cast<std::uint16_t>(channelCount));
+    writeLe32(out, static_cast<std::uint32_t>(sampleRate));
+    writeLe32(
+        out,
+        static_cast<std::uint32_t>(
+            sampleRate * channelCount * bitsPerSample / 8));
+    writeLe16(
+        out,
+        static_cast<std::uint16_t>(channelCount * bitsPerSample / 8));
+    writeLe16(out, static_cast<std::uint16_t>(bitsPerSample));
+    out.write("data", 4);
+    writeLe32(out, dataSize);
+    out.write(
+        reinterpret_cast<const char*>(samples.data()),
+        static_cast<std::streamsize>(dataSize));
+    out.close();
+    return path;
 }
 
 std::filesystem::path createSyntheticDrumWavFixture(const std::string& stem)
@@ -1905,6 +1956,245 @@ bool testMidiPlaybackTransportCommandState()
     groupTrack.midiNotes = playable.midiNotes;
     EXPECT_TRUE(!dawhermes::audio::midiTransportCommandState(groupTrack, false).playEnabled);
     EXPECT_TRUE(!dawhermes::audio::midiTransportCommandState(std::nullopt, false).playEnabled);
+    return true;
+}
+
+bool testSelectionPlaybackMidiAudioPolicies()
+{
+    const auto monoPath = createSyntheticPlaybackWavFixture(
+        "selection-mono",
+        44100,
+        1,
+        4410);
+    const auto stereoPath = createSyntheticPlaybackWavFixture(
+        "selection-stereo",
+        48000,
+        2,
+        4800);
+
+    ProjectModel project;
+    const auto editedMidiId = project.addTrack(TrackType::midi, "Edited MIDI").id;
+    const auto comparisonMidiId = project.addTrack(TrackType::midi, "Comparison Ghost Source").id;
+    const auto monoAudioId = project.addTrack(TrackType::audio, "Mono Stem").id;
+    const auto stereoAudioId = project.addTrack(TrackType::audio, "Stereo Stem").id;
+    const auto emptyAudioId = project.addTrack(TrackType::audio, "Empty Audio").id;
+    const auto groupId = project.addTrack(TrackType::group, "Group").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        editedMidiId,
+        { MidiNote { 62, 91, 0.0, 1.0, 1, 101 } }));
+    EXPECT_TRUE(project.replaceMidiNotes(
+        comparisonMidiId,
+        { MidiNote { 72, 100, 0.0, 1.0, 1, 201 } }));
+    EXPECT_TRUE(project.setAudioSourcePath(monoAudioId, monoPath.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(stereoAudioId, stereoPath.string()));
+
+    SelectionState selection;
+    selection.selectTrack(editedMidiId);
+    auto midiOnly = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(midiOnly.ok);
+    EXPECT_EQ(midiOnly.snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(midiOnly.snapshot.audioTrackCount(), static_cast<std::size_t>(0));
+    EXPECT_TRUE(midiOnly.snapshot.midi.has_value());
+    EXPECT_EQ(midiOnly.snapshot.midi->events.front().pitch, 62);
+
+    selection.selectTrack(monoAudioId);
+    auto audioOnly = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(audioOnly.ok);
+    EXPECT_EQ(audioOnly.snapshot.midiTrackCount(), static_cast<std::size_t>(0));
+    EXPECT_EQ(audioOnly.snapshot.audioTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(audioOnly.snapshot.audioStems.front().channels.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(approxEqual(audioOnly.snapshot.audioStems.front().sourceSampleRate, 44100.0));
+
+    selection.selectTrack(editedMidiId);
+    selection.toggleTrack(monoAudioId);
+    selection.toggleTrack(stereoAudioId);
+    selection.toggleTrack(emptyAudioId);
+    selection.toggleTrack(groupId);
+    auto combined = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(combined.ok);
+    EXPECT_EQ(combined.snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(combined.snapshot.audioTrackCount(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(combined.snapshot.midi.has_value());
+    EXPECT_EQ(combined.snapshot.midi->events.front().pitch, 62);
+    EXPECT_EQ(combined.snapshot.audioStems.at(1).channels.size(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(approxEqual(combined.snapshot.audioStems.at(1).sourceSampleRate, 48000.0));
+    EXPECT_EQ(
+        dawhermes::audio::describeSelectionPlayback(combined.snapshot),
+        std::string("Playing selection: 1 MIDI track, 2 audio tracks"));
+
+    selection.toggleTrack(comparisonMidiId);
+    auto comparisonSelection = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(comparisonSelection.ok);
+    EXPECT_EQ(comparisonSelection.snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(comparisonSelection.snapshot.midi.has_value());
+    EXPECT_EQ(comparisonSelection.snapshot.midi->events.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(comparisonSelection.snapshot.midi->events.front().pitch, 62);
+
+    std::error_code ec;
+    std::filesystem::remove(monoPath, ec);
+    std::filesystem::remove(stereoPath, ec);
+    return true;
+}
+
+bool testSelectionPlaybackWavSafetyAndTiming()
+{
+    const auto monoPath = createSyntheticPlaybackWavFixture(
+        "safety-mono",
+        44100,
+        1,
+        4410);
+    const auto sourceBytes = readBinaryFile(monoPath);
+    const auto unreadablePath = createTempWavFixture("selection-unreadable");
+    const auto unreadableBytes = readBinaryFile(unreadablePath);
+    const auto missingPath = monoPath.parent_path() / "dawhermes-definitely-missing.wav";
+
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "Edited").id;
+    const auto readableId = project.addTrack(TrackType::audio, "Readable").id;
+    const auto unreadableId = project.addTrack(TrackType::audio, "Unreadable").id;
+    const auto missingId = project.addTrack(TrackType::audio, "Missing").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        { MidiNote { 65, 87, 0.0, 2.0, 3, 999 } }));
+    EXPECT_TRUE(project.setAudioSourcePath(readableId, monoPath.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(unreadableId, unreadablePath.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(missingId, missingPath.string()));
+
+    dawhermes::core::MidiSourceMetadata metadata;
+    metadata.tempoMap = { dawhermes::core::MidiTempoEvent { 0.0, 1000000 } };
+    EXPECT_TRUE(project.setMidiSourceMetadata(midiId, metadata));
+
+    SelectionState selection;
+    selection.selectTrack(midiId);
+    selection.toggleTrack(readableId);
+    selection.toggleTrack(unreadableId);
+    selection.toggleTrack(missingId);
+
+    dawhermes::core::ProjectHistory history;
+    const auto historySize = history.size();
+    const auto result = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(result.snapshot.audioTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(result.skippedAudioTracks.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(result.snapshot.audioStems.front().sourcePath, monoPath.string());
+    EXPECT_TRUE(approxEqual(result.snapshot.audioStems.front().durationSeconds(), 0.1));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::audioSourceFramePosition(0.05, 44100.0),
+        2205.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::audioSourceFramePosition(0.05, 48000.0),
+        2400.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::audioSourceFramePosition(0.0, 44100.0),
+        0.0));
+    EXPECT_TRUE(result.snapshot.midi.has_value());
+    EXPECT_TRUE(approxEqual(result.snapshot.midi->events.front().timeSeconds, 0.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionPlayheadBeat(0.5, result.snapshot),
+        0.5));
+    EXPECT_EQ(history.size(), historySize);
+    EXPECT_EQ(readBinaryFile(monoPath), sourceBytes);
+    EXPECT_EQ(readBinaryFile(unreadablePath), unreadableBytes);
+    EXPECT_EQ(project.findTrackById(readableId)->audioSourcePath, monoPath.string());
+
+    SelectionState invalidOnly;
+    invalidOnly.selectTrack(unreadableId);
+    invalidOnly.toggleTrack(missingId);
+    const auto invalidResult = dawhermes::audio::createSelectionPlaybackSnapshot(
+        project,
+        invalidOnly);
+    EXPECT_TRUE(!invalidResult.ok);
+    EXPECT_EQ(invalidResult.skippedAudioTracks.size(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(
+        invalidResult.message.find("Skipped unreadable audio track:") == 0);
+
+    std::error_code ec;
+    std::filesystem::remove(monoPath, ec);
+    std::filesystem::remove(unreadablePath, ec);
+    return true;
+}
+
+bool testSelectionPlaybackTransportAndStopPanicState()
+{
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "MIDI").id;
+    const auto audioId = project.addTrack(TrackType::audio, "Audio").id;
+    const auto emptyMidiId = project.addTrack(TrackType::midi, "Empty MIDI").id;
+    const auto groupId = project.addTrack(TrackType::group, "Group").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        { MidiNote { 60, 100, 0.0, 1.0, 1, 1 } }));
+    EXPECT_TRUE(project.setAudioSourcePath(audioId, "assigned.wav"));
+
+    SelectionState selection;
+    EXPECT_TRUE(!dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        false).playEnabled);
+    selection.selectTrack(emptyMidiId);
+    selection.toggleTrack(groupId);
+    EXPECT_TRUE(!dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        false).playEnabled);
+    selection.selectTrack(midiId);
+    auto ready = dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        false);
+    EXPECT_TRUE(ready.playEnabled);
+    EXPECT_TRUE(!ready.stopEnabled);
+    selection.selectTrack(audioId);
+    ready = dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        false);
+    EXPECT_TRUE(ready.playEnabled);
+    const auto playing = dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        true);
+    EXPECT_TRUE(!playing.playEnabled);
+    EXPECT_TRUE(playing.stopEnabled);
+    EXPECT_TRUE(playing.panicEnabled);
+
+    auto midiSnapshot = dawhermes::audio::createMidiPlaybackSnapshot(
+        *project.findTrackById(midiId));
+    EXPECT_TRUE(midiSnapshot.ok);
+    dawhermes::audio::SelectionPlaybackSnapshot snapshot;
+    snapshot.durationSeconds = midiSnapshot.snapshot.durationSeconds;
+    snapshot.playheadTempoMap = midiSnapshot.snapshot.tempoMap;
+    snapshot.midi = std::move(midiSnapshot.snapshot);
+    dawhermes::audio::AudioStemPlaybackSnapshot stem;
+    stem.sourceTrackId = audioId;
+    stem.sourceTrackName = "Audio";
+    stem.sourcePath = "assigned.wav";
+    stem.sourceSampleRate = 44100.0;
+    stem.frameCount = 2;
+    stem.channels = { { 0.25f, -0.25f } };
+    snapshot.audioStems.push_back(std::move(stem));
+    EXPECT_EQ(snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(snapshot.audioTrackCount(), static_cast<std::size_t>(1));
+
+    dawhermes::audio::SelectionPlaybackState state;
+    state.start(std::make_shared<const dawhermes::audio::SelectionPlaybackSnapshot>(
+        snapshot));
+    EXPECT_TRUE(state.isPlaying());
+    EXPECT_TRUE(state.hasPreparedPlayback());
+    EXPECT_TRUE(state.snapshot()->midi.has_value());
+    EXPECT_EQ(state.snapshot()->audioStems.size(), static_cast<std::size_t>(1));
+    state.stop();
+    EXPECT_TRUE(!state.isPlaying());
+    EXPECT_TRUE(!state.hasPreparedPlayback());
+    EXPECT_TRUE(state.snapshot() == nullptr);
+
+    state.start(std::make_shared<const dawhermes::audio::SelectionPlaybackSnapshot>(
+        std::move(snapshot)));
+    EXPECT_TRUE(state.isPlaying());
+    state.panic();
+    EXPECT_TRUE(!state.isPlaying());
+    EXPECT_TRUE(!state.hasPreparedPlayback());
     return true;
 }
 
@@ -3856,6 +4146,9 @@ int main(int argc, char* argv[])
         { "MIDI playback tempo timing and ordering", testMidiPlaybackTempoTimingAndOrdering },
         { "MIDI playback snapshot and no-history behaviour", testMidiPlaybackSnapshotAndNoHistoryBehaviour },
         { "MIDI playback transport command state", testMidiPlaybackTransportCommandState },
+        { "Selection playback MIDI/audio policies", testSelectionPlaybackMidiAudioPolicies },
+        { "Selection playback WAV safety and timing", testSelectionPlaybackWavSafetyAndTiming },
+        { "Selection playback transport stop/panic state", testSelectionPlaybackTransportAndStopPanicState },
         { "MIDI track exporter basics and round trip", testMidiTrackExporterBasicsAndRoundTrip },
         { "MIDI track exporter tempo/signature/PPQ/ordering", testMidiTrackExporterTempoSignaturePpqAndOrdering },
         { "MIDI track exporter edited state regressions", testMidiTrackExporterEditedStateAndRegressions },

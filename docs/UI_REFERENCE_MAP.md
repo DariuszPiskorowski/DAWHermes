@@ -1,4 +1,4 @@
-# UI Reference Map (accepted Milestones 3.1-3.3)
+# UI Reference Map (Milestones 3.1-3.4)
 
 This document captures the structural UI alignment and visual-analysis surfaces active in Milestone 3.1.
 
@@ -102,6 +102,17 @@ Accepted Milestone 3.3 audition surfaces:
 - orange playback playhead in Timeline and Piano Roll;
 - no Record control and no audio-track playback.
 
+Milestone 3.4 audition surfaces:
+
+- the transport action is labelled `Play Selection`;
+- one selected MIDI track and all selected readable assigned WAV tracks can play
+  together;
+- audio-only and MIDI-only selection remain playable;
+- Stop, Panic, and Master Volume affect MIDI and WAV;
+- skipped unreadable audio is reported in the existing non-modal status strip;
+- Timeline and Piano Roll retain one shared orange playhead;
+- no Record, mixer, mute/solo, seeking, looping, or audio-editing controls are added.
+
 ## Compare mode
 
 `View -> Compare Selected MIDI Tracks` is enabled only when exactly two MIDI tracks are selected.
@@ -114,4 +125,6 @@ The current Timeline and Piano Roll styling is intentionally functional rather t
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
 MIDI note editing is accepted Milestone 3.2 functionality.
-M3.3 adds selected-track MIDI audition only. WAV playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange are not part of this checkpoint.
+M3.4 adds selected assigned-WAV playback alongside the M3.3 internal MIDI synth.
+It does not add time stretching, BPM detection, final sample-accurate mixing,
+Timeline editing, controller lanes, copy/paste, or Cubase-specific exchange.

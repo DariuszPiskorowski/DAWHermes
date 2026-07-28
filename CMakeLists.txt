@@ -53,12 +53,17 @@ set_project_warnings(dawhermes_core)
 
 add_library(dawhermes_audio
   src/audio/MidiPlaybackModel.cpp
+  src/audio/SelectionPlaybackModel.cpp
   src/audio/MidiAuditionEngine.cpp
 )
 target_include_directories(dawhermes_audio PUBLIC src)
 target_link_libraries(
   dawhermes_audio
-  PUBLIC dawhermes_core juce::juce_audio_basics juce::juce_audio_devices)
+  PUBLIC
+    dawhermes_core
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats)
 set_project_warnings(dawhermes_audio)
 
 add_library(dawhermes_midi

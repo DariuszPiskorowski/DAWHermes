@@ -1,4 +1,4 @@
-# DAWHermes Architecture (Milestone 3.3)
+# DAWHermes Architecture (Milestone 3.4)
 
 ## Why a new Windows repository
 
@@ -18,7 +18,9 @@ The codebase is split into explicit layers:
 
 - `src/app` - application lifecycle, top-level window wiring, settings, logging bootstrap.
 - `src/core` - in-memory project and track model, selection/controller state, deterministic layout geometry, timeline viewport/time-map logic, piano-roll geometry, and MIDI comparison model.
-- `src/audio` - deterministic MIDI playback snapshots/timing plus the internal default-device audition synth.
+- `src/audio` - deterministic selection playback snapshots/timing, preloaded WAV
+  stem data, safe source-rate conversion, and the internal default-device
+  audition synth/mixer.
 - `src/midi` - testable MIDI file export utilities that transform project MIDI tracks into standard MIDI files without depending on UI dialogs.
 - `src/ui` - JUCE views, menu bar, context menus, timeline/piano-roll rendering, option dialogs, and MIDI/WAV import parsing utilities.
 - `src/hermes` - neutral Hermes contracts, command availability rules, option validation, embedded Python engine, and connector boundaries.
@@ -74,6 +76,23 @@ Accepted Milestone 3.3 adds selected-track MIDI audition:
 - Timeline and Piano Roll display a UI-timer-driven playhead;
 - no VST, WAV playback, recording, mixer, temporary audio file, or external audio process is involved.
 
+Milestone 3.4 extends the same device and callback into selected-stem audition:
+
+- `SelectionPlaybackModel` chooses one primary selected non-empty MIDI track and
+  every selected audio track with a readable assigned WAV;
+- WAV data is decoded before playback into immutable mono/stereo sample storage;
+- the callback maps one shared transport clock to MIDI events and WAV source
+  frames, using linear interpolation when device and source sample rates differ;
+- WAV time zero and MIDI transport time zero are shared, while MIDI continues to
+  use its tempo map and WAV remains at original speed;
+- Master Volume, Stop, Panic, device stop, and shutdown affect both synth and WAV;
+- group tracks, empty tracks, non-selected tracks, and visual comparison ghosts
+  contribute no playback;
+- missing/unreadable WAV sources are skipped with concise non-modal status;
+- no callback file I/O, model/selection/history mutation, Hermes, Python,
+  second audio-device manager, or external helper process is introduced.
+- retired decoded stem buffers are reclaimed outside the audio callback.
+
 For successful bass and sync operations, temporary Hermes cache job directories are deleted immediately. Failed operations preserve diagnostics in cache.
 
 `StubHermesEngine` remains in the codebase for tests and for explicit placeholder behavior.
@@ -92,7 +111,7 @@ The install script deploys a runnable Release app to `%LOCALAPPDATA%\DAWHermes\a
 
 No PowerShell or terminal launcher is used for normal user launch.
 
-## Current limitations (Milestone 3.3)
+## Current limitations (Milestone 3.4)
 
 Milestone 2 functionality is complete.
 Milestone 3.1 visual functionality is accepted.
@@ -117,7 +136,7 @@ Implemented now:
 
 Not implemented now:
 
-- WAV/audio-track playback, recording, or advanced device setup UI;
+- recording or advanced device setup UI;
 - Hermes set/fix BPM workflow;
 - AI APIs;
 - ACE exchange;
@@ -131,4 +150,8 @@ Additional Milestone 3.1 boundaries:
 - timeline ruler/lanes and piano roll share one horizontal beat viewport state;
 - waveform drawing is static visualization only and not a playback transport surface;
 - current Timeline and Piano Roll styling is intentionally functional rather than final, with visual polish deferred until near project end.
-- Milestones 3.2 and 3.3 are accepted and published; Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange remain deferred.
+- Milestones 3.2 and 3.3 are accepted and published; Milestone 3.4 selected
+  audio-stem playback is installed for manual acceptance. Timeline editing,
+  controller lanes, copy/paste, and Cubase-specific exchange remain deferred.
+- M3.4 playback is audition-grade: no time stretching, beat warping, seeking,
+  looping, mixer, effects, or final sample-accurate DAW mixing.

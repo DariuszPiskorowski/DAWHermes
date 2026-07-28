@@ -213,7 +213,7 @@ private:
     juce::MenuBarComponent menuBar_;
 
     juce::Label transportLabel_;
-    juce::TextButton playButton_ { "Play" };
+    juce::TextButton playButton_ { "Play Selection" };
     juce::TextButton stopButton_ { "Stop" };
     juce::TextButton panicButton_ { "Panic" };
     juce::Label volumeLabel_;

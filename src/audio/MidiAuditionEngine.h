@@ -5,10 +5,12 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
 #include "audio/MidiPlaybackModel.h"
+#include "audio/SelectionPlaybackModel.h"
 
 namespace dawhermes::audio {
 
@@ -21,6 +23,7 @@ public:
     MidiAuditionEngine& operator=(const MidiAuditionEngine&) = delete;
 
     bool startPlayback(MidiPlaybackSnapshot snapshot, std::string& error);
+    bool startPlayback(SelectionPlaybackSnapshot snapshot, std::string& error);
     void stop();
     void panic();
 
@@ -30,8 +33,15 @@ public:
     bool isAudioDeviceReady() const noexcept;
     double playheadSeconds() const noexcept;
     double playheadBeat() const;
+    bool hasPreparedPlayback() const noexcept;
+    void collectRetiredSnapshots();
 
 private:
+    struct StereoSample {
+        float left { 0.0f };
+        float right { 0.0f };
+    };
+
     struct Voice {
         bool active { false };
         bool releasing { false };
@@ -46,6 +56,7 @@ private:
     void startVoice(const MidiPlaybackEvent& event) noexcept;
     void releaseVoice(std::uint64_t noteInstanceId) noexcept;
     float renderVoices() noexcept;
+    StereoSample renderAudioStems(double transportSeconds) const noexcept;
     bool hasActiveVoices() const noexcept;
 
     void audioDeviceIOCallbackWithContext(
@@ -61,15 +72,15 @@ private:
     juce::AudioDeviceManager deviceManager_;
     bool callbackRegistered_ { false };
     std::atomic<bool> deviceReady_ { false };
-    std::atomic<bool> playing_ { false };
     std::atomic<bool> stopRequested_ { false };
     std::atomic<bool> panicRequested_ { false };
     std::atomic<float> volume_ { 0.25f };
     std::atomic<double> playheadSeconds_ { 0.0 };
     std::atomic<std::uint64_t> requestedGeneration_ { 0 };
 
-    std::atomic<std::shared_ptr<const MidiPlaybackSnapshot>> requestedSnapshot_;
-    std::shared_ptr<const MidiPlaybackSnapshot> activeSnapshot_;
+    SelectionPlaybackState playbackState_;
+    std::vector<std::shared_ptr<const SelectionPlaybackSnapshot>> retainedSnapshots_;
+    std::shared_ptr<const SelectionPlaybackSnapshot> activeSnapshot_;
     std::uint64_t activeGeneration_ { 0 };
     std::size_t nextEventIndex_ { 0 };
     std::uint64_t playbackSamplePosition_ { 0 };

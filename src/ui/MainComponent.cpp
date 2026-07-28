@@ -331,7 +331,7 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     addAndMakeVisible(menuBar_);
 
     transportLabel_.setText(
-        "MIDI Audition",
+        "Selection Audition",
         juce::dontSendNotification);
     transportLabel_.setJustificationType(juce::Justification::centredLeft);
     transportLabel_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff2b323b));
@@ -588,7 +588,7 @@ void MainComponent::resized()
         layout.transportBar.height).reduced(6, 3);
     transportLabel_.setBounds(transportControls.removeFromLeft(std::min(120, transportControls.getWidth())));
     transportControls.removeFromLeft(6);
-    playButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
+    playButton_.setBounds(transportControls.removeFromLeft(std::min(105, transportControls.getWidth())));
     transportControls.removeFromLeft(4);
     stopButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
     transportControls.removeFromLeft(4);
@@ -2425,26 +2425,19 @@ void MainComponent::completeHermesJob(hermes::HermesJobResult result)
 
 void MainComponent::startSelectedMidiPlayback()
 {
-    const auto track = selectedTrack();
-    if (!track.has_value() || !audio::canAuditionMidiTrack(track.value())) {
-        statusLabel_.setText(
-            "Select a non-empty MIDI track before playback.",
-            juce::dontSendNotification);
-        updateTransportControlState();
-        return;
-    }
-
-    const auto snapshotResult = audio::createMidiPlaybackSnapshot(track.value());
+    auto snapshotResult = audio::createSelectionPlaybackSnapshot(
+        projectModel_,
+        selectionState_);
     if (!snapshotResult.ok) {
         statusLabel_.setText(
-            "MIDI playback unavailable: " + juce::String(snapshotResult.message),
+            juce::String(snapshotResult.message),
             juce::dontSendNotification);
         updateTransportControlState();
         return;
     }
 
     std::string error;
-    if (!midiAuditionEngine_.startPlayback(snapshotResult.snapshot, error)) {
+    if (!midiAuditionEngine_.startPlayback(std::move(snapshotResult.snapshot), error)) {
         statusLabel_.setText(
             "Audio output unavailable: " + juce::String(error),
             juce::dontSendNotification);
@@ -2456,9 +2449,17 @@ void MainComponent::startSelectedMidiPlayback()
     transportWasPlaying_ = true;
     timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
     pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
-    statusLabel_.setText(
-        "Playing MIDI snapshot: " + juce::String(track->name),
-        juce::dontSendNotification);
+    juce::String status(snapshotResult.message);
+    if (!snapshotResult.skippedAudioTracks.empty()) {
+        status << " | "
+               << juce::String(audio::describeSkippedAudioTrack(
+                      snapshotResult.skippedAudioTracks.front()));
+        if (snapshotResult.skippedAudioTracks.size() > 1) {
+            status << " (+" << static_cast<int>(snapshotResult.skippedAudioTracks.size() - 1)
+                   << " more)";
+        }
+    }
+    statusLabel_.setText(status, juce::dontSendNotification);
     updateTransportControlState();
 }
 
@@ -2469,7 +2470,7 @@ void MainComponent::stopMidiPlayback()
     transportWasPlaying_ = false;
     timelineView_.setPlayheadBeat(std::nullopt);
     pianoRollView_.setPlayheadBeat(std::nullopt);
-    statusLabel_.setText("MIDI playback stopped.", juce::dontSendNotification);
+    statusLabel_.setText("Stopped playback", juce::dontSendNotification);
     updateTransportControlState();
 }
 
@@ -2480,14 +2481,15 @@ void MainComponent::panicMidiPlayback()
     transportWasPlaying_ = false;
     timelineView_.setPlayheadBeat(std::nullopt);
     pianoRollView_.setPlayheadBeat(std::nullopt);
-    statusLabel_.setText("Panic: all audition voices stopped.", juce::dontSendNotification);
+    statusLabel_.setText("Panic: all playback silenced", juce::dontSendNotification);
     updateTransportControlState();
 }
 
 void MainComponent::updateTransportControlState()
 {
-    const auto state = audio::midiTransportCommandState(
-        selectedTrack(),
+    const auto state = audio::selectionTransportCommandState(
+        projectModel_,
+        selectionState_,
         midiAuditionEngine_.isPlaying());
     playButton_.setEnabled(state.playEnabled);
     stopButton_.setEnabled(state.stopEnabled);
@@ -2496,6 +2498,7 @@ void MainComponent::updateTransportControlState()
 
 void MainComponent::timerCallback()
 {
+    midiAuditionEngine_.collectRetiredSnapshots();
     const auto playing = midiAuditionEngine_.isPlaying();
     if (playing) {
         playbackPlayheadBeat_ = midiAuditionEngine_.playheadBeat();
@@ -2505,7 +2508,7 @@ void MainComponent::timerCallback()
         playbackPlayheadBeat_ = midiAuditionEngine_.playheadBeat();
         timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
         pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
-        statusLabel_.setText("MIDI playback finished.", juce::dontSendNotification);
+        statusLabel_.setText("Selection playback finished.", juce::dontSendNotification);
     }
 
     transportWasPlaying_ = playing;
@@ -3024,7 +3027,7 @@ void MainComponent::showAbout()
     juce::AlertWindow::showMessageBox(
         juce::AlertWindow::InfoIcon,
         "About DAWHermes",
-        "DAWHermes Milestone 3.3\nNative Windows MIDI editing and audition workbench with embedded Hermes tools.");
+        "DAWHermes Milestone 3.4\nNative Windows MIDI editing and synchronized audio-stem audition with embedded Hermes tools.");
 }
 
 }  // namespace dawhermes::ui
