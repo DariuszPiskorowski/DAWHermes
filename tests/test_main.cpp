@@ -307,6 +307,140 @@ std::filesystem::path createSyntheticClickTrackWavFixture(
     return path;
 }
 
+struct SyntheticRhythmEvent {
+    double beatOffset { 0.0 };
+    double amplitude { 1.0 };
+    double frequencyHz { 1000.0 };
+    double durationSeconds { 0.03 };
+    double decayPerSecond { 80.0 };
+};
+
+std::filesystem::path createSyntheticRhythmWavFixture(
+    const std::string& stem,
+    double bpm,
+    int sampleRate,
+    int channelCount,
+    double durationSeconds,
+    double patternBeats,
+    const std::vector<SyntheticRhythmEvent>& events)
+{
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path()
+        / ("dawhermes-rhythm-" + stem + "-" + std::to_string(unique) + ".wav");
+    const auto frameCount = static_cast<int>(
+        std::llround(durationSeconds * static_cast<double>(sampleRate)));
+    std::vector<double> mixed(
+        static_cast<std::size_t>(frameCount * channelCount),
+        0.0);
+    const auto framesPerBeat =
+        (60.0 / bpm) * static_cast<double>(sampleRate);
+
+    for (double cycleBeat = 0.0;
+         cycleBeat * framesPerBeat < static_cast<double>(frameCount);
+         cycleBeat += patternBeats) {
+        for (const auto& event : events) {
+            const auto start = static_cast<int>(std::llround(
+                (cycleBeat + event.beatOffset) * framesPerBeat));
+            const auto eventFrames = std::max(
+                1,
+                static_cast<int>(std::llround(
+                    event.durationSeconds * static_cast<double>(sampleRate))));
+            for (int offset = 0;
+                 offset < eventFrames
+                 && start + offset < frameCount;
+                 ++offset) {
+                if (start + offset < 0) {
+                    continue;
+                }
+                const auto seconds = static_cast<double>(offset)
+                    / static_cast<double>(sampleRate);
+                const auto envelope = std::exp(
+                    -seconds * event.decayPerSecond);
+                const auto wave = std::sin(
+                    2.0 * 3.14159265358979323846
+                    * event.frequencyHz
+                    * seconds);
+                for (int channel = 0; channel < channelCount; ++channel) {
+                    const auto channelScale = channel == 0 ? 1.0 : 0.82;
+                    mixed[static_cast<std::size_t>(
+                        ((start + offset) * channelCount) + channel)]
+                        += wave
+                        * envelope
+                        * event.amplitude
+                        * channelScale
+                        * 26000.0;
+                }
+            }
+        }
+    }
+
+    std::vector<std::int16_t> samples(mixed.size(), 0);
+    std::transform(
+        mixed.begin(),
+        mixed.end(),
+        samples.begin(),
+        [](double sample) {
+            return static_cast<std::int16_t>(std::clamp(
+                static_cast<int>(std::llround(sample)),
+                -32767,
+                32767));
+        });
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const int bitsPerSample = 16;
+    const auto dataSize = static_cast<std::uint32_t>(
+        samples.size() * sizeof(std::int16_t));
+    out.write("RIFF", 4);
+    writeLe32(out, 36u + dataSize);
+    out.write("WAVE", 4);
+    out.write("fmt ", 4);
+    writeLe32(out, 16u);
+    writeLe16(out, 1u);
+    writeLe16(out, static_cast<std::uint16_t>(channelCount));
+    writeLe32(out, static_cast<std::uint32_t>(sampleRate));
+    writeLe32(
+        out,
+        static_cast<std::uint32_t>(
+            sampleRate * channelCount * bitsPerSample / 8));
+    writeLe16(
+        out,
+        static_cast<std::uint16_t>(
+            channelCount * bitsPerSample / 8));
+    writeLe16(out, static_cast<std::uint16_t>(bitsPerSample));
+    out.write("data", 4);
+    writeLe32(out, dataSize);
+    out.write(
+        reinterpret_cast<const char*>(samples.data()),
+        static_cast<std::streamsize>(dataSize));
+    out.close();
+    return path;
+}
+
+std::vector<double> createSyntheticOnsetEnvelope(
+    double bpm,
+    double durationSeconds,
+    const std::vector<double>& repeatingBeatStrengths)
+{
+    constexpr double envelopeRate = 200.0;
+    std::vector<double> onset(
+        static_cast<std::size_t>(
+            std::llround(durationSeconds * envelopeRate)),
+        0.0);
+    const auto period = (60.0 * envelopeRate) / bpm;
+    std::size_t beatIndex = 0;
+    for (double position = 8.0;
+         position < static_cast<double>(onset.size() - 3);
+         position += period, ++beatIndex) {
+        const auto strength = repeatingBeatStrengths[
+            beatIndex % repeatingBeatStrengths.size()];
+        const auto center = static_cast<std::size_t>(std::llround(position));
+        onset[center] = std::max(onset[center], strength);
+        onset[center + 1] = std::max(onset[center + 1], strength * 0.45);
+        onset[center + 2] = std::max(onset[center + 2], strength * 0.15);
+    }
+    return onset;
+}
+
 std::filesystem::path createSyntheticDrumWavFixture(const std::string& stem)
 {
     const int sampleRate = 44100;
@@ -3302,26 +3436,143 @@ bool testPlaybackSummaryDurationsAndAudioOnlyTempo()
     return true;
 }
 
+bool testWavBpmOctaveCandidateSelection()
+{
+    struct OctaveCase {
+        double rawAutocorrelationBpm = 0.0;
+        double expectedBpm = 0.0;
+        double weakBeatStrength = 0.28;
+    };
+    const std::vector<OctaveCase> octaveCases {
+        { 60.0, 120.0 },
+        { 70.0, 140.0 },
+        { 75.0, 150.0 },
+        { 90.0, 180.0, 0.40 }
+    };
+    for (const auto& octaveCase : octaveCases) {
+        const auto alternating = createSyntheticOnsetEnvelope(
+            octaveCase.expectedBpm,
+            20.0,
+            { 1.0, octaveCase.weakBeatStrength });
+        const auto decision =
+            dawhermes::audio::evaluateWavBpmCandidates(alternating);
+        EXPECT_TRUE(decision.bpm.has_value());
+        EXPECT_TRUE(approxEqual(
+            decision.strongestAutocorrelationBpm,
+            octaveCase.rawAutocorrelationBpm,
+            1.5));
+        EXPECT_TRUE(approxEqual(
+            decision.bpm.value(),
+            octaveCase.expectedBpm,
+            1.5));
+        EXPECT_TRUE(
+            decision.confidence
+            >= dawhermes::audio::kMinimumWavBpmConfidence);
+        EXPECT_TRUE(decision.rhythmicCoverage >= 0.8);
+    }
+
+    const auto true70 = createSyntheticOnsetEnvelope(
+        70.0,
+        20.0,
+        { 1.0 });
+    const auto true70Decision =
+        dawhermes::audio::evaluateWavBpmCandidates(true70);
+    EXPECT_TRUE(true70Decision.bpm.has_value());
+    EXPECT_TRUE(approxEqual(true70Decision.bpm.value(), 70.0, 1.5));
+    EXPECT_TRUE(
+        true70Decision.confidence
+        >= dawhermes::audio::kMinimumWavBpmConfidence);
+
+    const auto ambiguous140 = createSyntheticOnsetEnvelope(
+        140.0,
+        20.0,
+        { 1.0, 0.20 });
+    const auto ambiguousDecision =
+        dawhermes::audio::evaluateWavBpmCandidates(ambiguous140);
+    EXPECT_TRUE(
+        ambiguousDecision.confidence
+        < dawhermes::audio::kMinimumWavBpmConfidence);
+    return true;
+}
+
 bool testWavBpmDetectionAndSourceSafety()
 {
-    const auto click90 = createSyntheticClickTrackWavFixture(
-        "bpm90-mono-441",
+    struct Fixture {
+        std::filesystem::path path;
+        double expectedBpm = 0.0;
+        std::string sourceBytes;
+    };
+
+    std::vector<Fixture> fixtures;
+    const std::vector<double> tempoMatrix {
+        60.0,
+        70.0,
+        75.0,
         90.0,
-        44100,
-        1,
-        12.0);
-    const auto click120 = createSyntheticClickTrackWavFixture(
-        "bpm120-stereo-480",
         120.0,
-        48000,
-        2,
-        12.0);
-    const auto click140 = createSyntheticClickTrackWavFixture(
-        "bpm140-mono-480",
+        128.0,
+        140.0,
+        150.0,
+        180.0
+    };
+    for (const auto bpm : tempoMatrix) {
+        const auto path = createSyntheticClickTrackWavFixture(
+            "bpm-matrix-" + std::to_string(static_cast<int>(bpm)),
+            bpm,
+            bpm == 90.0 ? 44100 : 48000,
+            bpm == 120.0 ? 2 : 1,
+            16.0);
+        fixtures.push_back({ path, bpm, readBinaryFile(path) });
+    }
+
+    const auto alternating140 = createSyntheticRhythmWavFixture(
+        "bpm140-alternating-accents",
         140.0,
         48000,
         1,
-        12.0);
+        20.0,
+        2.0,
+        {
+            { 0.0, 1.0, 1200.0, 0.025, 105.0 },
+            { 1.0, 0.28, 1200.0, 0.025, 105.0 }
+        });
+    fixtures.push_back({
+        alternating140,
+        140.0,
+        readBinaryFile(alternating140)
+    });
+
+    const auto musical140 = createSyntheticRhythmWavFixture(
+        "bpm140-musical-pattern",
+        140.0,
+        48000,
+        2,
+        20.0,
+        4.0,
+        {
+            { 0.0, 1.0, 90.0, 0.08, 45.0 },
+            { 0.5, 0.12, 3000.0, 0.02, 120.0 },
+            { 1.0, 0.38, 180.0, 0.05, 70.0 },
+            { 1.5, 0.12, 3000.0, 0.02, 120.0 },
+            { 2.0, 0.80, 90.0, 0.08, 45.0 },
+            { 2.5, 0.12, 3000.0, 0.02, 120.0 },
+            { 3.0, 0.32, 180.0, 0.05, 70.0 },
+            { 3.5, 0.12, 3000.0, 0.02, 120.0 }
+        });
+    fixtures.push_back({ musical140, 140.0, readBinaryFile(musical140) });
+
+    const auto true70 = createSyntheticRhythmWavFixture(
+        "bpm70-genuine-slow",
+        70.0,
+        48000,
+        1,
+        20.0,
+        1.0,
+        {
+            { 0.0, 1.0, 90.0, 0.08, 45.0 }
+        });
+    fixtures.push_back({ true70, 70.0, readBinaryFile(true70) });
+
     const auto silence = createSyntheticClickTrackWavFixture(
         "silence",
         0.0,
@@ -3336,32 +3587,27 @@ bool testWavBpmDetectionAndSourceSafety()
         2,
         8.0,
         3);
-    const auto bytes90 = readBinaryFile(click90);
-    const auto bytes120 = readBinaryFile(click120);
-    const auto bytes140 = readBinaryFile(click140);
 
-    const auto estimate90 = dawhermes::audio::analyzeWavBpm(click90);
-    const auto estimate120 = dawhermes::audio::analyzeWavBpm(click120);
-    const auto estimate140 = dawhermes::audio::analyzeWavBpm(click140);
-    EXPECT_TRUE(estimate90.isConfident());
-    EXPECT_TRUE(estimate120.isConfident());
-    EXPECT_TRUE(estimate140.isConfident());
-    EXPECT_TRUE(approxEqual(estimate90.bpm.value(), 90.0, 1.5));
-    EXPECT_TRUE(approxEqual(estimate120.bpm.value(), 120.0, 1.5));
-    EXPECT_TRUE(approxEqual(estimate140.bpm.value(), 140.0, 1.5));
-    EXPECT_TRUE(estimate90.bpm.value() >= 60.0 && estimate90.bpm.value() <= 200.0);
-    EXPECT_TRUE(estimate120.bpm.value() >= 60.0 && estimate120.bpm.value() <= 200.0);
-    EXPECT_TRUE(estimate140.bpm.value() >= 60.0 && estimate140.bpm.value() <= 200.0);
+    for (const auto& fixture : fixtures) {
+        const auto estimate = dawhermes::audio::analyzeWavBpm(fixture.path);
+        EXPECT_TRUE(estimate.isConfident());
+        EXPECT_TRUE(approxEqual(
+            estimate.bpm.value(),
+            fixture.expectedBpm,
+            1.5));
+        EXPECT_TRUE(
+            estimate.bpm.value() >= 60.0
+            && estimate.bpm.value() <= 200.0);
+        EXPECT_EQ(readBinaryFile(fixture.path), fixture.sourceBytes);
+    }
+
     EXPECT_TRUE(!dawhermes::audio::analyzeWavBpm(silence).isConfident());
     EXPECT_TRUE(!dawhermes::audio::analyzeWavBpm(steadyTone).isConfident());
-    EXPECT_EQ(readBinaryFile(click90), bytes90);
-    EXPECT_EQ(readBinaryFile(click120), bytes120);
-    EXPECT_EQ(readBinaryFile(click140), bytes140);
 
     std::error_code ec;
-    std::filesystem::remove(click90, ec);
-    std::filesystem::remove(click120, ec);
-    std::filesystem::remove(click140, ec);
+    for (const auto& fixture : fixtures) {
+        std::filesystem::remove(fixture.path, ec);
+    }
     std::filesystem::remove(silence, ec);
     std::filesystem::remove(steadyTone, ec);
     return true;
@@ -5733,6 +5979,7 @@ int main(int argc, char* argv[])
         { "Transport pause resume seek and counter", testTransportPauseResumeSeekAndCounter },
         { "Playback tempo source priority and duration", testPlaybackTempoSourcePriorityAndDuration },
         { "Playback summary durations and audio-only tempo", testPlaybackSummaryDurationsAndAudioOnlyTempo },
+        { "WAV BPM octave candidate selection", testWavBpmOctaveCandidateSelection },
         { "WAV BPM detection and source safety", testWavBpmDetectionAndSourceSafety },
         { "WAV BPM cache reuse and invalidation", testWavBpmCacheReuseAndInvalidation },
         { "WAV BPM cache bounded LRU policy", testWavBpmCacheBoundedLruPolicy },

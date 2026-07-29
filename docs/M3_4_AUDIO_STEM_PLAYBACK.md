@@ -111,12 +111,18 @@ WAV tempo analysis:
 
 - runs on a background thread and never in the audio callback;
 - reads only a bounded leading portion of the source;
-- uses an onset-energy envelope and autocorrelation over the audition BPM range;
+- uses an onset-energy envelope and meaningful local autocorrelation candidates
+  over the audition BPM range;
+- explicitly compares each candidate with its half- and double-tempo alternatives
+  using beat-grid coverage, intermediate-onset support, and alternating accents;
+- requires an evidence margin between octave-related candidates, leaving a
+  genuinely ambiguous half-time/double-time result unconfident;
 - rejects silence, steady low-energy material, and low-confidence estimates;
 - caches results for the app session by path, size, and modification time in a
   deterministic 128-entry LRU cache;
 - invalidates the cached result when the source fingerprint changes.
 
+The estimate is an audition aid rather than a studio beat grid.
 Detection changes only the BPM readout and beat/time mapping. WAV samples always
 play at their original speed; there is no time stretching or beat warping.
 
