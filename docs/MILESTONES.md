@@ -11,7 +11,9 @@
 	- M3.2 MIDI editing workflow;
 	- M3.3 selected-track MIDI audition playback;
 	- M3.4 selected audio-stem playback synchronized with MIDI audition.
-6. M4 - Audio engine and device configuration.
+6. M4 - Audio engine and device configuration:
+	- M4.1 central device configuration, whole-project playback, Mute/Solo,
+	  and Timeline Loop.
 7. M5 - VST3 hosting.
 8. M6 - DAW-level AI assistant.
 9. M7 - ACE Studio file exchange.
@@ -20,6 +22,17 @@
 No network-delivery milestone is defined in this plan.
 
 ## Current milestone scope
+
+Milestone 4.1 is complete and manually accepted:
+
+- one application-lifetime audio-device manager and project callback;
+- explicit Audio settings, test output, restart, and status commands;
+- complete-project immutable MIDI/WAV playback independent of selection;
+- live hierarchical Mute/Solo routing;
+- beat-coordinate Timeline loop editing and callback-boundary wrapping;
+- safe saved-device restore/default fallback/no-device behavior;
+- preserved 512 MiB decode budget, Unicode paths, BPM safeguards, and all
+  accepted M0-M3.4 behavior.
 
 Milestone 3.4 is complete and manually accepted:
 
@@ -54,3 +67,4 @@ Milestone 3.1 visual functionality is accepted.
 Milestone 3.2 is accepted and published.
 Milestone 3.3 is manually accepted and published.
 Milestone 3.4 is complete and manually accepted.
+Milestone 4.1 is complete and manually accepted.

@@ -10,6 +10,8 @@ namespace {
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr double kReleaseSeconds = 0.02;
 constexpr float kSynthGain = 0.18f;
+constexpr float kTestToneGain = 0.08f;
+constexpr double kTestToneFrequency = 440.0;
 
 double frequencyForMidiPitch(int pitch)
 {
@@ -20,36 +22,7 @@ double frequencyForMidiPitch(int pitch)
 
 MidiAuditionEngine::~MidiAuditionEngine()
 {
-    stop();
-    if (callbackRegistered_) {
-        deviceManager_.removeAudioCallback(this);
-        callbackRegistered_ = false;
-    }
-    deviceManager_.closeAudioDevice();
-}
-
-bool MidiAuditionEngine::initializeDefaultAudioDevice(std::string& error)
-{
-    error.clear();
-    if (deviceReady_.load(std::memory_order_acquire)) {
-        return true;
-    }
-
-    const auto initializationError = deviceManager_.initialiseWithDefaultDevices(0, 2);
-    if (initializationError.isNotEmpty() || deviceManager_.getCurrentAudioDevice() == nullptr) {
-        error = initializationError.isNotEmpty()
-            ? initializationError.toStdString()
-            : "No default audio output device is available.";
-        return false;
-    }
-
-    if (!callbackRegistered_) {
-        deviceManager_.addAudioCallback(this);
-        callbackRegistered_ = true;
-    }
-
-    deviceReady_.store(true, std::memory_order_release);
-    return true;
+    panic();
 }
 
 bool MidiAuditionEngine::startPlayback(MidiPlaybackSnapshot snapshot, std::string& error)
@@ -57,6 +30,7 @@ bool MidiAuditionEngine::startPlayback(MidiPlaybackSnapshot snapshot, std::strin
     SelectionPlaybackSnapshot selectionSnapshot;
     selectionSnapshot.playheadTempoMap = snapshot.tempoMap;
     selectionSnapshot.durationSeconds = snapshot.durationSeconds;
+    selectionSnapshot.midiTrackIds.push_back(snapshot.sourceTrackId);
     selectionSnapshot.midi = std::move(snapshot);
     return startPlayback(std::move(selectionSnapshot), 0.0, error);
 }
@@ -78,7 +52,8 @@ bool MidiAuditionEngine::startPlayback(
         return false;
     }
 
-    if (!initializeDefaultAudioDevice(error)) {
+    if (!deviceReady_.load(std::memory_order_acquire)) {
+        error = "No configured audio output device is available.";
         return false;
     }
 
@@ -90,6 +65,15 @@ bool MidiAuditionEngine::startPlayback(
     transportState_.prepare(
         std::move(immutableSnapshot),
         startSeconds);
+    const auto existingLoop =
+        requestedLoop_.load(std::memory_order_acquire);
+    setTimelineLoop(
+        existingLoop == nullptr
+            ? std::optional<core::TimelineLoopRange> {}
+            : std::optional<core::TimelineLoopRange> {
+                  existingLoop->beats
+              },
+        loopEnabled_.load(std::memory_order_acquire));
     transportState_.play();
     publishCursor(transportState_.currentSeconds());
     return true;
@@ -102,7 +86,8 @@ bool MidiAuditionEngine::resume(std::string& error)
         return false;
     }
 
-    if (!initializeDefaultAudioDevice(error)) {
+    if (!deviceReady_.load(std::memory_order_acquire)) {
+        error = "No configured audio output device is available.";
         return false;
     }
 
@@ -135,6 +120,7 @@ void MidiAuditionEngine::panic()
 {
     panicRequested_.store(true, std::memory_order_release);
     pauseRequested_.store(false, std::memory_order_release);
+    testToneSamplesRemaining_.store(0, std::memory_order_release);
     transportState_.panic();
 }
 
@@ -146,7 +132,11 @@ void MidiAuditionEngine::seekTo(double targetSeconds)
         return;
     }
 
+    const auto loop =
+        requestedLoop_.load(std::memory_order_acquire);
+    const auto looping = loop != nullptr && loop->enabled;
     if (wasPlaying
+        && !looping
         && transportState_.currentSeconds() >= transportState_.totalSeconds() - 1.0e-9) {
         transportState_.complete();
     }
@@ -235,6 +225,163 @@ void MidiAuditionEngine::collectRetiredSnapshots()
             retainedSnapshots_.end(),
             [](const auto& snapshot) { return snapshot.use_count() == 1; }),
         retainedSnapshots_.end());
+    retainedRoutingStates_.erase(
+        std::remove_if(
+            retainedRoutingStates_.begin(),
+            retainedRoutingStates_.end(),
+            [](const auto& state) { return state.use_count() == 1; }),
+        retainedRoutingStates_.end());
+    retainedLoopStates_.erase(
+        std::remove_if(
+            retainedLoopStates_.begin(),
+            retainedLoopStates_.end(),
+            [](const auto& state) { return state.use_count() == 1; }),
+        retainedLoopStates_.end());
+}
+
+void MidiAuditionEngine::setProjectRoutingState(
+    core::ProjectRoutingState routing)
+{
+    auto immutable =
+        std::make_shared<const core::ProjectRoutingState>(
+            std::move(routing));
+    retainedRoutingStates_.push_back(immutable);
+    requestedRouting_.store(immutable, std::memory_order_release);
+    requestedRoutingGeneration_.fetch_add(
+        1,
+        std::memory_order_acq_rel);
+    if (transportState_.hasPreparedPlayback()) {
+        publishCursor(transportState_.currentSeconds());
+    }
+}
+
+std::shared_ptr<const MidiAuditionEngine::PreparedLoop>
+MidiAuditionEngine::buildLoop(
+    std::optional<core::TimelineLoopRange> range,
+    bool enabled) const
+{
+    auto prepared = std::make_shared<PreparedLoop>();
+    prepared->enabled =
+        enabled && range.has_value() && range->isValid();
+    if (!prepared->enabled) {
+        return prepared;
+    }
+
+    prepared->beats = range.value();
+    const auto snapshot = transportState_.snapshot();
+    if (snapshot == nullptr) {
+        prepared->enabled = false;
+        return prepared;
+    }
+    prepared->startSeconds = midiBeatToSeconds(
+        range->startBeat,
+        snapshot->playheadTempoMap);
+    prepared->endSeconds = midiBeatToSeconds(
+        range->endBeat,
+        snapshot->playheadTempoMap);
+    prepared->endSeconds = std::min(
+        prepared->endSeconds,
+        snapshot->durationSeconds);
+    if (prepared->endSeconds
+        <= prepared->startSeconds + 1.0e-9) {
+        prepared->enabled = false;
+        return prepared;
+    }
+
+    if (snapshot->midi.has_value()) {
+        const auto resume = createMidiResumeState(
+            snapshot->midi.value(),
+            prepared->startSeconds);
+        prepared->nextEventIndex = resume.nextEventIndex;
+        prepared->activeNoteCount = std::min(
+            resume.activeNoteOns.size(),
+            prepared->activeNoteOns.size());
+        for (std::size_t index = 0;
+             index < prepared->activeNoteCount;
+             ++index) {
+            prepared->activeNoteOns[index] =
+                resume.activeNoteOns[index];
+        }
+    }
+    return prepared;
+}
+
+void MidiAuditionEngine::setTimelineLoop(
+    std::optional<core::TimelineLoopRange> range,
+    bool enabled)
+{
+    const auto prepared = buildLoop(range, enabled);
+    retainedLoopStates_.push_back(prepared);
+    loopEnabled_.store(
+        enabled && range.has_value() && range->isValid(),
+        std::memory_order_release);
+    requestedLoop_.store(prepared, std::memory_order_release);
+    requestedLoopGeneration_.fetch_add(
+        1,
+        std::memory_order_acq_rel);
+}
+
+bool MidiAuditionEngine::isTimelineLoopEnabled() const noexcept
+{
+    return loopEnabled_.load(std::memory_order_acquire);
+}
+
+bool MidiAuditionEngine::startTestTone(double durationSeconds) noexcept
+{
+    if (!deviceReady_.load(std::memory_order_acquire)
+        || transportState_.mode() != TransportMode::stopped
+        || !std::isfinite(durationSeconds)
+        || durationSeconds <= 0.0) {
+        return false;
+    }
+
+    const auto samples = static_cast<std::int64_t>(std::llround(
+        std::clamp(durationSeconds, 0.05, 2.0)
+        * reportedSampleRate_.load(std::memory_order_acquire)));
+    testToneSamplesRemaining_.store(
+        std::max<std::int64_t>(1, samples),
+        std::memory_order_release);
+    return true;
+}
+
+bool MidiAuditionEngine::isTestToneActive() const noexcept
+{
+    return testToneSamplesRemaining_.load(std::memory_order_acquire) > 0;
+}
+
+void MidiAuditionEngine::prepareForOfflineTesting(double sampleRate)
+{
+    sampleRate_ = std::max(1.0, sampleRate);
+    reportedSampleRate_.store(sampleRate_, std::memory_order_release);
+    releaseMultiplier_ = static_cast<float>(
+        std::exp(
+            std::log(0.001)
+            / (kReleaseSeconds * sampleRate_)));
+    deviceReady_.store(true, std::memory_order_release);
+}
+
+void MidiAuditionEngine::renderOfflineForTesting(
+    float* left,
+    float* right,
+    int numSamples)
+{
+    float* outputs[] { left, right };
+    audioDeviceIOCallbackWithContext(
+        nullptr,
+        0,
+        outputs,
+        2,
+        numSamples,
+        {});
+}
+
+std::size_t
+MidiAuditionEngine::activeVoiceCountForTesting() const noexcept
+{
+    return static_cast<std::size_t>(std::count_if(
+        voices_.begin(),
+        voices_.end(),
+        [](const auto& voice) { return voice.active; }));
 }
 
 std::shared_ptr<const MidiAuditionEngine::PlaybackCursor>
@@ -273,6 +420,24 @@ void MidiAuditionEngine::publishCursor(double startSeconds)
     requestedGeneration_.fetch_add(1, std::memory_order_acq_rel);
 }
 
+bool MidiAuditionEngine::isTrackAudible(
+    std::uint64_t trackId) const noexcept
+{
+    return activeRouting_ == nullptr
+        || activeRouting_->isAudible(trackId);
+}
+
+void MidiAuditionEngine::reconstructVoices(
+    const MidiPlaybackEvent* events,
+    std::size_t count) noexcept
+{
+    for (std::size_t index = 0; index < count; ++index) {
+        if (isTrackAudible(events[index].sourceTrackId)) {
+            startVoice(events[index]);
+        }
+    }
+}
+
 void MidiAuditionEngine::clearVoices() noexcept
 {
     voices_.fill(Voice {});
@@ -291,6 +456,7 @@ void MidiAuditionEngine::startVoice(const MidiPlaybackEvent& event) noexcept
     voice->active = true;
     voice->releasing = false;
     voice->noteInstanceId = event.noteInstanceId;
+    voice->sourceTrackId = event.sourceTrackId;
     voice->phase = 0.0;
     voice->phaseIncrement = kTwoPi * frequencyForMidiPitch(event.pitch) / std::max(1.0, sampleRate_);
     voice->amplitude = std::clamp(event.amplitude, 0.0f, 1.0f) * kSynthGain;
@@ -339,6 +505,9 @@ MidiAuditionEngine::StereoSample MidiAuditionEngine::renderAudioStems(double tra
 
     for (const auto& stem : activeSnapshot_->audioStems) {
         if (!stem.isPlayable()) {
+            continue;
+        }
+        if (!isTrackAudible(stem.sourceTrackId)) {
             continue;
         }
 
@@ -411,6 +580,21 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
         return;
     }
 
+    const auto requestedRoutingGeneration =
+        requestedRoutingGeneration_.load(std::memory_order_acquire);
+    if (requestedRoutingGeneration != activeRoutingGeneration_) {
+        activeRouting_ =
+            requestedRouting_.load(std::memory_order_acquire);
+        activeRoutingGeneration_ = requestedRoutingGeneration;
+    }
+
+    const auto requestedLoopGeneration =
+        requestedLoopGeneration_.load(std::memory_order_acquire);
+    if (requestedLoopGeneration != activeLoopGeneration_) {
+        activeLoop_ = requestedLoop_.load(std::memory_order_acquire);
+        activeLoopGeneration_ = requestedLoopGeneration;
+    }
+
     const auto requestedGeneration = requestedGeneration_.load(std::memory_order_acquire);
     if (requestedGeneration != activeGeneration_) {
         const auto cursor = requestedCursor_.load(std::memory_order_acquire);
@@ -426,41 +610,82 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
             playbackSamplePosition_ = static_cast<std::uint64_t>(std::llround(
                 cursor->startSeconds * std::max(1.0, sampleRate_)));
             if (transportState_.isPlaying()) {
-                for (std::size_t index = 0; index < cursor->activeNoteCount; ++index) {
-                    startVoice(cursor->activeNoteOns[index]);
-                }
+                reconstructVoices(
+                    cursor->activeNoteOns.data(),
+                    cursor->activeNoteCount);
             }
         }
     }
 
-    if (!transportState_.isPlaying() || activeSnapshot_ == nullptr) {
+    const auto renderProject =
+        transportState_.isPlaying() && activeSnapshot_ != nullptr;
+    if (!renderProject
+        && testToneSamplesRemaining_.load(std::memory_order_acquire) <= 0) {
         return;
     }
 
     for (int sampleIndex = 0; sampleIndex < numSamples; ++sampleIndex) {
-        const auto currentSeconds = static_cast<double>(playbackSamplePosition_) / std::max(1.0, sampleRate_);
-        if (activeSnapshot_->midi.has_value()) {
+        auto currentSeconds =
+            static_cast<double>(playbackSamplePosition_)
+            / std::max(1.0, sampleRate_);
+        if (renderProject
+            && activeLoop_ != nullptr
+            && activeLoop_->enabled
+            && currentSeconds
+                >= activeLoop_->endSeconds - 1.0e-9) {
+            clearVoices();
+            playbackSamplePosition_ =
+                static_cast<std::uint64_t>(std::llround(
+                    activeLoop_->startSeconds
+                    * std::max(1.0, sampleRate_)));
+            nextEventIndex_ = activeLoop_->nextEventIndex;
+            reconstructVoices(
+                activeLoop_->activeNoteOns.data(),
+                activeLoop_->activeNoteCount);
+            currentSeconds = activeLoop_->startSeconds;
+        }
+        if (renderProject && activeSnapshot_->midi.has_value()) {
             while (nextEventIndex_ < activeSnapshot_->midi->events.size()
                    && activeSnapshot_->midi->events[nextEventIndex_].timeSeconds <= currentSeconds + 1.0e-9) {
                 const auto& event = activeSnapshot_->midi->events[nextEventIndex_];
                 if (event.kind == MidiPlaybackEventKind::noteOff) {
                     releaseVoice(event.noteInstanceId);
-                } else {
+                } else if (isTrackAudible(event.sourceTrackId)) {
                     startVoice(event);
                 }
                 ++nextEventIndex_;
             }
         }
 
-        const auto synthSample = renderVoices();
-        const auto stemSample = renderAudioStems(currentSeconds);
+        const auto synthSample = renderProject ? renderVoices() : 0.0f;
+        const auto stemSample = renderProject
+            ? renderAudioStems(currentSeconds)
+            : StereoSample {};
+        float testToneSample = 0.0f;
+        auto toneSamples = testToneSamplesRemaining_.load(
+            std::memory_order_relaxed);
+        if (toneSamples > 0) {
+            testToneSample = static_cast<float>(
+                std::sin(testTonePhase_)) * kTestToneGain;
+            testTonePhase_ += kTwoPi
+                * kTestToneFrequency
+                / std::max(1.0, sampleRate_);
+            if (testTonePhase_ >= kTwoPi) {
+                testTonePhase_ -= kTwoPi;
+            }
+            testToneSamplesRemaining_.store(
+                toneSamples - 1,
+                std::memory_order_relaxed);
+        }
         const auto masterGain = volume_.load(std::memory_order_relaxed);
         const auto leftSample = std::clamp(
-            (synthSample + stemSample.left) * masterGain,
+            ((synthSample + stemSample.left) * masterGain)
+                + testToneSample,
             -0.95f,
             0.95f);
         const auto rightSample = std::clamp(
-            (synthSample + stemSample.right) * masterGain,
+            ((synthSample + stemSample.right) * masterGain)
+                + testToneSample,
             -0.95f,
             0.95f);
         for (int channel = 0; channel < numOutputChannels; ++channel) {
@@ -471,7 +696,13 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
             }
         }
 
-        ++playbackSamplePosition_;
+        if (renderProject) {
+            ++playbackSamplePosition_;
+        }
+    }
+
+    if (!renderProject) {
+        return;
     }
 
     const auto currentSeconds = static_cast<double>(playbackSamplePosition_) / std::max(1.0, sampleRate_);
@@ -483,8 +714,14 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
 
     const auto midiFinished = !activeSnapshot_->midi.has_value()
         || nextEventIndex_ >= activeSnapshot_->midi->events.size();
-    const auto reachedSelectionEnd = currentSeconds >= activeSnapshot_->durationSeconds;
-    if (midiFinished && !hasActiveVoices() && reachedSelectionEnd) {
+    const auto reachedSelectionEnd =
+        currentSeconds >= activeSnapshot_->durationSeconds;
+    const auto looping = activeLoop_ != nullptr
+        && activeLoop_->enabled;
+    if (!looping
+        && midiFinished
+        && !hasActiveVoices()
+        && reachedSelectionEnd) {
         transportState_.complete();
     }
 }
@@ -492,15 +729,19 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
 void MidiAuditionEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
 {
     sampleRate_ = device == nullptr ? 44100.0 : std::max(1.0, device->getCurrentSampleRate());
+    reportedSampleRate_.store(sampleRate_, std::memory_order_release);
     releaseMultiplier_ = static_cast<float>(
         std::exp(std::log(0.001) / (kReleaseSeconds * sampleRate_)));
     clearVoices();
+    testTonePhase_ = 0.0;
+    deviceReady_.store(device != nullptr, std::memory_order_release);
 }
 
 void MidiAuditionEngine::audioDeviceStopped()
 {
     clearVoices();
-    transportState_.pause();
+    testToneSamplesRemaining_.store(0, std::memory_order_release);
+    transportState_.stop();
     deviceReady_.store(false, std::memory_order_release);
 }
 

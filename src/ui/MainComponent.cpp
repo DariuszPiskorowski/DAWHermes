@@ -9,6 +9,8 @@
 #include <filesystem>
 #include <utility>
 
+#include <juce_audio_utils/juce_audio_utils.h>
+
 #include "app/AppLogger.h"
 #include "audio/AudioTrackImporter.h"
 #include "core/AudioTrackImport.h"
@@ -193,6 +195,89 @@ bool trackContainsNoteId(const core::Track& track, std::uint64_t noteId)
     });
 }
 
+class TrackRoutingControls final : public juce::Component {
+public:
+    TrackRoutingControls()
+    {
+        setInterceptsMouseClicks(false, true);
+        muteButton_.setClickingTogglesState(false);
+        muteButton_.setTitle("Mute track");
+        muteButton_.setDescription(
+            "Toggle track mute without changing track selection.");
+        muteButton_.setTooltip("Mute track");
+        soloButton_.setClickingTogglesState(false);
+        soloButton_.setTitle("Solo track");
+        soloButton_.setDescription(
+            "Toggle track solo without changing track selection.");
+        soloButton_.setTooltip("Solo track");
+        addAndMakeVisible(muteButton_);
+        addAndMakeVisible(soloButton_);
+        muteButton_.onClick = [this]() {
+            if (onToggle) {
+                onToggle(true);
+            }
+        };
+        soloButton_.onClick = [this]() {
+            if (onToggle) {
+                onToggle(false);
+            }
+        };
+    }
+
+    void configure(bool muted, bool soloed)
+    {
+        muteButton_.setToggleState(
+            muted,
+            juce::dontSendNotification);
+        soloButton_.setToggleState(
+            soloed,
+            juce::dontSendNotification);
+        muteButton_.setColour(
+            juce::TextButton::buttonColourId,
+            muted ? juce::Colour(0xffffc857)
+                  : juce::Colour(0xff3b424c));
+        muteButton_.setColour(
+            juce::TextButton::buttonOnColourId,
+            juce::Colour(0xffffc857));
+        muteButton_.setColour(
+            juce::TextButton::textColourOffId,
+            muted ? juce::Colours::black
+                  : juce::Colour(0xffd5d9df));
+        muteButton_.setColour(
+            juce::TextButton::textColourOnId,
+            juce::Colours::black);
+        soloButton_.setColour(
+            juce::TextButton::buttonColourId,
+            soloed ? juce::Colour(0xff66d18f)
+                   : juce::Colour(0xff3b424c));
+        soloButton_.setColour(
+            juce::TextButton::buttonOnColourId,
+            juce::Colour(0xff66d18f));
+        soloButton_.setColour(
+            juce::TextButton::textColourOffId,
+            soloed ? juce::Colours::black
+                   : juce::Colour(0xffd5d9df));
+        soloButton_.setColour(
+            juce::TextButton::textColourOnId,
+            juce::Colours::black);
+    }
+
+    void resized() override
+    {
+        auto area =
+            getLocalBounds().removeFromRight(58).reduced(2, 4);
+        muteButton_.setBounds(area.removeFromLeft(24));
+        area.removeFromLeft(4);
+        soloButton_.setBounds(area.removeFromLeft(24));
+    }
+
+    std::function<void(bool mute)> onToggle;
+
+private:
+    juce::TextButton muteButton_ { "M" };
+    juce::TextButton soloButton_ { "S" };
+};
+
 class CreateMidiNoteCommand final : public core::ProjectEditCommand {
 public:
     CreateMidiNoteCommand(core::ProjectModel& project, std::uint64_t trackId, core::MidiNote note)
@@ -331,12 +416,16 @@ private:
 
 }  // namespace
 
-MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
+MainComponent::MainComponent(
+    juce::ApplicationProperties& applicationProperties,
+    audio::AudioDeviceService& audioDeviceService)
     : applicationProperties_(applicationProperties),
+      audioDeviceService_(audioDeviceService),
       hermesJobRunner_(std::make_unique<hermes::HermesJobRunner>()),
       panelLayoutState_(core::defaultMainPanelLayoutState()),
       dragStartPanelLayoutState_(core::defaultMainPanelLayoutState()),
       projectController_(projectModel_, selectionState_),
+      midiAuditionEngine_(audioDeviceService_.playbackEngine()),
       menuBar_(this)
 {
     setOpaque(true);
@@ -357,6 +446,9 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     addAndMakeVisible(pauseButton_);
     addAndMakeVisible(stopButton_);
     addAndMakeVisible(fastForwardButton_);
+    loopButton_.setTooltip(
+        "Repeat the visible Timeline ruler range.");
+    addAndMakeVisible(loopButton_);
     timeCounterLabel_.setText("00:00 / 00:00", juce::dontSendNotification);
     timeCounterLabel_.setJustificationType(juce::Justification::centred);
     timeCounterLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
@@ -387,6 +479,11 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     trackList_.setRowHeight(30);
     trackList_.setColour(juce::ListBox::backgroundColourId, juce::Colour(0xff1f2329));
     trackList_.setColour(juce::ListBox::textColourId, juce::Colours::white);
+    trackList_.setTitle("Project tracks with Mute and Solo controls");
+    trackList_.setDescription(
+        "Select tracks for editing. Each row has Mute and Solo controls.");
+    trackList_.setTooltip(
+        "Left-click M or S to change live project audibility.");
     addAndMakeVisible(trackList_);
 
     gridCombo_.addItem("1/4", 4);
@@ -443,6 +540,20 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     statusLabel_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff181b20));
     statusLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffc7ccd4));
     addAndMakeVisible(statusLabel_);
+    audioStatusLabel_.setJustificationType(
+        juce::Justification::centredRight);
+    audioStatusLabel_.setColour(
+        juce::Label::backgroundColourId,
+        juce::Colour(0xff181b20));
+    audioStatusLabel_.setColour(
+        juce::Label::textColourId,
+        juce::Colour(0xffa9c6df));
+    audioStatusLabel_.setText(
+        juce::String(audioDeviceService_.currentStatusMessage()),
+        juce::dontSendNotification);
+    addAndMakeVisible(audioStatusLabel_);
+    audioStatusGeneration_ =
+        audioDeviceService_.statusGeneration();
 
     initializeVisualWorkspace();
 
@@ -483,6 +594,7 @@ void MainComponent::initializeVisualWorkspace()
     pauseButton_.onClick = [this]() { pausePlayback(); };
     stopButton_.onClick = [this]() { stopMidiPlayback(); };
     fastForwardButton_.onClick = [this]() { seekPlayback(audio::kTransportSeekSeconds); };
+    loopButton_.onClick = [this]() { toggleLoopPlayback(); };
     panicButton_.onClick = [this]() { panicMidiPlayback(); };
     volumeSlider_.onValueChange = [this]() {
         midiAuditionEngine_.setVolume(static_cast<float>(volumeSlider_.getValue() / 100.0));
@@ -544,6 +656,22 @@ void MainComponent::initializeVisualWorkspace()
     timelineView_.setTrackRowHeight(trackList_.getRowHeight());
     timelineView_.setGridDenominator(gridDenominator_);
     timeRulerView_.setGridDenominator(gridDenominator_);
+    timeRulerView_.onSeekRequested = [this](double beat) {
+        const auto seconds = audio::midiBeatToSeconds(
+            beat,
+            transportSelectionSummary_.tempoMap);
+        midiAuditionEngine_.seekTo(seconds);
+        playheadFollowActive_ = false;
+        updatePlaybackPlayhead(true);
+        updateTransportDisplays();
+    };
+    timeRulerView_.onLoopRangeChanged =
+        [this](std::optional<core::TimelineLoopRange> range) {
+            setLoopRange(range);
+        };
+    timeRulerView_.onClearLoopRequested = [this]() {
+        clearLoopRange();
+    };
     pianoRollView_.setGridDenominator(gridDenominator_);
     pianoRollView_.setSnapEnabled(snapEnabled_);
     midiComparisonLegend_.setComparisonEnabled(false);
@@ -626,6 +754,8 @@ void MainComponent::resized()
     stopButton_.setBounds(transportControls.removeFromLeft(std::min(52, transportControls.getWidth())));
     transportControls.removeFromLeft(3);
     fastForwardButton_.setBounds(transportControls.removeFromLeft(std::min(36, transportControls.getWidth())));
+    transportControls.removeFromLeft(3);
+    loopButton_.setBounds(transportControls.removeFromLeft(std::min(56, transportControls.getWidth())));
     transportControls.removeFromLeft(6);
     timeCounterLabel_.setBounds(transportControls.removeFromLeft(std::min(168, transportControls.getWidth())));
     transportControls.removeFromLeft(5);
@@ -698,7 +828,15 @@ void MainComponent::resized()
     pianoPitchScrollSlider_.setBounds(midiContent.removeFromRight(std::min(scrollWidth, midiContent.getWidth())));
     pianoRollView_.setBounds(midiContent);
 
-    statusLabel_.setBounds(layout.statusBar.x, layout.statusBar.y, layout.statusBar.width, layout.statusBar.height);
+    auto statusBounds = juce::Rectangle<int>(
+        layout.statusBar.x,
+        layout.statusBar.y,
+        layout.statusBar.width,
+        layout.statusBar.height);
+    audioStatusLabel_.setBounds(
+        statusBounds.removeFromRight(
+            std::min(440, statusBounds.getWidth() / 2)));
+    statusLabel_.setBounds(statusBounds);
 
     updateVisualWorkspace();
 }
@@ -775,7 +913,9 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
 
 juce::StringArray MainComponent::getMenuBarNames()
 {
-    return { "File", "Edit", "View", "Track", "Tools", "Help" };
+    return {
+        "File", "Edit", "View", "Track", "Audio", "Tools", "Help"
+    };
 }
 
 juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce::String&)
@@ -822,6 +962,23 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
             projectController_.canDeleteSelectedTrack());
         break;
     case 4:
+        menu.addItem(
+            commandAudioSettings,
+            juce::String(command_labels::audioSettings.data()));
+        menu.addItem(
+            commandAudioTestOutput,
+            juce::String(command_labels::testOutput.data()),
+            midiAuditionEngine_.transportMode()
+                == audio::TransportMode::stopped);
+        menu.addItem(
+            commandAudioRestart,
+            juce::String(command_labels::restartAudioDevice.data()));
+        menu.addSeparator();
+        menu.addItem(
+            commandAudioStatus,
+            juce::String(command_labels::audioDeviceStatus.data()));
+        break;
+    case 5:
         menu.addSubMenu("Hermes", buildHermesMenu());
         menu.addSeparator();
         menu.addItem(commandClearHermesCache, "Clear Hermes Cache");
@@ -829,7 +986,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(commandComposerAssistantSettings, "Composer Assistant Connector Settings...");
         menu.addItem(commandComposerAssistantProbe, "Test Composer Assistant Connection");
         break;
-    case 5:
+    case 6:
         menu.addItem(commandAbout, "About DAWHermes");
         break;
     default:
@@ -877,10 +1034,67 @@ void MainComponent::paintListBoxItem(
         describeTrack(track),
         8 + indentation,
         0,
-        std::max(0, width - 16 - indentation),
+        std::max(0, width - 72 - indentation),
         height,
         juce::Justification::centredLeft,
         true);
+}
+
+juce::Component* MainComponent::refreshComponentForRow(
+    int rowNumber,
+    bool,
+    juce::Component* existingComponentToUpdate)
+{
+    if (rowNumber < 0
+        || rowNumber
+            >= static_cast<int>(projectModel_.tracks().size())) {
+        delete existingComponentToUpdate;
+        return nullptr;
+    }
+
+    auto* controls =
+        dynamic_cast<TrackRoutingControls*>(
+            existingComponentToUpdate);
+    if (controls == nullptr) {
+        delete existingComponentToUpdate;
+        controls = new TrackRoutingControls();
+    }
+    const auto& track =
+        projectModel_.tracks().at(
+            static_cast<std::size_t>(rowNumber));
+    controls->configure(track.muted, track.soloed);
+    controls->onToggle =
+        [this, trackId = track.id](bool mute) {
+            auto* mutableTrack =
+                projectModel_.findTrackById(trackId);
+            if (mutableTrack == nullptr) {
+                return;
+            }
+            const auto changed = mute
+                ? projectModel_.setTrackMuted(
+                      trackId,
+                      !mutableTrack->muted)
+                : projectModel_.setTrackSoloed(
+                      trackId,
+                      !mutableTrack->soloed);
+            if (!changed) {
+                return;
+            }
+            publishProjectRouting();
+            trackList_.updateContent();
+            trackList_.repaint();
+            statusLabel_.setText(
+                juce::String(mutableTrack->name)
+                    + (mute
+                           ? (mutableTrack->muted
+                                  ? " muted"
+                                  : " unmuted")
+                           : (mutableTrack->soloed
+                                  ? " soloed"
+                                  : " unsoloed")),
+                juce::dontSendNotification);
+        };
+    return controls;
 }
 
 void MainComponent::listBoxItemClicked(int row, const juce::MouseEvent& event)
@@ -943,6 +1157,18 @@ void MainComponent::executeCommand(int commandId)
             break;
         case commandQuantizeSelectedNotes:
             quantizeSelectedMidiNotesToGrid();
+            break;
+        case commandAudioSettings:
+            showAudioSettings();
+            break;
+        case commandAudioTestOutput:
+            testAudioOutput();
+            break;
+        case commandAudioRestart:
+            restartAudioDevice();
+            break;
+        case commandAudioStatus:
+            showAudioDeviceStatus();
             break;
         case commandUndo:
             runUndo();
@@ -1561,7 +1787,10 @@ void MainComponent::updateVisualWorkspace()
 
     timeRulerView_.setViewportState(timelineViewportState_);
     timeRulerView_.setGridDenominator(gridDenominator_);
+    timeRulerView_.setSnapEnabled(snapEnabled_);
+    timeRulerView_.setLoopRange(timelineLoopRange_);
     timeRulerView_.setTimeSignatureMap(resolvedTimelineInfo_.timeSignatureMap);
+    timelineView_.setLoopRange(timelineLoopRange_);
 
     pianoKeyboardView_.setPitchViewportState(pitchViewportState_);
     pianoRollView_.setViewportState(timelineViewportState_);
@@ -2538,19 +2767,11 @@ void MainComponent::startSelectedMidiPlayback()
     }
 
     refreshTransportSelectionState();
-    audio::SelectionPlaybackOptions options;
-    if (selectedWavBpmResult_.has_value()
-        && selectedWavBpmResult_->estimate.isConfident()
-        && transportSelectionSummary_.firstReadableAudioPath.has_value()
-        && requestedWavFingerprint_.has_value()
-        && requestedWavFingerprint_->sourcePath
-            == selectedWavBpmResult_->fingerprint.sourcePath) {
-        options.detectedWavBpm = selectedWavBpmResult_->estimate.bpm;
-    }
+    const auto options =
+        projectPlaybackOptionsFromBpmResults();
 
-    auto snapshotResult = audio::createSelectionPlaybackSnapshot(
+    auto snapshotResult = audio::createProjectPlaybackSnapshot(
         projectModel_,
-        selectionState_,
         options);
     if (!snapshotResult.ok) {
         statusLabel_.setText(
@@ -2563,10 +2784,23 @@ void MainComponent::startSelectedMidiPlayback()
     const auto usesFallbackTempo =
         snapshotResult.snapshot.tempoSource == audio::PlaybackTempoSource::fallback;
     auto startSeconds = midiAuditionEngine_.playheadSeconds();
+    if (timelineLoopEnabled_
+        && timelineLoopRange_.has_value()) {
+        const auto currentBeat = audio::midiSecondsToBeat(
+            startSeconds,
+            snapshotResult.snapshot.playheadTempoMap);
+        startSeconds = audio::midiBeatToSeconds(
+            core::timelineLoopPlayStartBeat(
+                currentBeat,
+                timelineLoopRange_,
+                timelineLoopEnabled_),
+            snapshotResult.snapshot.playheadTempoMap);
+    }
     if (startSeconds >= snapshotResult.snapshot.durationSeconds - 1.0e-9) {
         startSeconds = 0.0;
     }
 
+    publishProjectRouting();
     std::string error;
     if (!midiAuditionEngine_.startPlayback(
             std::move(snapshotResult.snapshot),
@@ -2578,6 +2812,9 @@ void MainComponent::startSelectedMidiPlayback()
         updateTransportControlState();
         return;
     }
+    midiAuditionEngine_.setTimelineLoop(
+        timelineLoopRange_,
+        timelineLoopEnabled_);
 
     previousTransportMode_ = audio::TransportMode::playing;
     playheadFollowActive_ = false;
@@ -2658,26 +2895,138 @@ void MainComponent::seekPlayback(double deltaSeconds)
     updateTransportControlState();
 }
 
-void MainComponent::refreshTransportSelectionState()
+void MainComponent::showAudioSettings()
 {
-    transportSelectionSummary_ = audio::createSelectionPlaybackSummary(
-        projectModel_,
-        selectionState_);
-    requestSelectedWavBpmIfNeeded();
-
-    audio::SelectionPlaybackOptions options;
-    if (selectedWavBpmResult_.has_value()
-        && selectedWavBpmResult_->estimate.isConfident()
-        && requestedWavFingerprint_.has_value()
-        && requestedWavFingerprint_->sourcePath
-            == selectedWavBpmResult_->fingerprint.sourcePath) {
-        options.detectedWavBpm = selectedWavBpmResult_->estimate.bpm;
+    if (midiAuditionEngine_.transportMode()
+        != audio::TransportMode::stopped) {
+        midiAuditionEngine_.panic();
+        synchronizeStoppedTransportPreview();
     }
 
-    const auto summary = audio::createSelectionPlaybackSummary(
-        projectModel_,
-        selectionState_,
-        options);
+    auto selector =
+        std::make_unique<juce::AudioDeviceSelectorComponent>(
+            audioDeviceService_.deviceManager(),
+            0,
+            2,
+            1,
+            2,
+            false,
+            false,
+            true,
+            false);
+    selector->setSize(520, 470);
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(selector.release());
+    options.dialogTitle = "DAWHermes Audio Settings";
+    options.dialogBackgroundColour = juce::Colour(0xff252b33);
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.launchAsync();
+    statusLabel_.setText(
+        "Audio settings opened.",
+        juce::dontSendNotification);
+}
+
+void MainComponent::testAudioOutput()
+{
+    if (audioDeviceService_.testOutput()) {
+        statusLabel_.setText(
+            "Playing a short low-gain test tone.",
+            juce::dontSendNotification);
+    } else {
+        statusLabel_.setText(
+            juce::String(audioDeviceService_.currentStatusMessage()),
+            juce::dontSendNotification);
+    }
+}
+
+void MainComponent::restartAudioDevice()
+{
+    const auto result = audioDeviceService_.restart();
+    synchronizeStoppedTransportPreview();
+    audioStatusLabel_.setText(
+        juce::String(audioDeviceService_.currentStatusMessage()),
+        juce::dontSendNotification);
+    statusLabel_.setText(
+        result.deviceAvailable()
+            ? "Audio device restarted."
+            : "Audio device restart failed; application remains usable.",
+        juce::dontSendNotification);
+}
+
+void MainComponent::showAudioDeviceStatus()
+{
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::InfoIcon,
+        "Audio Device Status",
+        juce::String(audio::formatAudioDeviceStatus(
+            audioDeviceService_.status())),
+        "Close",
+        this);
+}
+
+void MainComponent::publishProjectRouting()
+{
+    midiAuditionEngine_.setProjectRoutingState(
+        core::createProjectRoutingState(projectModel_));
+}
+
+void MainComponent::setLoopRange(
+    std::optional<core::TimelineLoopRange> range)
+{
+    timelineLoopRange_ =
+        range.has_value() && range->isValid()
+        ? range
+        : std::optional<core::TimelineLoopRange> {};
+    if (!timelineLoopRange_.has_value()) {
+        timelineLoopEnabled_ = false;
+    }
+    timeRulerView_.setLoopRange(timelineLoopRange_);
+    timelineView_.setLoopRange(timelineLoopRange_);
+    loopButton_.setToggleState(
+        timelineLoopEnabled_,
+        juce::dontSendNotification);
+    loopButton_.setEnabled(timelineLoopRange_.has_value());
+    midiAuditionEngine_.setTimelineLoop(
+        timelineLoopRange_,
+        timelineLoopEnabled_);
+}
+
+void MainComponent::clearLoopRange()
+{
+    setLoopRange(std::nullopt);
+    statusLabel_.setText(
+        "Loop range cleared.",
+        juce::dontSendNotification);
+}
+
+void MainComponent::toggleLoopPlayback()
+{
+    timelineLoopEnabled_ = timelineLoopRange_.has_value()
+        && loopButton_.getToggleState();
+    midiAuditionEngine_.setTimelineLoop(
+        timelineLoopRange_,
+        timelineLoopEnabled_);
+    statusLabel_.setText(
+        timelineLoopEnabled_
+            ? "Loop: On"
+            : "Loop: Off (range preserved)",
+        juce::dontSendNotification);
+}
+
+void MainComponent::refreshTransportSelectionState()
+{
+    transportSelectionSummary_ =
+        audio::createProjectPlaybackSummary(projectModel_);
+    requestSelectedWavBpmIfNeeded();
+
+    const auto options =
+        projectPlaybackOptionsFromBpmResults();
+
+    const auto summary =
+        audio::createProjectPlaybackSummary(projectModel_, options);
     transportSelectionSummary_ = summary;
     if (!playableSelectionIdentity_.has_value()
         || !(playableSelectionIdentity_.value() == summary.identity)) {
@@ -2692,6 +3041,21 @@ void MainComponent::refreshTransportSelectionState()
         resolvedTimelineInfo_.tempoMap = summary.tempoMap;
     }
     timelineView_.setTempoMap(resolvedTimelineInfo_.tempoMap);
+    publishProjectRouting();
+    const auto projectEndBeat = audio::midiSecondsToBeat(
+        summary.durationSeconds,
+        summary.tempoMap);
+    timeRulerView_.setProjectEndBeat(projectEndBeat);
+    if (timelineLoopRange_.has_value()
+        && timelineLoopRange_->endBeat
+            > projectEndBeat + 1.0e-9) {
+        setLoopRange(core::createTimelineLoopRange(
+            timelineLoopRange_->startBeat,
+            projectEndBeat,
+            projectEndBeat,
+            snapEnabled_,
+            gridDenominator_));
+    }
     if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped) {
         synchronizeStoppedTransportPreview();
     }
@@ -2714,38 +3078,88 @@ void MainComponent::synchronizeStoppedTransportPreview()
 
 void MainComponent::requestSelectedWavBpmIfNeeded()
 {
-    if (!transportSelectionSummary_.firstReadableAudioPath.has_value()) {
+    if (transportSelectionSummary_.tempoSource
+            == audio::PlaybackTempoSource::explicitMidi
+        || transportSelectionSummary_.identity
+               .readableAudioTrackIds.empty()) {
+        requestedWavTrackId_.reset();
         requestedWavFingerprint_.reset();
+        return;
+    }
+
+    for (const auto trackId :
+         transportSelectionSummary_.identity
+             .readableAudioTrackIds) {
+        const auto* track = projectModel_.findTrackById(trackId);
+        if (track == nullptr || track->audioSourcePath.empty()) {
+            continue;
+        }
+        const auto fingerprint = audio::fingerprintWavFile(
+            core::pathFromUtf8(track->audioSourcePath));
+        if (!fingerprint.has_value()) {
+            continue;
+        }
+
+        const auto existing =
+            projectWavBpmResults_.find(trackId);
+        if (existing != projectWavBpmResults_.end()
+            && existing->second.fingerprint
+                == fingerprint.value()) {
+            if (existing->second.estimate.isConfident()) {
+                requestedWavTrackId_.reset();
+                requestedWavFingerprint_.reset();
+                return;
+            }
+            continue;
+        }
+        if (existing != projectWavBpmResults_.end()) {
+            projectWavBpmResults_.erase(existing);
+        }
+
+        if (requestedWavTrackId_.has_value()
+            && requestedWavTrackId_.value() == trackId
+            && requestedWavFingerprint_.has_value()
+            && requestedWavFingerprint_.value()
+                == fingerprint.value()) {
+            return;
+        }
+
+        requestedWavTrackId_ = trackId;
+        requestedWavFingerprint_ = fingerprint;
         selectedWavBpmResult_.reset();
-        wavBpmRequestGeneration_ = 0;
+        wavBpmRequestGeneration_ =
+            wavBpmAnalysisService_.request(
+                core::pathFromUtf8(
+                    fingerprint->sourcePath));
         return;
     }
 
-    const auto fingerprint = audio::fingerprintWavFile(
-        core::pathFromUtf8(
-            transportSelectionSummary_.firstReadableAudioPath.value()));
-    if (!fingerprint.has_value()) {
-        requestedWavFingerprint_.reset();
-        selectedWavBpmResult_.reset();
-        wavBpmRequestGeneration_ = 0;
-        return;
-    }
+    requestedWavTrackId_.reset();
+    requestedWavFingerprint_.reset();
+}
 
-    if (requestedWavFingerprint_.has_value()
-        && requestedWavFingerprint_.value() == fingerprint.value()) {
-        return;
+audio::SelectionPlaybackOptions
+MainComponent::projectPlaybackOptionsFromBpmResults() const
+{
+    audio::SelectionPlaybackOptions options;
+    for (const auto& [trackId, result] :
+         projectWavBpmResults_) {
+        if (!result.estimate.isConfident()) {
+            continue;
+        }
+        const auto* track = projectModel_.findTrackById(trackId);
+        if (track == nullptr || track->audioSourcePath.empty()) {
+            continue;
+        }
+        const auto fingerprint = audio::fingerprintWavFile(
+            core::pathFromUtf8(track->audioSourcePath));
+        if (fingerprint.has_value()
+            && fingerprint.value() == result.fingerprint) {
+            options.detectedWavBpms[trackId] =
+                result.estimate.bpm.value();
+        }
     }
-
-    requestedWavFingerprint_ = fingerprint;
-    selectedWavBpmResult_.reset();
-    wavBpmRequestGeneration_ = wavBpmAnalysisService_.request(
-        core::pathFromUtf8(fingerprint->sourcePath));
-    if (const auto cached = wavBpmAnalysisService_.pollCompleted();
-        cached.has_value()
-        && cached->requestGeneration == wavBpmRequestGeneration_
-        && cached->fingerprint == fingerprint.value()) {
-        selectedWavBpmResult_ = cached;
-    }
+    return options;
 }
 
 void MainComponent::processCompletedWavBpmAnalysis()
@@ -2753,23 +3167,26 @@ void MainComponent::processCompletedWavBpmAnalysis()
     const auto completed = wavBpmAnalysisService_.pollCompleted();
     if (!completed.has_value()
         || completed->requestGeneration != wavBpmRequestGeneration_
+        || !requestedWavTrackId_.has_value()
         || !requestedWavFingerprint_.has_value()
         || !(completed->fingerprint == requestedWavFingerprint_.value())) {
         return;
     }
 
     selectedWavBpmResult_ = completed;
+    projectWavBpmResults_[
+        requestedWavTrackId_.value()] = completed.value();
+    requestedWavTrackId_.reset();
+    requestedWavFingerprint_.reset();
     if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped) {
         refreshTransportSelectionState();
     } else {
-        audio::SelectionPlaybackOptions options;
-        if (completed->estimate.isConfident()) {
-            options.detectedWavBpm = completed->estimate.bpm;
-        }
-        transportSelectionSummary_ = audio::createSelectionPlaybackSummary(
-            projectModel_,
-            selectionState_,
-            options);
+        const auto options =
+            projectPlaybackOptionsFromBpmResults();
+        transportSelectionSummary_ =
+            audio::createProjectPlaybackSummary(
+                projectModel_,
+                options);
     }
 
     if (!completed->estimate.isConfident()
@@ -2796,7 +3213,7 @@ void MainComponent::updateTransportDisplays()
         || transportSelectionSummary_.playable;
     if (!hasPlayableSelection) {
         bpmLabel_.setText("BPM --", juce::dontSendNotification);
-        bpmLabel_.setTooltip("No playable selection.");
+        bpmLabel_.setTooltip("No playable project content.");
         return;
     }
 
@@ -2836,25 +3253,13 @@ void MainComponent::updateTransportDisplays()
         return;
     }
 
-    const auto resultMatchesSelection = selectedWavBpmResult_.has_value()
-        && selectedWavBpmResult_->estimate.isConfident()
-        && requestedWavFingerprint_.has_value()
-        && selectedWavBpmResult_->fingerprint
-            == requestedWavFingerprint_.value();
-    const auto resultMatchesPlayback =
-        midiAuditionEngine_.transportMode() == audio::TransportMode::stopped
-        || snapshot == nullptr
-        || (requestedWavFingerprint_.has_value()
-            && !snapshot->audioStems.empty()
-            && core::pathFromUtf8(snapshot->audioStems.front().sourcePath)
-                    .lexically_normal()
-                == core::pathFromUtf8(
-                       requestedWavFingerprint_->sourcePath)
-                       .lexically_normal());
-    if (resultMatchesSelection && resultMatchesPlayback) {
+    if (transportSelectionSummary_.tempoSource
+        == audio::PlaybackTempoSource::detectedWav) {
         bpmLabel_.setText(
             "BPM " + juce::String(
-                selectedWavBpmResult_->estimate.bpm.value(),
+                audio::selectionSummaryBpm(
+                    midiAuditionEngine_.playheadSeconds(),
+                    transportSelectionSummary_),
                 1),
             juce::dontSendNotification);
         bpmLabel_.setTooltip(
@@ -2911,9 +3316,8 @@ void MainComponent::updateHorizontalViewportViews()
 
 void MainComponent::updateTransportControlState()
 {
-    const auto state = audio::selectionTransportCommandState(
-        projectModel_,
-        selectionState_,
+    const auto state = audio::projectTransportCommandState(
+        transportSelectionSummary_.playable,
         midiAuditionEngine_.transportMode(),
         midiAuditionEngine_.totalDurationSeconds());
     rewindButton_.setEnabled(state.rewindEnabled);
@@ -2922,12 +3326,25 @@ void MainComponent::updateTransportControlState()
     stopButton_.setEnabled(state.stopEnabled);
     fastForwardButton_.setEnabled(state.fastForwardEnabled);
     panicButton_.setEnabled(state.panicEnabled);
+    loopButton_.setEnabled(timelineLoopRange_.has_value());
+    loopButton_.setToggleState(
+        timelineLoopEnabled_,
+        juce::dontSendNotification);
 }
 
 void MainComponent::timerCallback()
 {
     midiAuditionEngine_.collectRetiredSnapshots();
     processCompletedWavBpmAnalysis();
+    const auto deviceGeneration =
+        audioDeviceService_.statusGeneration();
+    if (deviceGeneration != audioStatusGeneration_) {
+        audioStatusGeneration_ = deviceGeneration;
+        audioStatusLabel_.setText(
+            juce::String(
+                audioDeviceService_.currentStatusMessage()),
+            juce::dontSendNotification);
+    }
 
     const auto mode = midiAuditionEngine_.transportMode();
     updatePlaybackPlayhead(false);
@@ -2957,7 +3374,7 @@ void MainComponent::timerCallback()
                && midiAuditionEngine_.totalDurationSeconds() > 0.0
                && midiAuditionEngine_.playheadSeconds()
                    >= midiAuditionEngine_.totalDurationSeconds() - 1.0e-6) {
-        statusLabel_.setText("Selection playback finished.", juce::dontSendNotification);
+        statusLabel_.setText("Project playback finished.", juce::dontSendNotification);
     }
 
     if (!audio::shouldAutomaticallyFollowPlayhead(mode)) {
@@ -3472,6 +3889,11 @@ void MainComponent::resetProject()
     projectController_.clearSelection();
     midiNoteSelectionState_.clear();
     projectHistory_.clear();
+    projectWavBpmResults_.clear();
+    requestedWavTrackId_.reset();
+    requestedWavFingerprint_.reset();
+    selectedWavBpmResult_.reset();
+    setLoopRange(std::nullopt);
     undoResult_.reset();
     redoResult_.reset();
     refreshTrackView();
@@ -3483,7 +3905,7 @@ void MainComponent::showAbout()
     juce::AlertWindow::showMessageBox(
         juce::AlertWindow::InfoIcon,
         "About DAWHermes",
-        "DAWHermes Milestone 3.4\nNative Windows MIDI editing and synchronized audio-stem audition with embedded Hermes tools.");
+        "DAWHermes Milestone 4.1\nCentral audio-device configuration, whole-project MIDI/WAV playback, Mute/Solo and Timeline Loop.\nAwaiting manual acceptance.");
 }
 
 }  // namespace dawhermes::ui

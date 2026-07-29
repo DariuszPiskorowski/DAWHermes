@@ -53,11 +53,14 @@ add_library(dawhermes_core
   src/core/MidiComparisonModel.cpp
   src/core/ProjectHistory.cpp
   src/core/MidiNoteEditing.cpp
+  src/core/TrackRouting.cpp
+  src/core/TimelineLoop.cpp
 )
 target_include_directories(dawhermes_core PUBLIC src)
 set_project_warnings(dawhermes_core)
 
 add_library(dawhermes_audio
+  src/audio/AudioDeviceService.cpp
   src/audio/AudioTrackImporter.cpp
   src/audio/MidiPlaybackModel.cpp
   src/audio/TransportModel.cpp
@@ -72,7 +75,8 @@ target_link_libraries(
     dawhermes_core
     juce::juce_audio_basics
     juce::juce_audio_devices
-    juce::juce_audio_formats)
+    juce::juce_audio_formats
+    juce::juce_data_structures)
 set_project_warnings(dawhermes_audio)
 
 add_library(dawhermes_midi

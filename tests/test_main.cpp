@@ -33,9 +33,12 @@
 #include "core/ProjectModel.h"
 #include "core/SelectionState.h"
 #include "core/TimelineGeometry.h"
+#include "core/TimelineLoop.h"
 #include "core/TimelineViewport.h"
 #include "core/Track.h"
+#include "core/TrackRouting.h"
 #include "core/Utf8Path.h"
+#include "audio/AudioDeviceService.h"
 #include "audio/MidiAuditionEngine.h"
 #include "audio/AudioTrackImporter.h"
 #include "audio/MidiPlaybackModel.h"
@@ -792,6 +795,7 @@ bool testDirectAudioImportCommandPolicy()
 {
     const auto& fileMenu = dawhermes::ui::command_labels::fileMenu;
     const auto& trackMenu = dawhermes::ui::command_labels::trackMenu;
+    const auto& audioMenu = dawhermes::ui::command_labels::audioMenu;
     EXPECT_TRUE(std::find(
         fileMenu.begin(),
         fileMenu.end(),
@@ -800,6 +804,17 @@ bool testDirectAudioImportCommandPolicy()
         fileMenu.begin(),
         fileMenu.end(),
         dawhermes::ui::command_labels::importMidiAsTrack) != fileMenu.end());
+    EXPECT_EQ(audioMenu.size(), static_cast<std::size_t>(4));
+    EXPECT_TRUE(std::find(
+        audioMenu.begin(),
+        audioMenu.end(),
+        dawhermes::ui::command_labels::audioSettings)
+        != audioMenu.end());
+    EXPECT_TRUE(std::find(
+        audioMenu.begin(),
+        audioMenu.end(),
+        dawhermes::ui::command_labels::audioDeviceStatus)
+        != audioMenu.end());
 
     constexpr std::array obsoleteAudioCommands {
         std::string_view { "Assign Audio Source" },
@@ -5673,6 +5688,603 @@ bool writeReportFile(const std::filesystem::path& filePath, const std::string& r
     return true;
 }
 
+bool testAudioDeviceServiceStateAndFormatting()
+{
+    const dawhermes::audio::AudioDeviceSettingsState settings {
+        "<DEVICESETUP deviceType=\"Synthetic\" audioOutputDeviceName=\"Out\"/>"
+    };
+    const auto serialized =
+        dawhermes::audio::serializeAudioDeviceSettings(settings);
+    EXPECT_TRUE(
+        serialized.find("DAWHermesAudioDeviceSettings")
+        != std::string::npos);
+    const auto restored =
+        dawhermes::audio::deserializeAudioDeviceSettings(serialized);
+    EXPECT_TRUE(restored.has_value());
+    EXPECT_TRUE(
+        restored->deviceStateXml.find("DEVICESETUP")
+        != std::string::npos);
+    EXPECT_TRUE(!dawhermes::audio::deserializeAudioDeviceSettings(
+        "<invalid/>").has_value());
+
+    int restoreCalls = 0;
+    int fallbackCalls = 0;
+    auto opened = dawhermes::audio::runAudioDeviceOpenSequence(
+        true,
+        [&]() {
+            ++restoreCalls;
+            return std::string("missing saved device");
+        },
+        [&]() {
+            ++fallbackCalls;
+            return std::string();
+        });
+    EXPECT_EQ(
+        opened.state,
+        dawhermes::audio::AudioDeviceOpenState::defaultFallback);
+    EXPECT_EQ(restoreCalls, 1);
+    EXPECT_EQ(fallbackCalls, 1);
+
+    const auto unavailable =
+        dawhermes::audio::runAudioDeviceOpenSequence(
+            false,
+            []() { return std::string(); },
+            []() { return std::string("no device"); });
+    EXPECT_EQ(
+        unavailable.state,
+        dawhermes::audio::AudioDeviceOpenState::noDevice);
+    EXPECT_TRUE(!unavailable.deviceAvailable());
+
+    dawhermes::audio::AudioDeviceStatus status;
+    status.deviceType = "WASAPI";
+    status.outputDeviceName = "Speakers";
+    status.sampleRate = 48000.0;
+    status.bufferSizeSamples = 256;
+    status.activeOutputChannels = 2;
+    status.outputLatencySamples = 128;
+    status.open = true;
+    status.running = true;
+    const auto detail =
+        dawhermes::audio::formatAudioDeviceStatus(status);
+    EXPECT_TRUE(detail.find("WASAPI") != std::string::npos);
+    EXPECT_TRUE(detail.find("Speakers") != std::string::npos);
+    EXPECT_TRUE(detail.find("48000 Hz") != std::string::npos);
+    EXPECT_TRUE(detail.find("256 samples") != std::string::npos);
+    EXPECT_TRUE(
+        dawhermes::audio::formatAudioDeviceSummary(status)
+            .find("Speakers")
+        != std::string::npos);
+
+    dawhermes::audio::AudioDeviceService service(nullptr, false);
+    EXPECT_EQ(service.registeredProjectCallbackCount(), 1);
+    EXPECT_TRUE(!service.status().open);
+    EXPECT_TRUE(!service.testOutput());
+
+    dawhermes::audio::MidiAuditionEngine toneEngine;
+    toneEngine.prepareForOfflineTesting(1000.0);
+    EXPECT_TRUE(toneEngine.startTestTone(0.5));
+    std::vector<float> left(500);
+    std::vector<float> right(500);
+    toneEngine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        499);
+    EXPECT_TRUE(toneEngine.isTestToneActive());
+    toneEngine.renderOfflineForTesting(
+        left.data() + 499,
+        right.data() + 499,
+        1);
+    EXPECT_TRUE(!toneEngine.isTestToneActive());
+    EXPECT_TRUE(std::any_of(
+        left.begin(),
+        left.end(),
+        [](float sample) { return std::abs(sample) > 0.001f; }));
+    EXPECT_EQ(left, right);
+    return true;
+}
+
+bool testProjectPlaybackSnapshotAndTempoPolicy()
+{
+    const auto firstWav = createSyntheticPlaybackWavFixture(
+        "project-first",
+        100,
+        1,
+        300);
+    const auto secondWav = createSyntheticPlaybackWavFixture(
+        "project-second",
+        100,
+        2,
+        500);
+    const auto firstBefore = readBinaryFile(firstWav);
+    const auto secondBefore = readBinaryFile(secondWav);
+
+    ProjectModel project;
+    const auto groupId =
+        project.addTrack(TrackType::group, "Group").id;
+    const auto midiA =
+        project.addTrack(TrackType::midi, "MIDI A", groupId).id;
+    const auto midiB =
+        project.addTrack(TrackType::midi, "MIDI B").id;
+    const auto emptyMidi =
+        project.addTrack(TrackType::midi, "Empty generated").id;
+    project.findTrackById(emptyMidi)->generatedGroupId = "generated";
+    const auto audioA =
+        project.addTrack(TrackType::audio, "Audio A").id;
+    const auto audioB =
+        project.addTrack(TrackType::audio, "Audio B").id;
+    const auto missing =
+        project.addTrack(TrackType::audio, "Missing").id;
+
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiA,
+        { MidiNote { 60, 100, 0.0, 8.0, 1, 1 } }));
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiB,
+        { MidiNote { 64, 100, 1.0, 1.0, 1, 2 } }));
+    dawhermes::core::MidiSourceMetadata tempoA;
+    tempoA.containsExplicitTempoEvents = true;
+    tempoA.tempoMap = {
+        dawhermes::core::MidiTempoEvent { 0.0, 500000 }
+    };
+    dawhermes::core::MidiSourceMetadata tempoB;
+    tempoB.containsExplicitTempoEvents = true;
+    tempoB.tempoMap = {
+        dawhermes::core::MidiTempoEvent { 0.0, 600000 }
+    };
+    EXPECT_TRUE(project.setMidiSourceMetadata(midiA, tempoA));
+    EXPECT_TRUE(project.setMidiSourceMetadata(midiB, tempoB));
+    EXPECT_TRUE(project.setAudioSourcePath(
+        audioA,
+        dawhermes::core::pathToUtf8(firstWav)));
+    EXPECT_TRUE(project.setAudioSourcePath(
+        audioB,
+        dawhermes::core::pathToUtf8(secondWav)));
+    EXPECT_TRUE(project.setAudioSourcePath(
+        missing,
+        dawhermes::core::pathToUtf8(
+            firstWav.parent_path() / "missing.wav")));
+
+    SelectionState irrelevantSelection;
+    irrelevantSelection.selectTrack(audioB);
+    const auto summary =
+        dawhermes::audio::createProjectPlaybackSummary(project);
+    EXPECT_TRUE(summary.playable);
+    EXPECT_EQ(summary.midiTrackCount, static_cast<std::size_t>(2));
+    EXPECT_EQ(summary.audioTrackCount, static_cast<std::size_t>(2));
+    EXPECT_EQ(
+        summary.identity.midiTrackIds,
+        std::vector<std::uint64_t>({ midiA, midiB }));
+    EXPECT_EQ(
+        summary.identity.readableAudioTrackIds,
+        std::vector<std::uint64_t>({ audioA, audioB }));
+    EXPECT_TRUE(summary.conflictingExplicitMidiTempo);
+    EXPECT_TRUE(!summary.diagnostic.empty());
+    EXPECT_EQ(
+        summary.tempoSource,
+        dawhermes::audio::PlaybackTempoSource::explicitMidi);
+    EXPECT_TRUE(approxEqual(summary.durationSeconds, 5.0));
+
+    const auto snapshot =
+        dawhermes::audio::createProjectPlaybackSnapshot(project);
+    EXPECT_TRUE(snapshot.ok);
+    EXPECT_EQ(snapshot.snapshot.midiTrackCount(), static_cast<std::size_t>(2));
+    EXPECT_EQ(snapshot.snapshot.audioTrackCount(), static_cast<std::size_t>(2));
+    EXPECT_EQ(
+        snapshot.snapshot.midiTrackIds,
+        std::vector<std::uint64_t>({ midiA, midiB }));
+    EXPECT_EQ(
+        snapshot.snapshot.projectTrackRoutingIdentity.front().trackId,
+        groupId);
+    EXPECT_EQ(
+        snapshot.snapshot.audioStems[0].sourceTrackId,
+        audioA);
+    EXPECT_EQ(
+        snapshot.snapshot.audioStems[1].sourceTrackId,
+        audioB);
+    EXPECT_TRUE(snapshot.snapshot.midi.has_value());
+    EXPECT_TRUE(std::all_of(
+        snapshot.snapshot.midi->events.begin(),
+        snapshot.snapshot.midi->events.end(),
+        [midiA, midiB](const auto& event) {
+            return event.sourceTrackId == midiA
+                || event.sourceTrackId == midiB;
+        }));
+    std::map<std::uint64_t, int> eventCountsByInstance;
+    for (const auto& event :
+         snapshot.snapshot.midi->events) {
+        ++eventCountsByInstance[event.noteInstanceId];
+    }
+    EXPECT_TRUE(std::all_of(
+        eventCountsByInstance.begin(),
+        eventCountsByInstance.end(),
+        [](const auto& entry) {
+            return entry.second == 2;
+        }));
+    EXPECT_TRUE(!snapshot.skippedAudioTracks.empty());
+    EXPECT_EQ(readBinaryFile(firstWav), firstBefore);
+    EXPECT_EQ(readBinaryFile(secondWav), secondBefore);
+
+    dawhermes::audio::SelectionPlaybackOptions limited;
+    limited.maximumDecodedAudioBytes =
+        dawhermes::audio::decodedWavBytes(300, 1).value();
+    const auto budgeted =
+        dawhermes::audio::createProjectPlaybackSnapshot(
+            project,
+            limited);
+    EXPECT_TRUE(budgeted.ok);
+    EXPECT_EQ(
+        budgeted.snapshot.audioStems.size(),
+        static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        budgeted.snapshot.audioStems.front().sourceTrackId,
+        audioA);
+    EXPECT_TRUE(approxEqual(
+        budgeted.snapshot.durationSeconds,
+        5.0));
+    EXPECT_TRUE(std::any_of(
+        budgeted.skippedAudioTracks.begin(),
+        budgeted.skippedAudioTracks.end(),
+        [audioB](const auto& skipped) {
+            return skipped.sourceTrackId == audioB
+                && skipped.reason.find("memory limit")
+                    != std::string::npos;
+        }));
+
+    ProjectModel detectedProject;
+    const auto detectedA =
+        detectedProject.addTrack(TrackType::audio, "Uncertain").id;
+    const auto detectedB =
+        detectedProject.addTrack(TrackType::audio, "Confident").id;
+    EXPECT_TRUE(detectedProject.setAudioSourcePath(
+        detectedA,
+        dawhermes::core::pathToUtf8(firstWav)));
+    EXPECT_TRUE(detectedProject.setAudioSourcePath(
+        detectedB,
+        dawhermes::core::pathToUtf8(secondWav)));
+    dawhermes::audio::SelectionPlaybackOptions detectedOptions;
+    detectedOptions.detectedWavBpms[detectedB] = 140.0;
+    const auto detectedSummary =
+        dawhermes::audio::createProjectPlaybackSummary(
+            detectedProject,
+            detectedOptions);
+    EXPECT_EQ(
+        detectedSummary.tempoSource,
+        dawhermes::audio::PlaybackTempoSource::detectedWav);
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionSummaryBpm(
+            0.0,
+            detectedSummary),
+        140.0,
+        0.01));
+
+    EXPECT_TRUE(
+        dawhermes::audio::projectTransportCommandState(
+            project,
+            dawhermes::audio::TransportMode::stopped,
+            summary.durationSeconds)
+            .playEnabled);
+
+    std::error_code error;
+    std::filesystem::remove(firstWav, error);
+    std::filesystem::remove(secondWav, error);
+    return true;
+}
+
+bool testProjectMuteSoloRoutingRules()
+{
+    ProjectModel project;
+    const auto groupA =
+        project.addTrack(TrackType::group, "Group A").id;
+    const auto midiA =
+        project.addTrack(TrackType::midi, "MIDI A", groupA).id;
+    const auto wavA =
+        project.addTrack(TrackType::audio, "WAV A", groupA).id;
+    const auto midiB =
+        project.addTrack(TrackType::midi, "MIDI B").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiA,
+        { MidiNote { 60, 100, 0.0, 4.0, 1, 1 } }));
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiB,
+        { MidiNote { 67, 100, 0.0, 2.0, 1, 2 } }));
+    const auto durationBefore =
+        dawhermes::audio::createProjectPlaybackSummary(project)
+            .durationSeconds;
+
+    auto routing =
+        dawhermes::core::createProjectRoutingState(project);
+    EXPECT_TRUE(routing.isAudible(midiA));
+    EXPECT_TRUE(routing.isAudible(wavA));
+    EXPECT_TRUE(routing.isAudible(midiB));
+    EXPECT_TRUE(!routing.isAudible(groupA));
+
+    EXPECT_TRUE(project.setTrackSoloed(midiA, true));
+    routing = dawhermes::core::createProjectRoutingState(project);
+    EXPECT_TRUE(routing.isAudible(midiA));
+    EXPECT_TRUE(!routing.isAudible(wavA));
+    EXPECT_TRUE(!routing.isAudible(midiB));
+
+    EXPECT_TRUE(project.setTrackSoloed(midiA, false));
+    EXPECT_TRUE(project.setTrackSoloed(groupA, true));
+    routing = dawhermes::core::createProjectRoutingState(project);
+    EXPECT_TRUE(routing.isAudible(midiA));
+    EXPECT_TRUE(routing.isAudible(wavA));
+    EXPECT_TRUE(!routing.isAudible(midiB));
+
+    EXPECT_TRUE(project.setTrackMuted(groupA, true));
+    routing = dawhermes::core::createProjectRoutingState(project);
+    EXPECT_TRUE(!routing.isAudible(midiA));
+    EXPECT_TRUE(!routing.isAudible(wavA));
+
+    EXPECT_TRUE(project.setTrackMuted(groupA, false));
+    EXPECT_TRUE(project.setTrackMuted(midiA, true));
+    EXPECT_TRUE(project.setTrackSoloed(midiA, true));
+    routing = dawhermes::core::createProjectRoutingState(project);
+    EXPECT_TRUE(!routing.isAudible(midiA));
+    EXPECT_TRUE(routing.isAudible(wavA));
+
+    EXPECT_TRUE(project.setTrackSoloed(groupA, false));
+    EXPECT_TRUE(project.setTrackSoloed(midiA, false));
+    EXPECT_TRUE(project.setTrackMuted(midiA, false));
+    EXPECT_TRUE(project.setTrackSoloed(midiA, true));
+    EXPECT_TRUE(project.setTrackSoloed(midiB, true));
+    routing = dawhermes::core::createProjectRoutingState(project);
+    EXPECT_TRUE(routing.isAudible(midiA));
+    EXPECT_TRUE(!routing.isAudible(wavA));
+    EXPECT_TRUE(routing.isAudible(midiB));
+
+    dawhermes::core::ProjectHistory history;
+    const auto historySize = history.size();
+    EXPECT_TRUE(project.setTrackMuted(wavA, true));
+    EXPECT_TRUE(project.setTrackSoloed(wavA, true));
+    EXPECT_EQ(history.size(), historySize);
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::createProjectPlaybackSummary(project)
+            .durationSeconds,
+        durationBefore));
+    return true;
+}
+
+bool testTimelineLoopModelAndOfflinePlayback()
+{
+    const auto snapped = dawhermes::core::createTimelineLoopRange(
+        3.1,
+        1.1,
+        8.0,
+        true,
+        4);
+    EXPECT_TRUE(snapped.has_value());
+    EXPECT_TRUE(approxEqual(snapped->startBeat, 1.0));
+    EXPECT_TRUE(approxEqual(snapped->endBeat, 3.0));
+
+    const auto unsnapped =
+        dawhermes::core::createTimelineLoopRange(
+            1.123,
+            1.124,
+            8.0,
+            false,
+            16);
+    EXPECT_TRUE(unsnapped.has_value());
+    EXPECT_TRUE(
+        unsnapped->lengthBeats()
+        >= dawhermes::core::kMinimumUnsnappedLoopBeats
+            - 1.0e-9);
+
+    const auto resized =
+        dawhermes::core::resizeTimelineLoopRange(
+            snapped.value(),
+            dawhermes::core::TimelineLoopEdge::start,
+            2.8,
+            8.0,
+            true,
+            4);
+    EXPECT_TRUE(resized.has_value());
+    EXPECT_TRUE(approxEqual(resized->startBeat, 2.0));
+    EXPECT_TRUE(approxEqual(resized->endBeat, 3.0));
+
+    const auto moved =
+        dawhermes::core::moveTimelineLoopRange(
+            snapped.value(),
+            20.0,
+            8.0,
+            true,
+            4);
+    EXPECT_TRUE(moved.has_value());
+    EXPECT_TRUE(approxEqual(moved->startBeat, 6.0));
+    EXPECT_TRUE(approxEqual(moved->endBeat, 8.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::core::timelineLoopPlayStartBeat(
+            0.25,
+            snapped,
+            true),
+        1.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::core::timelineLoopPlayStartBeat(
+            2.0,
+            snapped,
+            true),
+        2.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::core::timelineLoopPlayStartBeat(
+            0.25,
+            snapped,
+            false),
+        0.25));
+
+    ProjectModel midiProject;
+    const auto midiId =
+        midiProject.addTrack(TrackType::midi, "Loop MIDI").id;
+    EXPECT_TRUE(midiProject.replaceMidiNotes(
+        midiId,
+        { MidiNote { 60, 100, 0.0, 4.0, 1, 1 } }));
+    auto midiSnapshot =
+        dawhermes::audio::createProjectPlaybackSnapshot(
+            midiProject);
+    EXPECT_TRUE(midiSnapshot.ok);
+    midiSnapshot.snapshot.durationSeconds = 3.0;
+
+    dawhermes::audio::MidiAuditionEngine midiEngine;
+    midiEngine.prepareForOfflineTesting(1000.0);
+    midiEngine.setProjectRoutingState(
+        dawhermes::core::createProjectRoutingState(
+            midiProject));
+    std::string error;
+    EXPECT_TRUE(midiEngine.startPlayback(
+        std::move(midiSnapshot.snapshot),
+        0.5,
+        error));
+    midiEngine.setTimelineLoop(
+        dawhermes::core::TimelineLoopRange { 1.0, 2.0 },
+        true);
+    std::vector<float> midiLeft(600);
+    std::vector<float> midiRight(600);
+    midiEngine.renderOfflineForTesting(
+        midiLeft.data(),
+        midiRight.data(),
+        600);
+    EXPECT_TRUE(midiEngine.isPlaying());
+    EXPECT_TRUE(approxEqual(
+        midiEngine.playheadSeconds(),
+        0.6,
+        0.002));
+    EXPECT_TRUE(midiEngine.activeVoiceCountForTesting() > 0);
+
+    midiEngine.setProjectRoutingState({});
+    midiEngine.renderOfflineForTesting(
+        midiLeft.data(),
+        midiRight.data(),
+        1);
+    EXPECT_EQ(
+        midiEngine.activeVoiceCountForTesting(),
+        static_cast<std::size_t>(0));
+    midiEngine.setProjectRoutingState(
+        dawhermes::core::createProjectRoutingState(
+            midiProject));
+    midiEngine.renderOfflineForTesting(
+        midiLeft.data(),
+        midiRight.data(),
+        1);
+    EXPECT_TRUE(midiEngine.activeVoiceCountForTesting() > 0);
+
+    midiEngine.pause();
+    midiEngine.renderOfflineForTesting(
+        midiLeft.data(),
+        midiRight.data(),
+        1);
+    EXPECT_TRUE(midiEngine.isPaused());
+    EXPECT_EQ(
+        midiEngine.activeVoiceCountForTesting(),
+        static_cast<std::size_t>(0));
+    EXPECT_TRUE(midiEngine.resume(error));
+    midiEngine.renderOfflineForTesting(
+        midiLeft.data(),
+        midiRight.data(),
+        1);
+    EXPECT_TRUE(midiEngine.activeVoiceCountForTesting() > 0);
+    midiEngine.seekTo(2.5);
+    midiEngine.renderOfflineForTesting(
+        midiLeft.data(),
+        midiRight.data(),
+        1);
+    EXPECT_TRUE(approxEqual(
+        midiEngine.playheadSeconds(),
+        0.501,
+        0.002));
+    const auto fiveSecondSeek =
+        dawhermes::audio::seekTransportSeconds(
+            midiEngine.playheadSeconds(),
+            dawhermes::audio::kTransportSeekSeconds,
+            midiEngine.totalDurationSeconds());
+    midiEngine.seekTo(fiveSecondSeek);
+    midiEngine.setTimelineLoop(
+        dawhermes::core::TimelineLoopRange { 0.5, 1.0 },
+        true);
+    midiEngine.renderOfflineForTesting(
+        midiLeft.data(),
+        midiRight.data(),
+        1);
+    EXPECT_TRUE(approxEqual(
+        midiEngine.playheadSeconds(),
+        0.251,
+        0.002));
+    midiEngine.stop();
+    midiEngine.renderOfflineForTesting(
+        midiLeft.data(),
+        midiRight.data(),
+        1);
+    EXPECT_TRUE(!midiEngine.isPlayheadVisible());
+    EXPECT_EQ(
+        midiEngine.activeVoiceCountForTesting(),
+        static_cast<std::size_t>(0));
+    midiEngine.panic();
+    midiEngine.renderOfflineForTesting(
+        midiLeft.data(),
+        midiRight.data(),
+        1);
+    EXPECT_TRUE(!midiEngine.hasPreparedPlayback());
+
+    dawhermes::audio::SelectionPlaybackSnapshot wavSnapshot;
+    wavSnapshot.playheadTempoMap = {
+        dawhermes::core::MidiTempoEvent { 0.0, 500000 }
+    };
+    wavSnapshot.durationSeconds = 3.0;
+    dawhermes::audio::AudioStemPlaybackSnapshot stem;
+    stem.sourceTrackId = 77;
+    stem.sourceTrackName = "Loop WAV";
+    stem.sourceSampleRate = 10.0;
+    stem.frameCount = 30;
+    stem.channels.resize(1);
+    for (int index = 0; index < 30; ++index) {
+        stem.channels.front().push_back(
+            static_cast<float>(index) * 0.05f);
+    }
+    wavSnapshot.audioStems.push_back(std::move(stem));
+
+    dawhermes::audio::MidiAuditionEngine wavEngine;
+    wavEngine.prepareForOfflineTesting(10.0);
+    wavEngine.setVolume(1.0f);
+    dawhermes::core::ProjectRoutingState wavRouting;
+    wavRouting.audibleTrackIds = { 77 };
+    wavEngine.setProjectRoutingState(wavRouting);
+    EXPECT_TRUE(wavEngine.startPlayback(
+        std::move(wavSnapshot),
+        0.5,
+        error));
+    wavEngine.setTimelineLoop(
+        dawhermes::core::TimelineLoopRange { 1.0, 2.0 },
+        true);
+    std::vector<float> wavLeft(16);
+    std::vector<float> wavRight(16);
+    wavEngine.renderOfflineForTesting(
+        wavLeft.data(),
+        wavRight.data(),
+        static_cast<int>(wavLeft.size()));
+    EXPECT_TRUE(approxEqual(wavLeft[0], 0.25, 0.001));
+    EXPECT_TRUE(approxEqual(wavLeft[5], 0.25, 0.001));
+    EXPECT_TRUE(approxEqual(wavLeft[10], 0.25, 0.001));
+    EXPECT_TRUE(approxEqual(
+        wavEngine.playheadSeconds(),
+        0.6,
+        0.002));
+    wavEngine.setProjectRoutingState({});
+    float mutedLeft = 1.0f;
+    float mutedRight = 1.0f;
+    wavEngine.renderOfflineForTesting(
+        &mutedLeft,
+        &mutedRight,
+        1);
+    EXPECT_TRUE(approxEqual(mutedLeft, 0.0, 0.0001));
+    wavEngine.setProjectRoutingState(wavRouting);
+    float unmutedLeft = 0.0f;
+    float unmutedRight = 0.0f;
+    wavEngine.renderOfflineForTesting(
+        &unmutedLeft,
+        &unmutedRight,
+        1);
+    EXPECT_TRUE(std::abs(unmutedLeft) > 0.01f);
+    return true;
+}
+
 int runM2RealAssetsMode(int argc, char* argv[])
 {
     std::string parseError;
@@ -5979,6 +6591,10 @@ int main(int argc, char* argv[])
         { "Transport pause resume seek and counter", testTransportPauseResumeSeekAndCounter },
         { "Playback tempo source priority and duration", testPlaybackTempoSourcePriorityAndDuration },
         { "Playback summary durations and audio-only tempo", testPlaybackSummaryDurationsAndAudioOnlyTempo },
+        { "Audio device service state and formatting", testAudioDeviceServiceStateAndFormatting },
+        { "Whole-project playback snapshot and tempo policy", testProjectPlaybackSnapshotAndTempoPolicy },
+        { "Project Mute/Solo routing rules", testProjectMuteSoloRoutingRules },
+        { "Timeline loop model and offline playback", testTimelineLoopModelAndOfflinePlayback },
         { "WAV BPM octave candidate selection", testWavBpmOctaveCandidateSelection },
         { "WAV BPM detection and source safety", testWavBpmDetectionAndSourceSafety },
         { "WAV BPM cache reuse and invalidation", testWavBpmCacheReuseAndInvalidation },

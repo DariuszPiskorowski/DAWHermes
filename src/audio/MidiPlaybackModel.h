@@ -20,6 +20,7 @@ struct MidiPlaybackEvent {
     int pitch { 60 };
     float amplitude { 0.0f };
     std::uint64_t noteInstanceId { 0 };
+    std::uint64_t sourceTrackId { 0 };
 };
 
 struct MidiPlaybackSnapshot {

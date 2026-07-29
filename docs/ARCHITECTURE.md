@@ -1,4 +1,4 @@
-# DAWHermes Architecture (Milestone 3.4)
+# DAWHermes Architecture (Milestone 4.1)
 
 ## Why a new Windows repository
 
@@ -18,9 +18,9 @@ The codebase is split into explicit layers:
 
 - `src/app` - application lifecycle, top-level window wiring, settings, logging bootstrap.
 - `src/core` - in-memory project and track model, selection/controller state, deterministic layout geometry, timeline viewport/time-map logic, piano-roll geometry, and MIDI comparison model.
-- `src/audio` - deterministic selection playback snapshots/timing, preloaded WAV
-  stem data, safe source-rate conversion, and the internal default-device
-  audition synth/mixer.
+- `src/audio` - central application-lifetime device service, deterministic
+  whole-project playback snapshots/timing, preloaded WAV stem data, safe
+  source-rate conversion, internal synth/mixer, and callback loop handling.
 - `src/midi` - testable MIDI file export utilities that transform project MIDI tracks into standard MIDI files without depending on UI dialogs.
 - `src/ui` - JUCE views, menu bar, context menus, timeline/piano-roll rendering, option dialogs, and MIDI/WAV import parsing utilities.
 - `src/hermes` - neutral Hermes contracts, command availability rules, option validation, embedded Python engine, and connector boundaries.
@@ -114,6 +114,30 @@ Milestone 3.4 extends the same device and callback into selected-stem audition:
 - project-model source paths are UTF-8 and are converted explicitly to native
   Windows/JUCE paths at file boundaries.
 
+Milestone 4.1 replaces selection audition with central project playback:
+
+- `MainApplication` owns one `AudioDeviceService`, which owns the only
+  `AudioDeviceManager` and the only registered project audio callback;
+- saved JUCE device state is persisted through `ApplicationProperties`, with a
+  one-shot default-output fallback and usable no-device state;
+- `SelectionPlaybackModel` retains its accepted regression APIs and adds
+  deterministic whole-project builders that aggregate all non-empty MIDI and
+  readable WAV tracks;
+- project tempo uses the first explicit MIDI map, otherwise the first confident
+  readable WAV result, otherwise 120 BPM; conflicts use the first map and emit
+  a diagnostic;
+- full immutable content snapshots are separated from small live
+  `ProjectRoutingState` snapshots so Mute/Solo does not decode or rebuild media;
+- hierarchical Mute/Solo lives in `core/TrackRouting` and is not part of
+  `ProjectHistory`;
+- beat-coordinate loop normalization lives in `core/TimelineLoop`; prepared
+  loop seconds, event cursor, and active-at-start notes are published before
+  the callback consumes them;
+- callback wrap directly repositions the common project clock, WAV sampling,
+  MIDI event cursor, and reconstructed voices;
+- snapshot, routing, and loop owners are retired on the message thread, never
+  destructed by the realtime callback.
+
 Direct WAV import is a prepared batch operation:
 
 - the native File chooser supplies one or more source paths;
@@ -146,7 +170,7 @@ The install script deploys a runnable Release app to `%LOCALAPPDATA%\DAWHermes\a
 
 No PowerShell or terminal launcher is used for normal user launch.
 
-## Current limitations (Milestone 3.4)
+## Current limitations (Milestone 4.1)
 
 Milestone 2 functionality is complete.
 Milestone 3.1 visual functionality is accepted.
@@ -171,7 +195,7 @@ Implemented now:
 
 Not implemented now:
 
-- recording or advanced device setup UI;
+- recording, input monitoring, track arming, or mixer controls;
 - Hermes set/fix BPM workflow;
 - AI APIs;
 - ACE exchange;
@@ -188,7 +212,7 @@ Additional Milestone 3.1 boundaries:
 - Milestones 3.2 and 3.3 are accepted and published. Milestone 3.4 is complete
   and manually accepted. Timeline editing, controller lanes, copy/paste, and
   Cubase-specific exchange remain deferred.
-- M3.4 playback is audition-grade: it includes Pause/resume, a counter,
-  5-second seeking, playhead follow, and BPM resolution, but no time stretching,
-  beat warping, looping, mixer, effects, or final
-  sample-accurate DAW mixing.
+- M4.1 playback is audition-grade: it adds central device setup,
+  whole-project playback, Mute/Solo, and looping, but no time stretching, beat
+  warping, mixer, effects, recording, or production instrument hosting.
+- M4.1 is complete and manually accepted.

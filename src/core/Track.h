@@ -83,6 +83,8 @@ struct Track {
     std::string name;
     TrackType type { TrackType::audio };
     std::uint64_t parentTrackId { 0 };
+    bool muted { false };
+    bool soloed { false };
     std::string audioSourcePath;
     std::optional<AudioSourceMetadata> audioSourceMetadata;
     std::vector<MidiNote> midiNotes;

@@ -70,6 +70,13 @@ void TimelineView::setPlayheadBeat(std::optional<double> beat)
     repaint();
 }
 
+void TimelineView::setLoopRange(
+    std::optional<core::TimelineLoopRange> range)
+{
+    loopRange_ = range;
+    repaint();
+}
+
 juce::AudioThumbnail* TimelineView::getOrCreateThumbnail(const std::string& path)
 {
     if (path.empty()) {
@@ -200,6 +207,28 @@ void TimelineView::paint(juce::Graphics& g)
 
         g.setColour(juce::Colour(0xff313b47));
         g.drawHorizontalLine(rowRect.getBottom() - 1, 0.0f, static_cast<float>(bounds.getRight()));
+    }
+
+    if (loopRange_.has_value() && loopRange_->isValid()) {
+        const auto x1 = static_cast<int>(std::round(
+            core::timelineBeatToX(
+                loopRange_->startBeat,
+                bounds.getWidth(),
+                viewport)));
+        const auto x2 = static_cast<int>(std::round(
+            core::timelineBeatToX(
+                loopRange_->endBeat,
+                bounds.getWidth(),
+                viewport)));
+        g.setColour(juce::Colour(0x245cc8ff));
+        g.fillRect(
+            std::min(x1, x2),
+            0,
+            std::abs(x2 - x1),
+            bounds.getHeight());
+        g.setColour(juce::Colour(0xff62bdf4));
+        g.drawVerticalLine(x1, 0.0f, static_cast<float>(bounds.getBottom()));
+        g.drawVerticalLine(x2, 0.0f, static_cast<float>(bounds.getBottom()));
     }
 
     if (playheadBeat_.has_value()) {

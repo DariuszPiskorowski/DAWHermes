@@ -12,6 +12,10 @@ inline constexpr std::string_view exportSelectedMidiTrack = "Export Selected MID
 inline constexpr std::string_view exit = "Exit";
 inline constexpr std::string_view addMidiTrack = "Add MIDI Track";
 inline constexpr std::string_view deleteSelectedTrack = "Delete Selected Track";
+inline constexpr std::string_view audioSettings = "Audio Settings...";
+inline constexpr std::string_view testOutput = "Test Output";
+inline constexpr std::string_view restartAudioDevice = "Restart Audio Device";
+inline constexpr std::string_view audioDeviceStatus = "Audio Device Status...";
 
 inline constexpr std::array fileMenu {
     newProject,
@@ -24,6 +28,13 @@ inline constexpr std::array fileMenu {
 inline constexpr std::array trackMenu {
     addMidiTrack,
     deleteSelectedTrack,
+};
+
+inline constexpr std::array audioMenu {
+    audioSettings,
+    testOutput,
+    restartAudioDevice,
+    audioDeviceStatus,
 };
 
 }  // namespace dawhermes::ui::command_labels
