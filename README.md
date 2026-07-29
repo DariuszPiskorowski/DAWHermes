@@ -1,6 +1,6 @@
 # DAWHermes
 
-DAWHermes is a native Windows music-production workbench designed around embedded Hermes MIDI tools, a DAW-level AI assistant, ACE Studio exchange, and clean export for final production in Cubase.
+DAWHermes is a native Windows music-production workbench designed around embedded Hermes MIDI tools, a DAW-level AI assistant, first-class ACE Studio integration, and clean export for final production in Cubase.
 
 The project is not intended to replace every Cubase mixing or mastering feature. Its focus is AI-assisted preparation, MIDI creation and correction, audio-to-MIDI workflows, synchronized audio/MIDI inspection, and a direct visual editing environment.
 
@@ -65,9 +65,9 @@ Not implemented yet:
 - Hermes Set / Fix BPM processing;
 - VST3 hosting;
 - full Composer Assistant music generation and MIDI insertion;
+- DAWHermes connection to the ACE Studio MCP Server;
 - project save/load format;
 - audio clip movement, cutting, time stretching or beat warping;
-- ACE Studio exchange;
 - Cubase-specific exchange/export;
 - full-project audio rendering or stem export.
 
@@ -78,6 +78,31 @@ Known limitations:
 - audio tracks currently reference WAV files at their original paths and begin at project time zero;
 - MIDI export is selected-track only;
 - DAWHermes is not yet a final production mixer or mastering environment.
+
+## ACE Studio direction
+
+ACE Studio is a **first-class planned integration** and one of the main reasons DAWHermes is being developed.
+
+The intended long-term workflow is:
+
+```text
+DAWHermes preparation and Hermes correction
+→ Loop work region
+→ Composer Assistant
+→ ACE Studio through its local MCP Server
+→ returned result auditioned in project context
+→ final production in Cubase
+```
+
+The DAWHermes project owner has a paid ACE Studio installation and has personally confirmed that the **MCP Server** option is present and can be enabled. This removes the main account-access uncertainty for development of the primary ACE workflow.
+
+The exact MCP endpoint, exposed tools and supported project operations still have to be inspected during the ACE Studio integration milestone. The presence of the MCP option does not by itself prove that every desired MIDI, lyrics, timing or result-transfer operation is already available.
+
+ACE Studio remains a separate commercial application. It is not bundled with DAWHermes, and users who want the ACE-specific workflow will need their own compatible ACE Studio installation and account. DAWHermes must remain usable without ACE Studio.
+
+The open-source ACE-Step model is a separate project and is not a free edition of ACE Studio.
+
+See the [Composer Assistant chapter](manual/04_COMPOSER_ASSISTANT.md#planned-ace-studio-connection) and [Export and File Exchange](manual/09_EXPORT_AND_FILE_EXCHANGE.md#ace-studio-is-a-planned-first-class-integration).
 
 ## Related projects
 
@@ -256,7 +281,8 @@ Composer Assistant connector behaviour currently remains conservative:
 - configurable host, port and timeout;
 - no startup connection attempt;
 - explicit manual reachability probe only;
-- no music generation or project insertion yet.
+- no music generation or project insertion yet;
+- no ACE Studio MCP connection yet.
 
 ## Architecture
 
@@ -271,7 +297,7 @@ The application is divided into:
 - `tests` - automated non-GUI verification;
 - `scripts` - build, test and local installation.
 
-Hermes is embedded as a DAWHermes processing subsystem. Composer Assistant remains the single planned DAW-level AI system.
+Hermes is embedded as a DAWHermes processing subsystem. Composer Assistant remains the single planned DAW-level AI system. ACE Studio is a first-class external integration target rather than an embedded or mandatory subsystem.
 
 ## Licensing
 
