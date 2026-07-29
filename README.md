@@ -1,6 +1,6 @@
 # DAWHermes
 
-DAWHermes is a native Windows music-production workbench designed around embedded Hermes MIDI tools, a DAW-level AI assistant, first-class ACE Studio integration, and clean export for final production in Cubase.
+DAWHermes is a native Windows music-production workbench designed around embedded Hermes MIDI tools, a DAW-level AI assistant, first-class planned ACE Studio integration, and clean export for final production in Cubase.
 
 The project is not intended to replace every Cubase mixing or mastering feature. Its focus is AI-assisted preparation, MIDI creation and correction, audio-to-MIDI workflows, synchronized audio/MIDI inspection, and a direct visual editing environment.
 
