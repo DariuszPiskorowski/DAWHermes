@@ -216,25 +216,35 @@ This is the most relevant currently documented programmatic integration path for
 
 The MCP server is still marked experimental. Its tools, behaviour, limits and compatibility may change before it becomes stable. DAWHermes must therefore treat its protocol as versioned external integration rather than an unchanging internal API.
 
+## Confirmed access for the DAWHermes project
+
+The DAWHermes project owner has a paid ACE Studio installation and has personally confirmed that the **MCP Server** option is present and can be enabled in ACE Studio settings.
+
+This removes the main account-access uncertainty for the planned integration. DAWHermes does not need to depend on an unverified free ACE Studio tier for development of its primary ACE workflow.
+
+Before implementation begins, the integration milestone must still inspect and record:
+
+- the installed ACE Studio version;
+- the local MCP endpoint and connection procedure;
+- the tools exposed by that version of the MCP server;
+- which operations require an open ACE Studio project;
+- how MIDI, lyrics, timing, track roles and generated results are represented;
+- whether any relevant feature differs between ACE Studio membership levels;
+- how protocol changes will be handled safely.
+
+The presence of the MCP switch confirms availability, but it does not by itself prove every desired DAWHermes operation is already exposed by the current MCP tool set.
+
 ## Is there a free ACE Studio version with API access?
 
 At the current manual baseline, the official ACE Studio documentation does not list a permanent free ACE Studio desktop plan with MCP or API access.
 
 Official ACE Studio support states that using ACE Studio requires a membership obtained through a subscription, lifetime purchase or voucher. The public pricing page lists paid Artist and Artist Pro plans rather than a continuing free desktop tier.
 
-The ACE Studio MCP server is not presented as a separate cloud API subscription. It runs locally inside ACE Studio 2.0. Therefore, access appears to depend on having a working licensed ACE Studio installation rather than purchasing an additional API package.
+The ACE Studio MCP server is not presented as a separate cloud API subscription. It runs locally inside ACE Studio 2.0. Access therefore appears to depend on having a working licensed ACE Studio installation rather than purchasing an additional API package.
 
 ACE Studio also gives registered users monthly AI credits for some web and generative features. Those credits do not by themselves prove that a free user receives full ACE Studio desktop access or access to the local MCP server.
 
-For the project owner, the practical check is simple:
-
-1. open the installed ACE Studio 2.0 application;
-2. open **Preferences**;
-3. look under **General** for **MCP Server**;
-4. confirm that it can be enabled under the current paid account;
-5. verify which MCP tools are exposed before DAWHermes implementation begins.
-
-Because the project owner already has a paid ACE Studio subscription, DAWHermes can be designed around the documented MCP and Bridge capabilities without relying on an unverified free tier.
+For DAWHermes, the free-tier question is no longer a development blocker because the project owner has confirmed MCP Server access in the paid installation. Future public distribution must still explain that users need their own compatible ACE Studio installation and account for the ACE-specific workflow.
 
 ## ACE Studio and ACE-Step are different projects
 
