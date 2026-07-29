@@ -10,17 +10,29 @@
 #include <utility>
 
 #include "app/AppLogger.h"
+#include "audio/AudioTrackImporter.h"
+#include "core/AudioTrackImport.h"
 #include "core/MidiNoteEditing.h"
+#include "core/Utf8Path.h"
 #include "hermes/HermesCache.h"
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/HermesValidation.h"
 #include "midi/MidiTrackExporter.h"
+#include "ui/CommandLabels.h"
 #include "ui/HermesDialogs.h"
 #include "ui/MidiImportParser.h"
 
 namespace dawhermes::ui {
 
 namespace {
+
+std::string juceStringToUtf8(const juce::String& text)
+{
+    return {
+        text.toRawUTF8(),
+        static_cast<std::size_t>(text.getNumBytesAsUTF8())
+    };
+}
 
 juce::String trackTypeLabel(core::TrackType type)
 {
@@ -42,8 +54,10 @@ juce::String basenameForPath(const std::string& path)
         return {};
     }
 
-    const std::filesystem::path fsPath(path);
-    return juce::String(fsPath.filename().string());
+    const auto filename = core::filenameFromUtf8Path(path);
+    return juce::String::fromUTF8(
+        filename.data(),
+        static_cast<int>(filename.size()));
 }
 
 juce::String describeTrack(const core::Track& track)
@@ -51,7 +65,7 @@ juce::String describeTrack(const core::Track& track)
     juce::String line = juce::String(track.name) + "  [" + trackTypeLabel(track.type) + "]";
     if (track.type == core::TrackType::audio) {
         if (track.audioSourcePath.empty()) {
-            line << "  (No WAV source)";
+            line << "  (Audio unavailable)";
         } else {
             line << "  (" << basenameForPath(track.audioSourcePath) << ")";
         }
@@ -331,15 +345,26 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
     addAndMakeVisible(menuBar_);
 
     transportLabel_.setText(
-        "MIDI Audition",
+        "Transport",
         juce::dontSendNotification);
     transportLabel_.setJustificationType(juce::Justification::centredLeft);
     transportLabel_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff2b323b));
     transportLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(transportLabel_);
 
+    addAndMakeVisible(rewindButton_);
     addAndMakeVisible(playButton_);
+    addAndMakeVisible(pauseButton_);
     addAndMakeVisible(stopButton_);
+    addAndMakeVisible(fastForwardButton_);
+    timeCounterLabel_.setText("00:00 / 00:00", juce::dontSendNotification);
+    timeCounterLabel_.setJustificationType(juce::Justification::centred);
+    timeCounterLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
+    addAndMakeVisible(timeCounterLabel_);
+    bpmLabel_.setText("BPM --", juce::dontSendNotification);
+    bpmLabel_.setJustificationType(juce::Justification::centred);
+    bpmLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
+    addAndMakeVisible(bpmLabel_);
     addAndMakeVisible(panicButton_);
     volumeLabel_.setText("Vol", juce::dontSendNotification);
     volumeLabel_.setJustificationType(juce::Justification::centredRight);
@@ -433,6 +458,7 @@ MainComponent::MainComponent(juce::ApplicationProperties& applicationProperties)
 MainComponent::~MainComponent()
 {
     stopTimer();
+    wavBpmAnalysisService_.stop();
     midiAuditionEngine_.panic();
 
     if (hermesJobRunner_ != nullptr) {
@@ -452,8 +478,11 @@ void MainComponent::initializeVisualWorkspace()
     resolvedTimelineInfo_.tempoMap = core::sanitizeTempoMap({});
     resolvedTimelineInfo_.timeSignatureMap = core::sanitizeTimeSignatureMap({});
 
+    rewindButton_.onClick = [this]() { seekPlayback(-audio::kTransportSeekSeconds); };
     playButton_.onClick = [this]() { startSelectedMidiPlayback(); };
+    pauseButton_.onClick = [this]() { pausePlayback(); };
     stopButton_.onClick = [this]() { stopMidiPlayback(); };
+    fastForwardButton_.onClick = [this]() { seekPlayback(audio::kTransportSeekSeconds); };
     panicButton_.onClick = [this]() { panicMidiPlayback(); };
     volumeSlider_.onValueChange = [this]() {
         midiAuditionEngine_.setVolume(static_cast<float>(volumeSlider_.getValue() / 100.0));
@@ -586,16 +615,26 @@ void MainComponent::resized()
         layout.transportBar.y,
         layout.transportBar.width,
         layout.transportBar.height).reduced(6, 3);
-    transportLabel_.setBounds(transportControls.removeFromLeft(std::min(120, transportControls.getWidth())));
+    transportLabel_.setBounds(transportControls.removeFromLeft(std::min(92, transportControls.getWidth())));
+    transportControls.removeFromLeft(5);
+    rewindButton_.setBounds(transportControls.removeFromLeft(std::min(36, transportControls.getWidth())));
+    transportControls.removeFromLeft(3);
+    playButton_.setBounds(transportControls.removeFromLeft(std::min(52, transportControls.getWidth())));
+    transportControls.removeFromLeft(3);
+    pauseButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
+    transportControls.removeFromLeft(3);
+    stopButton_.setBounds(transportControls.removeFromLeft(std::min(52, transportControls.getWidth())));
+    transportControls.removeFromLeft(3);
+    fastForwardButton_.setBounds(transportControls.removeFromLeft(std::min(36, transportControls.getWidth())));
     transportControls.removeFromLeft(6);
-    playButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
-    transportControls.removeFromLeft(4);
-    stopButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
-    transportControls.removeFromLeft(4);
-    panicButton_.setBounds(transportControls.removeFromLeft(std::min(62, transportControls.getWidth())));
-    transportControls.removeFromLeft(8);
+    timeCounterLabel_.setBounds(transportControls.removeFromLeft(std::min(168, transportControls.getWidth())));
+    transportControls.removeFromLeft(5);
+    bpmLabel_.setBounds(transportControls.removeFromLeft(std::min(102, transportControls.getWidth())));
+    transportControls.removeFromLeft(5);
+    panicButton_.setBounds(transportControls.removeFromLeft(std::min(58, transportControls.getWidth())));
+    transportControls.removeFromLeft(6);
     volumeLabel_.setBounds(transportControls.removeFromLeft(std::min(28, transportControls.getWidth())));
-    volumeSlider_.setBounds(transportControls.removeFromLeft(std::min(190, transportControls.getWidth())));
+    volumeSlider_.setBounds(transportControls.removeFromLeft(std::min(150, transportControls.getWidth())));
     tracksHeaderLabel_.setBounds(
         layout.tracksHeader.x,
         layout.tracksHeader.y,
@@ -745,11 +784,19 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
 
     switch (topLevelMenuIndex) {
     case 0:
-        menu.addItem(commandNewProject, "New Project");
-        menu.addItem(commandImportMidiTrack, "Import MIDI as Track...");
-        menu.addItem(commandExportSelectedMidiTrack, "Export Selected MIDI Track...", canExportSelectedMidiTrack());
+        menu.addItem(commandNewProject, juce::String(command_labels::newProject.data()));
+        menu.addItem(
+            commandImportAudioTrack,
+            juce::String(command_labels::importAudioAsTrack.data()));
+        menu.addItem(
+            commandImportMidiTrack,
+            juce::String(command_labels::importMidiAsTrack.data()));
+        menu.addItem(
+            commandExportSelectedMidiTrack,
+            juce::String(command_labels::exportSelectedMidiTrack.data()),
+            canExportSelectedMidiTrack());
         menu.addSeparator();
-        menu.addItem(commandExit, "Exit");
+        menu.addItem(commandExit, juce::String(command_labels::exit.data()));
         break;
     case 1:
         menu.addItem(commandUndo, "Undo", canUndo());
@@ -767,11 +814,12 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
             midiComparisonEnabled_);
         break;
     case 3:
-        menu.addItem(commandAddAudioTrack, "Add Audio Track");
-        menu.addItem(commandAddMidiTrack, "Add MIDI Track");
-        menu.addItem(commandAssignAudioFile, "Assign WAV Source to Selected Audio Track...");
+        menu.addItem(commandAddMidiTrack, juce::String(command_labels::addMidiTrack.data()));
         menu.addSeparator();
-        menu.addItem(commandDeleteSelectedTrack, "Delete Selected Track", projectController_.canDeleteSelectedTrack());
+        menu.addItem(
+            commandDeleteSelectedTrack,
+            juce::String(command_labels::deleteSelectedTrack.data()),
+            projectController_.canDeleteSelectedTrack());
         break;
     case 4:
         menu.addSubMenu("Hermes", buildHermesMenu());
@@ -875,20 +923,17 @@ void MainComponent::executeCommand(int commandId)
         case commandExit:
             juce::JUCEApplication::getInstance()->systemRequestedQuit();
             break;
-        case commandAddAudioTrack:
-            addAudioTrack();
-            break;
         case commandAddMidiTrack:
             addMidiTrack();
+            break;
+        case commandImportAudioTrack:
+            importAudioTracks();
             break;
         case commandImportMidiTrack:
             importMidiTrack();
             break;
         case commandExportSelectedMidiTrack:
             exportSelectedMidiTrack();
-            break;
-        case commandAssignAudioFile:
-            assignAudioFileToSelectedTrack();
             break;
         case commandDeleteSelectedTrack:
             deleteSelectedTrack();
@@ -1178,12 +1223,14 @@ juce::PopupMenu MainComponent::buildHermesMenu() const
 juce::PopupMenu MainComponent::buildTrackContextMenu() const
 {
     juce::PopupMenu menu;
-    const auto track = selectedTrack();
-    const bool isSelectedAudio = track.has_value() && track->type == core::TrackType::audio;
-    menu.addItem(commandAssignAudioFile, "Assign WAV Source...", isSelectedAudio);
-    menu.addItem(commandImportMidiTrack, "Import MIDI as Track...");
+    menu.addItem(
+        commandImportMidiTrack,
+        juce::String(command_labels::importMidiAsTrack.data()));
     menu.addSeparator();
-    menu.addItem(commandDeleteSelectedTrack, "Delete Selected Track", projectController_.canDeleteSelectedTrack());
+    menu.addItem(
+        commandDeleteSelectedTrack,
+        juce::String(command_labels::deleteSelectedTrack.data()),
+        projectController_.canDeleteSelectedTrack());
     menu.addSeparator();
     menu.addSubMenu("Hermes", buildHermesMenu());
     return menu;
@@ -1246,7 +1293,9 @@ std::optional<hermes::HermesAudioMidiPairContext> MainComponent::selectedAudioMi
     }
 
     std::error_code ec;
-    const auto audioPath = audioTrack == nullptr ? std::filesystem::path {} : std::filesystem::path(audioTrack->audioSourcePath);
+    const auto audioPath = audioTrack == nullptr
+        ? std::filesystem::path {}
+        : core::pathFromUtf8(audioTrack->audioSourcePath);
 
     if (audioTrack == nullptr
         || midiTrack == nullptr
@@ -1383,7 +1432,7 @@ std::optional<core::Track> MainComponent::activeMidiTrackForPianoRoll() const
 
 void MainComponent::updateHorizontalScrollRange()
 {
-    const auto projectEndBeat = estimateProjectDurationBeats();
+    const auto projectEndBeat = estimateHorizontalContentEndBeat();
     const auto maxStartBeat = std::max(0.0, projectEndBeat - timelineViewportState_.visibleBeats);
 
     timelineViewportState_.startBeat = std::clamp(timelineViewportState_.startBeat, 0.0, maxStartBeat);
@@ -1396,6 +1445,29 @@ void MainComponent::updateHorizontalScrollRange()
     suppressViewportControlCallbacks_ = false;
 }
 
+double MainComponent::estimateHorizontalContentEndBeat() const
+{
+    auto endBeat = estimateProjectDurationBeats();
+    const auto duration = midiAuditionEngine_.totalDurationSeconds();
+    if (duration <= 0.0) {
+        return endBeat;
+    }
+
+    if (const auto snapshot = midiAuditionEngine_.playbackSnapshot();
+        snapshot != nullptr) {
+        endBeat = std::max(
+            endBeat,
+            audio::selectionPlayheadBeat(duration, *snapshot));
+    } else {
+        endBeat = std::max(
+            endBeat,
+            audio::midiSecondsToBeat(
+                duration,
+                transportSelectionSummary_.tempoMap));
+    }
+    return endBeat;
+}
+
 void MainComponent::applyHorizontalZoom(double zoomFactor)
 {
     const auto pivotBeat = timelineViewportState_.startBeat + (timelineViewportState_.visibleBeats * 0.5);
@@ -1403,7 +1475,7 @@ void MainComponent::applyHorizontalZoom(double zoomFactor)
         timelineViewportState_,
         pivotBeat,
         zoomFactor,
-        estimateProjectDurationBeats());
+        estimateHorizontalContentEndBeat());
     updateVisualWorkspace();
 }
 
@@ -1540,6 +1612,7 @@ void MainComponent::updateVisualWorkspace()
     snapToggle_.setToggleState(snapEnabled_, juce::dontSendNotification);
     updateVelocityControlState();
     menuBar_.repaint();
+    refreshTransportSelectionState();
     updateTransportControlState();
 }
 
@@ -1553,7 +1626,7 @@ void MainComponent::updateStatusForSelection()
             status = "Selected: " + juce::String(track->name) + " (" + trackTypeLabel(track->type) + ")";
             if (track->type == core::TrackType::audio) {
                 if (track->audioSourcePath.empty()) {
-                    status << " | WAV source: not assigned";
+                    status << " | Audio unavailable";
                 } else {
                     status << " | WAV source: " << basenameForPath(track->audioSourcePath);
                 }
@@ -1604,20 +1677,72 @@ void MainComponent::updateStatusForSelection()
     statusLabel_.setText(status, juce::dontSendNotification);
 }
 
-void MainComponent::addAudioTrack()
-{
-    const auto& track = projectController_.addTrack(core::TrackType::audio);
-    projectController_.selectTrack(track.id);
-    refreshTrackView();
-    updateStatusForSelection();
-}
-
 void MainComponent::addMidiTrack()
 {
     const auto& track = projectController_.addTrack(core::TrackType::midi);
     projectController_.selectTrack(track.id);
     refreshTrackView();
     updateStatusForSelection();
+}
+
+void MainComponent::importAudioTracks()
+{
+    juce::FileChooser chooser(
+        "Import WAV files as audio tracks",
+        {},
+        "*.wav");
+
+    if (!chooser.browseForMultipleFilesToOpen()) {
+        return;
+    }
+
+    std::vector<std::filesystem::path> selectedPaths;
+    const auto selectedFiles = chooser.getResults();
+    selectedPaths.reserve(static_cast<std::size_t>(selectedFiles.size()));
+    for (const auto& selectedFile : selectedFiles) {
+        selectedPaths.emplace_back(core::pathFromUtf8(
+            juceStringToUtf8(selectedFile.getFullPathName())));
+    }
+
+    auto preparation = audio::prepareAudioTrackImports(selectedPaths);
+    if (preparation.validTracks.empty()) {
+        statusLabel_.setText(
+            "Unable to import audio: unreadable WAV",
+            juce::dontSendNotification);
+        return;
+    }
+
+    stopMidiPlayback();
+    midiNoteSelectionState_.clear();
+
+    auto command = std::make_unique<core::ImportAudioTracksCommand>(
+        projectModel_,
+        selectionState_,
+        std::move(preparation.validTracks));
+    if (!command->redo()) {
+        statusLabel_.setText(
+            "Unable to import audio: tracks could not be created",
+            juce::dontSendNotification);
+        return;
+    }
+
+    const auto importedCount = command->createdTrackIds().size();
+    projectHistory_.pushExecuted(std::move(command));
+    redoResult_.reset();
+
+    refreshTrackView();
+    updateStatusForSelection();
+
+    juce::String status = "Imported " + juce::String(static_cast<int>(importedCount))
+        + (importedCount == 1 ? " audio track" : " audio tracks");
+    if (!preparation.skippedFiles.empty()) {
+        status << "; skipped "
+               << static_cast<int>(preparation.skippedFiles.size())
+               << (preparation.skippedFiles.size() == 1
+                       ? " unreadable file"
+                       : " unreadable files");
+    }
+    statusLabel_.setText(status, juce::dontSendNotification);
 }
 
 void MainComponent::importMidiTrack()
@@ -1760,38 +1885,6 @@ void MainComponent::exportSelectedMidiTrack()
     statusLabel_.setText(
         "Exported selected MIDI track: " + selectedFile.getFileName(),
         juce::dontSendNotification);
-}
-
-void MainComponent::assignAudioFileToSelectedTrack()
-{
-    const auto track = selectedTrack();
-    if (!track.has_value() || track->type != core::TrackType::audio) {
-        showValidationError(this, "Select an audio track before assigning a WAV source file.");
-        return;
-    }
-
-    juce::FileChooser chooser(
-        "Select WAV source file",
-        {},
-        "*.wav;*.wave");
-
-    if (!chooser.browseForFileToOpen()) {
-        return;
-    }
-
-    const auto selectedFile = chooser.getResult();
-    if (!selectedFile.existsAsFile()) {
-        showValidationError(this, "Selected file does not exist.");
-        return;
-    }
-
-    if (!projectController_.assignAudioSourceToTrack(track->id, selectedFile.getFullPathName().toStdString())) {
-        showValidationError(this, "Unable to assign WAV source to selected track.");
-        return;
-    }
-
-    refreshTrackView();
-    updateStatusForSelection();
 }
 
 void MainComponent::deleteSelectedTrack()
@@ -2425,26 +2518,60 @@ void MainComponent::completeHermesJob(hermes::HermesJobResult result)
 
 void MainComponent::startSelectedMidiPlayback()
 {
-    const auto track = selectedTrack();
-    if (!track.has_value() || !audio::canAuditionMidiTrack(track.value())) {
+    if (midiAuditionEngine_.isPaused()) {
+        std::string error;
+        if (!midiAuditionEngine_.resume(error)) {
+            statusLabel_.setText(
+                "Audio output unavailable: " + juce::String(error),
+                juce::dontSendNotification);
+            updateTransportControlState();
+            return;
+        }
+
+        previousTransportMode_ = audio::TransportMode::playing;
+        playheadFollowActive_ = false;
+        updatePlaybackPlayhead(false);
+        updateTransportDisplays();
+        statusLabel_.setText("Playing: resumed", juce::dontSendNotification);
+        updateTransportControlState();
+        return;
+    }
+
+    refreshTransportSelectionState();
+    audio::SelectionPlaybackOptions options;
+    if (selectedWavBpmResult_.has_value()
+        && selectedWavBpmResult_->estimate.isConfident()
+        && transportSelectionSummary_.firstReadableAudioPath.has_value()
+        && requestedWavFingerprint_.has_value()
+        && requestedWavFingerprint_->sourcePath
+            == selectedWavBpmResult_->fingerprint.sourcePath) {
+        options.detectedWavBpm = selectedWavBpmResult_->estimate.bpm;
+    }
+
+    auto snapshotResult = audio::createSelectionPlaybackSnapshot(
+        projectModel_,
+        selectionState_,
+        options);
+    if (!snapshotResult.ok) {
         statusLabel_.setText(
-            "Select a non-empty MIDI track before playback.",
+            juce::String(snapshotResult.message),
             juce::dontSendNotification);
         updateTransportControlState();
         return;
     }
 
-    const auto snapshotResult = audio::createMidiPlaybackSnapshot(track.value());
-    if (!snapshotResult.ok) {
-        statusLabel_.setText(
-            "MIDI playback unavailable: " + juce::String(snapshotResult.message),
-            juce::dontSendNotification);
-        updateTransportControlState();
-        return;
+    const auto usesFallbackTempo =
+        snapshotResult.snapshot.tempoSource == audio::PlaybackTempoSource::fallback;
+    auto startSeconds = midiAuditionEngine_.playheadSeconds();
+    if (startSeconds >= snapshotResult.snapshot.durationSeconds - 1.0e-9) {
+        startSeconds = 0.0;
     }
 
     std::string error;
-    if (!midiAuditionEngine_.startPlayback(snapshotResult.snapshot, error)) {
+    if (!midiAuditionEngine_.startPlayback(
+            std::move(snapshotResult.snapshot),
+            startSeconds,
+            error)) {
         statusLabel_.setText(
             "Audio output unavailable: " + juce::String(error),
             juce::dontSendNotification);
@@ -2452,63 +2579,393 @@ void MainComponent::startSelectedMidiPlayback()
         return;
     }
 
-    playbackPlayheadBeat_ = 0.0;
-    transportWasPlaying_ = true;
-    timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
-    pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
-    statusLabel_.setText(
-        "Playing MIDI snapshot: " + juce::String(track->name),
-        juce::dontSendNotification);
+    previousTransportMode_ = audio::TransportMode::playing;
+    playheadFollowActive_ = false;
+    updatePlaybackPlayhead(true);
+    updateTransportDisplays();
+    juce::String status(snapshotResult.message);
+    if (!snapshotResult.skippedAudioTracks.empty()) {
+        status << " | "
+               << juce::String(audio::describeSkippedAudioTrack(
+                      snapshotResult.skippedAudioTracks.front()));
+        if (snapshotResult.skippedAudioTracks.size() > 1) {
+            status << " (+" << static_cast<int>(snapshotResult.skippedAudioTracks.size() - 1)
+                   << " more)";
+        }
+    }
+    if (usesFallbackTempo) {
+        status << " | Using 120.0 BPM fallback for this playback.";
+    }
+    statusLabel_.setText(status, juce::dontSendNotification);
+    updateTransportControlState();
+}
+
+void MainComponent::pausePlayback()
+{
+    if (!midiAuditionEngine_.isPlaying()) {
+        return;
+    }
+
+    midiAuditionEngine_.pause();
+    previousTransportMode_ = audio::TransportMode::paused;
+    playheadFollowActive_ = false;
+    updatePlaybackPlayhead(false);
+    updateTransportDisplays();
+    statusLabel_.setText("Paused playback", juce::dontSendNotification);
     updateTransportControlState();
 }
 
 void MainComponent::stopMidiPlayback()
 {
     midiAuditionEngine_.stop();
-    playbackPlayheadBeat_.reset();
-    transportWasPlaying_ = false;
-    timelineView_.setPlayheadBeat(std::nullopt);
-    pianoRollView_.setPlayheadBeat(std::nullopt);
-    statusLabel_.setText("MIDI playback stopped.", juce::dontSendNotification);
+    synchronizeStoppedTransportPreview();
+    previousTransportMode_ = audio::TransportMode::stopped;
+    playheadFollowActive_ = false;
+    updateTransportDisplays();
+    statusLabel_.setText("Stopped playback", juce::dontSendNotification);
     updateTransportControlState();
 }
 
 void MainComponent::panicMidiPlayback()
 {
     midiAuditionEngine_.panic();
-    playbackPlayheadBeat_.reset();
-    transportWasPlaying_ = false;
-    timelineView_.setPlayheadBeat(std::nullopt);
-    pianoRollView_.setPlayheadBeat(std::nullopt);
-    statusLabel_.setText("Panic: all audition voices stopped.", juce::dontSendNotification);
+    synchronizeStoppedTransportPreview();
+    previousTransportMode_ = audio::TransportMode::stopped;
+    playheadFollowActive_ = false;
+    updateTransportDisplays();
+    statusLabel_.setText("Panic: all playback silenced", juce::dontSendNotification);
     updateTransportControlState();
+}
+
+void MainComponent::seekPlayback(double deltaSeconds)
+{
+    const auto total = midiAuditionEngine_.totalDurationSeconds();
+    if (total <= 0.0) {
+        return;
+    }
+
+    const auto target = audio::seekTransportSeconds(
+        midiAuditionEngine_.playheadSeconds(),
+        deltaSeconds,
+        total);
+    midiAuditionEngine_.seekTo(target);
+    playheadFollowActive_ = false;
+    updatePlaybackPlayhead(true);
+    updateTransportDisplays();
+    statusLabel_.setText(
+        deltaSeconds < 0.0 ? "Seek: -5 seconds" : "Seek: +5 seconds",
+        juce::dontSendNotification);
+    updateTransportControlState();
+}
+
+void MainComponent::refreshTransportSelectionState()
+{
+    transportSelectionSummary_ = audio::createSelectionPlaybackSummary(
+        projectModel_,
+        selectionState_);
+    requestSelectedWavBpmIfNeeded();
+
+    audio::SelectionPlaybackOptions options;
+    if (selectedWavBpmResult_.has_value()
+        && selectedWavBpmResult_->estimate.isConfident()
+        && requestedWavFingerprint_.has_value()
+        && requestedWavFingerprint_->sourcePath
+            == selectedWavBpmResult_->fingerprint.sourcePath) {
+        options.detectedWavBpm = selectedWavBpmResult_->estimate.bpm;
+    }
+
+    const auto summary = audio::createSelectionPlaybackSummary(
+        projectModel_,
+        selectionState_,
+        options);
+    transportSelectionSummary_ = summary;
+    if (!playableSelectionIdentity_.has_value()
+        || !(playableSelectionIdentity_.value() == summary.identity)) {
+        playableSelectionIdentity_ = summary.identity;
+        ++playableSelectionGeneration_;
+    }
+    if (const auto snapshot = midiAuditionEngine_.playbackSnapshot();
+        snapshot != nullptr
+        && midiAuditionEngine_.transportMode() != audio::TransportMode::stopped) {
+        resolvedTimelineInfo_.tempoMap = snapshot->playheadTempoMap;
+    } else if (!summary.tempoMap.empty()) {
+        resolvedTimelineInfo_.tempoMap = summary.tempoMap;
+    }
+    timelineView_.setTempoMap(resolvedTimelineInfo_.tempoMap);
+    if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped) {
+        synchronizeStoppedTransportPreview();
+    }
+    updateTransportDisplays();
+}
+
+void MainComponent::synchronizeStoppedTransportPreview()
+{
+    if (midiAuditionEngine_.transportMode() != audio::TransportMode::stopped) {
+        return;
+    }
+
+    midiAuditionEngine_.setPreviewDuration(
+        transportSelectionSummary_.durationSeconds,
+        playableSelectionGeneration_);
+    resolvedTimelineInfo_.tempoMap = transportSelectionSummary_.tempoMap;
+    timelineView_.setTempoMap(resolvedTimelineInfo_.tempoMap);
+    updatePlaybackPlayhead(false);
+}
+
+void MainComponent::requestSelectedWavBpmIfNeeded()
+{
+    if (!transportSelectionSummary_.firstReadableAudioPath.has_value()) {
+        requestedWavFingerprint_.reset();
+        selectedWavBpmResult_.reset();
+        wavBpmRequestGeneration_ = 0;
+        return;
+    }
+
+    const auto fingerprint = audio::fingerprintWavFile(
+        core::pathFromUtf8(
+            transportSelectionSummary_.firstReadableAudioPath.value()));
+    if (!fingerprint.has_value()) {
+        requestedWavFingerprint_.reset();
+        selectedWavBpmResult_.reset();
+        wavBpmRequestGeneration_ = 0;
+        return;
+    }
+
+    if (requestedWavFingerprint_.has_value()
+        && requestedWavFingerprint_.value() == fingerprint.value()) {
+        return;
+    }
+
+    requestedWavFingerprint_ = fingerprint;
+    selectedWavBpmResult_.reset();
+    wavBpmRequestGeneration_ = wavBpmAnalysisService_.request(
+        core::pathFromUtf8(fingerprint->sourcePath));
+    if (const auto cached = wavBpmAnalysisService_.pollCompleted();
+        cached.has_value()
+        && cached->requestGeneration == wavBpmRequestGeneration_
+        && cached->fingerprint == fingerprint.value()) {
+        selectedWavBpmResult_ = cached;
+    }
+}
+
+void MainComponent::processCompletedWavBpmAnalysis()
+{
+    const auto completed = wavBpmAnalysisService_.pollCompleted();
+    if (!completed.has_value()
+        || completed->requestGeneration != wavBpmRequestGeneration_
+        || !requestedWavFingerprint_.has_value()
+        || !(completed->fingerprint == requestedWavFingerprint_.value())) {
+        return;
+    }
+
+    selectedWavBpmResult_ = completed;
+    if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped) {
+        refreshTransportSelectionState();
+    } else {
+        audio::SelectionPlaybackOptions options;
+        if (completed->estimate.isConfident()) {
+            options.detectedWavBpm = completed->estimate.bpm;
+        }
+        transportSelectionSummary_ = audio::createSelectionPlaybackSummary(
+            projectModel_,
+            selectionState_,
+            options);
+    }
+
+    if (!completed->estimate.isConfident()
+        && transportSelectionSummary_.playable
+        && transportSelectionSummary_.tempoSource
+            != audio::PlaybackTempoSource::explicitMidi) {
+        statusLabel_.setText(
+            "WAV BPM uncertain; using 120.0 BPM fallback.",
+            juce::dontSendNotification);
+    }
+    updateTransportDisplays();
+}
+
+void MainComponent::updateTransportDisplays()
+{
+    timeCounterLabel_.setText(
+        juce::String(audio::formatTransportCounter(
+            midiAuditionEngine_.playheadSeconds(),
+            midiAuditionEngine_.totalDurationSeconds())),
+        juce::dontSendNotification);
+
+    const auto snapshot = midiAuditionEngine_.playbackSnapshot();
+    const auto hasPlayableSelection = midiAuditionEngine_.totalDurationSeconds() > 0.0
+        || transportSelectionSummary_.playable;
+    if (!hasPlayableSelection) {
+        bpmLabel_.setText("BPM --", juce::dontSendNotification);
+        bpmLabel_.setTooltip("No playable selection.");
+        return;
+    }
+
+    const auto activeSnapshot = snapshot != nullptr
+        && midiAuditionEngine_.transportMode() != audio::TransportMode::stopped;
+    if (activeSnapshot) {
+        bpmLabel_.setText(
+            "BPM " + juce::String(
+                audio::selectionPlaybackBpm(
+                    midiAuditionEngine_.playheadSeconds(),
+                    *snapshot),
+                1),
+            juce::dontSendNotification);
+        if (snapshot->tempoSource == audio::PlaybackTempoSource::explicitMidi) {
+            bpmLabel_.setTooltip("Explicit MIDI tempo map.");
+        } else if (snapshot->tempoSource == audio::PlaybackTempoSource::detectedWav) {
+            bpmLabel_.setTooltip(
+                "Detected WAV tempo estimate; audio remains at original speed.");
+        } else {
+            bpmLabel_.setTooltip(
+                "120.0 BPM fallback for this immutable playback snapshot.");
+        }
+        return;
+    }
+
+    if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped
+        && transportSelectionSummary_.tempoSource
+            == audio::PlaybackTempoSource::explicitMidi) {
+        bpmLabel_.setText(
+            "BPM " + juce::String(
+                audio::selectionSummaryBpm(
+                    midiAuditionEngine_.playheadSeconds(),
+                    transportSelectionSummary_),
+                1),
+            juce::dontSendNotification);
+        bpmLabel_.setTooltip("Explicit MIDI tempo map.");
+        return;
+    }
+
+    const auto resultMatchesSelection = selectedWavBpmResult_.has_value()
+        && selectedWavBpmResult_->estimate.isConfident()
+        && requestedWavFingerprint_.has_value()
+        && selectedWavBpmResult_->fingerprint
+            == requestedWavFingerprint_.value();
+    const auto resultMatchesPlayback =
+        midiAuditionEngine_.transportMode() == audio::TransportMode::stopped
+        || snapshot == nullptr
+        || (requestedWavFingerprint_.has_value()
+            && !snapshot->audioStems.empty()
+            && core::pathFromUtf8(snapshot->audioStems.front().sourcePath)
+                    .lexically_normal()
+                == core::pathFromUtf8(
+                       requestedWavFingerprint_->sourcePath)
+                       .lexically_normal());
+    if (resultMatchesSelection && resultMatchesPlayback) {
+        bpmLabel_.setText(
+            "BPM " + juce::String(
+                selectedWavBpmResult_->estimate.bpm.value(),
+                1),
+            juce::dontSendNotification);
+        bpmLabel_.setTooltip(
+            "Detected WAV tempo estimate; audio remains at original speed.");
+        return;
+    }
+
+    if (wavBpmAnalysisService_.isAnalyzing()
+        && requestedWavFingerprint_.has_value()) {
+        bpmLabel_.setText("BPM analyzing...", juce::dontSendNotification);
+        bpmLabel_.setTooltip("Analyzing a bounded WAV segment outside the audio callback.");
+        return;
+    }
+
+    bpmLabel_.setText("BPM 120.0", juce::dontSendNotification);
+    bpmLabel_.setTooltip("Fallback transport tempo; WAV detection was unavailable or uncertain.");
+}
+
+void MainComponent::updatePlaybackPlayhead(bool ensureVisible)
+{
+    const auto total = midiAuditionEngine_.totalDurationSeconds();
+    if (total <= 0.0 || !midiAuditionEngine_.isPlayheadVisible()) {
+        playbackPlayheadBeat_.reset();
+    } else if (const auto snapshot = midiAuditionEngine_.playbackSnapshot();
+               snapshot != nullptr) {
+        playbackPlayheadBeat_ = audio::selectionPlayheadBeat(
+            midiAuditionEngine_.playheadSeconds(),
+            *snapshot);
+    } else {
+        playbackPlayheadBeat_ = audio::midiSecondsToBeat(
+            midiAuditionEngine_.playheadSeconds(),
+            transportSelectionSummary_.tempoMap);
+    }
+
+    timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
+    pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
+
+    if (ensureVisible && playbackPlayheadBeat_.has_value()) {
+        timelineViewportState_ = core::ensureTimelineBeatVisible(
+            timelineViewportState_,
+            playbackPlayheadBeat_.value(),
+            estimateHorizontalContentEndBeat());
+        updateHorizontalViewportViews();
+    }
+}
+
+void MainComponent::updateHorizontalViewportViews()
+{
+    updateHorizontalScrollRange();
+    timelineView_.setViewportState(timelineViewportState_);
+    timeRulerView_.setViewportState(timelineViewportState_);
+    pianoRollView_.setViewportState(timelineViewportState_);
 }
 
 void MainComponent::updateTransportControlState()
 {
-    const auto state = audio::midiTransportCommandState(
-        selectedTrack(),
-        midiAuditionEngine_.isPlaying());
+    const auto state = audio::selectionTransportCommandState(
+        projectModel_,
+        selectionState_,
+        midiAuditionEngine_.transportMode(),
+        midiAuditionEngine_.totalDurationSeconds());
+    rewindButton_.setEnabled(state.rewindEnabled);
     playButton_.setEnabled(state.playEnabled);
+    pauseButton_.setEnabled(state.pauseEnabled);
     stopButton_.setEnabled(state.stopEnabled);
+    fastForwardButton_.setEnabled(state.fastForwardEnabled);
     panicButton_.setEnabled(state.panicEnabled);
 }
 
 void MainComponent::timerCallback()
 {
-    const auto playing = midiAuditionEngine_.isPlaying();
-    if (playing) {
-        playbackPlayheadBeat_ = midiAuditionEngine_.playheadBeat();
-        timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
-        pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
-    } else if (transportWasPlaying_) {
-        playbackPlayheadBeat_ = midiAuditionEngine_.playheadBeat();
-        timelineView_.setPlayheadBeat(playbackPlayheadBeat_);
-        pianoRollView_.setPlayheadBeat(playbackPlayheadBeat_);
-        statusLabel_.setText("MIDI playback finished.", juce::dontSendNotification);
+    midiAuditionEngine_.collectRetiredSnapshots();
+    processCompletedWavBpmAnalysis();
+
+    const auto mode = midiAuditionEngine_.transportMode();
+    updatePlaybackPlayhead(false);
+    if (audio::shouldAutomaticallyFollowPlayhead(mode)
+        && playbackPlayheadBeat_.has_value()) {
+        const auto visible = core::timelineVisibleRange(timelineViewportState_);
+        const auto thresholdBeat = visible.startBeat
+            + (timelineViewportState_.visibleBeats * 0.80);
+        if (playbackPlayheadBeat_.value() >= thresholdBeat) {
+            playheadFollowActive_ = true;
+        }
+
+        if (playheadFollowActive_) {
+            const auto followed = core::followTimelinePlayhead(
+                timelineViewportState_,
+                playbackPlayheadBeat_.value(),
+                estimateHorizontalContentEndBeat(),
+                0.0,
+                0.72);
+            if (std::abs(followed.startBeat - timelineViewportState_.startBeat) > 1.0e-9) {
+                timelineViewportState_ = followed;
+                updateHorizontalViewportViews();
+            }
+        }
+    } else if (previousTransportMode_ == audio::TransportMode::playing
+               && mode == audio::TransportMode::stopped
+               && midiAuditionEngine_.totalDurationSeconds() > 0.0
+               && midiAuditionEngine_.playheadSeconds()
+                   >= midiAuditionEngine_.totalDurationSeconds() - 1.0e-6) {
+        statusLabel_.setText("Selection playback finished.", juce::dontSendNotification);
     }
 
-    transportWasPlaying_ = playing;
+    if (!audio::shouldAutomaticallyFollowPlayhead(mode)) {
+        playheadFollowActive_ = false;
+    }
+
+    previousTransportMode_ = mode;
+    updateTransportDisplays();
     updateTransportControlState();
 }
 
@@ -2542,7 +2999,9 @@ void MainComponent::runHermesDrumsMakeMidi()
         return;
     }
 
-    const auto sourceFile = juce::File(context->audioSourcePath);
+    const auto sourceFile = juce::File(juce::String::fromUTF8(
+        context->audioSourcePath.data(),
+        static_cast<int>(context->audioSourcePath.size())));
     if (!sourceFile.existsAsFile()) {
         const auto message = "Selected WAV source file does not exist: " + context->audioSourcePath;
         app::AppLogger::log("Validation failure: " + juce::String(message));
@@ -2763,7 +3222,7 @@ void MainComponent::runUndo()
     if (projectHistory_.canUndo()) {
         const auto label = projectHistory_.undoLabel();
         if (!projectHistory_.undo()) {
-            statusLabel_.setText("Undo failed: MIDI edit could not be restored.", juce::dontSendNotification);
+            statusLabel_.setText("Undo failed: project edit could not be restored.", juce::dontSendNotification);
             return;
         }
 
@@ -2812,7 +3271,7 @@ void MainComponent::runRedo()
     if (projectHistory_.canRedo()) {
         const auto label = projectHistory_.redoLabel();
         if (!projectHistory_.redo()) {
-            statusLabel_.setText("Redo failed: MIDI edit could not be restored.", juce::dontSendNotification);
+            statusLabel_.setText("Redo failed: project edit could not be restored.", juce::dontSendNotification);
             return;
         }
 
@@ -3024,7 +3483,7 @@ void MainComponent::showAbout()
     juce::AlertWindow::showMessageBox(
         juce::AlertWindow::InfoIcon,
         "About DAWHermes",
-        "DAWHermes Milestone 3.3\nNative Windows MIDI editing and audition workbench with embedded Hermes tools.");
+        "DAWHermes Milestone 3.4\nNative Windows MIDI editing and synchronized audio-stem audition with embedded Hermes tools.");
 }
 
 }  // namespace dawhermes::ui

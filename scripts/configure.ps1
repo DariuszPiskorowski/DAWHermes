@@ -1,10 +1,24 @@
+[CmdletBinding()]
+param(
+    [string]$BuildDirectory = '',
+
+    [ValidateSet('ON', 'OFF')]
+    [string]$EnableLtcg = 'OFF'
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 
 $repoRoot = Get-RepoRoot -ScriptRoot $PSScriptRoot
-$buildDir = Get-BuildDir -RepoRoot $repoRoot
+$buildDir = if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
+    Get-BuildDir -RepoRoot $repoRoot
+} elseif ([System.IO.Path]::IsPathRooted($BuildDirectory)) {
+    [System.IO.Path]::GetFullPath($BuildDirectory)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $BuildDirectory))
+}
 
 $cmake = Get-CMakePath -MinimumVersion ([version]'3.22.0')
 $msvc = Get-MsvcInfo
@@ -19,6 +33,22 @@ if (-not (Test-Path $buildDir)) {
     New-Item -ItemType Directory -Path $buildDir | Out-Null
 }
 
-& $cmake.Path -S $repoRoot -B $buildDir -G $msvc.Generator -A x64
+$configureArguments = @(
+    '-S',
+    $repoRoot,
+    '-B',
+    $buildDir,
+    '-G',
+    $msvc.Generator,
+    '-A',
+    'x64'
+)
+
+$configureArguments += "-DDAWHERMES_ENABLE_LTCG=$EnableLtcg"
+
+& $cmake.Path @configureArguments
+if ($LASTEXITCODE -ne 0) {
+    throw "CMake configuration failed with exit code $LASTEXITCODE"
+}
 
 Write-Host 'Configuration completed successfully.'

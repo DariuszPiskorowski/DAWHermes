@@ -12,6 +12,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include "core/MainLayoutGeometry.h"
+#include "core/AudioTrackImport.h"
 #include "core/MidiComparisonModel.h"
 #include "core/MidiNoteEditing.h"
 #include "core/MidiNoteSelectionState.h"
@@ -33,8 +35,13 @@
 #include "core/TimelineGeometry.h"
 #include "core/TimelineViewport.h"
 #include "core/Track.h"
+#include "core/Utf8Path.h"
 #include "audio/MidiAuditionEngine.h"
+#include "audio/AudioTrackImporter.h"
 #include "audio/MidiPlaybackModel.h"
+#include "audio/SelectionPlaybackModel.h"
+#include "audio/TransportModel.h"
+#include "audio/WavBpmDetector.h"
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/ComposerAssistantConnector.h"
 #include "hermes/EmbeddedHermesEngine.h"
@@ -46,6 +53,7 @@
 #include "hermes/StubHermesEngine.h"
 #include "midi/MidiTrackExporter.h"
 #include "ui/MidiImportParser.h"
+#include "ui/CommandLabels.h"
 
 namespace {
 
@@ -161,6 +169,142 @@ void writeLe32(std::ofstream& out, std::uint32_t value)
         static_cast<char>((value >> 24) & 0xff)
     };
     out.write(bytes, sizeof(bytes));
+}
+
+std::filesystem::path createSyntheticPlaybackWavFixture(
+    const std::string& stem,
+    int sampleRate,
+    int channelCount,
+    int frameCount)
+{
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path()
+        / ("dawhermes-playback-" + stem + "-" + std::to_string(unique) + ".wav");
+    std::vector<std::int16_t> samples(
+        static_cast<std::size_t>(frameCount * channelCount),
+        0);
+    for (int frame = 0; frame < frameCount; ++frame) {
+        for (int channel = 0; channel < channelCount; ++channel) {
+            const auto value = ((frame + channel) % 32) * 512 - 8192;
+            samples[static_cast<std::size_t>((frame * channelCount) + channel)]
+                = static_cast<std::int16_t>(value);
+        }
+    }
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const int bitsPerSample = 16;
+    const std::uint32_t dataSize = static_cast<std::uint32_t>(
+        samples.size() * sizeof(std::int16_t));
+    out.write("RIFF", 4);
+    writeLe32(out, 36u + dataSize);
+    out.write("WAVE", 4);
+    out.write("fmt ", 4);
+    writeLe32(out, 16u);
+    writeLe16(out, 1u);
+    writeLe16(out, static_cast<std::uint16_t>(channelCount));
+    writeLe32(out, static_cast<std::uint32_t>(sampleRate));
+    writeLe32(
+        out,
+        static_cast<std::uint32_t>(
+            sampleRate * channelCount * bitsPerSample / 8));
+    writeLe16(
+        out,
+        static_cast<std::uint16_t>(channelCount * bitsPerSample / 8));
+    writeLe16(out, static_cast<std::uint16_t>(bitsPerSample));
+    out.write("data", 4);
+    writeLe32(out, dataSize);
+    out.write(
+        reinterpret_cast<const char*>(samples.data()),
+        static_cast<std::streamsize>(dataSize));
+    out.close();
+    return path;
+}
+
+std::filesystem::path createSyntheticClickTrackWavFixture(
+    const std::string& stem,
+    double bpm,
+    int sampleRate,
+    int channelCount,
+    double durationSeconds,
+    int clickAmplitude = 26000)
+{
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path()
+        / ("dawhermes-click-" + stem + "-" + std::to_string(unique) + ".wav");
+    const auto frameCount = static_cast<int>(
+        std::llround(durationSeconds * static_cast<double>(sampleRate)));
+    std::vector<std::int16_t> samples(
+        static_cast<std::size_t>(frameCount * channelCount),
+        0);
+
+    if (bpm > 0.0 && clickAmplitude > 0) {
+        const auto framesPerBeat = (60.0 / bpm) * static_cast<double>(sampleRate);
+        const auto clickFrames = std::max(1, static_cast<int>(0.018 * sampleRate));
+        for (double beatFrame = 0.0;
+             beatFrame < static_cast<double>(frameCount);
+             beatFrame += framesPerBeat) {
+            const auto start = static_cast<int>(std::llround(beatFrame));
+            for (int offset = 0; offset < clickFrames && start + offset < frameCount; ++offset) {
+                const auto seconds = static_cast<double>(offset)
+                    / static_cast<double>(sampleRate);
+                const auto envelope = std::exp(-seconds * 95.0);
+                const auto wave = std::sin(
+                    2.0 * 3.14159265358979323846 * 1800.0 * seconds);
+                const auto value = static_cast<int>(
+                    envelope * wave * static_cast<double>(clickAmplitude));
+                for (int channel = 0; channel < channelCount; ++channel) {
+                    const auto channelScale = channel == 0 ? 1.0 : 0.82;
+                    samples[static_cast<std::size_t>(
+                        ((start + offset) * channelCount) + channel)]
+                        = static_cast<std::int16_t>(std::clamp(
+                            static_cast<int>(value * channelScale),
+                            -32767,
+                            32767));
+                }
+            }
+        }
+    } else if (clickAmplitude > 0) {
+        for (int frame = 0; frame < frameCount; ++frame) {
+            const auto value = static_cast<std::int16_t>(
+                std::sin(
+                    2.0 * 3.14159265358979323846
+                    * 311.0
+                    * static_cast<double>(frame)
+                    / static_cast<double>(sampleRate))
+                * static_cast<double>(clickAmplitude));
+            for (int channel = 0; channel < channelCount; ++channel) {
+                samples[static_cast<std::size_t>((frame * channelCount) + channel)] = value;
+            }
+        }
+    }
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const int bitsPerSample = 16;
+    const std::uint32_t dataSize = static_cast<std::uint32_t>(
+        samples.size() * sizeof(std::int16_t));
+    out.write("RIFF", 4);
+    writeLe32(out, 36u + dataSize);
+    out.write("WAVE", 4);
+    out.write("fmt ", 4);
+    writeLe32(out, 16u);
+    writeLe16(out, 1u);
+    writeLe16(out, static_cast<std::uint16_t>(channelCount));
+    writeLe32(out, static_cast<std::uint32_t>(sampleRate));
+    writeLe32(
+        out,
+        static_cast<std::uint32_t>(
+            sampleRate * channelCount * bitsPerSample / 8));
+    writeLe16(
+        out,
+        static_cast<std::uint16_t>(channelCount * bitsPerSample / 8));
+    writeLe16(out, static_cast<std::uint16_t>(bitsPerSample));
+    out.write("data", 4);
+    writeLe32(out, dataSize);
+    out.write(
+        reinterpret_cast<const char*>(samples.data()),
+        static_cast<std::streamsize>(dataSize));
+    out.close();
+    return path;
 }
 
 std::filesystem::path createSyntheticDrumWavFixture(const std::string& stem)
@@ -507,6 +651,310 @@ bool testAudioSourceAssignment()
     const auto* audioTrack = project.findTrackById(audioId);
     EXPECT_TRUE(audioTrack != nullptr);
     EXPECT_EQ(audioTrack->audioSourcePath, std::string("C:/tmp/drums.wav"));
+    return true;
+}
+
+bool testDirectAudioImportCommandPolicy()
+{
+    const auto& fileMenu = dawhermes::ui::command_labels::fileMenu;
+    const auto& trackMenu = dawhermes::ui::command_labels::trackMenu;
+    EXPECT_TRUE(std::find(
+        fileMenu.begin(),
+        fileMenu.end(),
+        dawhermes::ui::command_labels::importAudioAsTrack) != fileMenu.end());
+    EXPECT_TRUE(std::find(
+        fileMenu.begin(),
+        fileMenu.end(),
+        dawhermes::ui::command_labels::importMidiAsTrack) != fileMenu.end());
+
+    constexpr std::array obsoleteAudioCommands {
+        std::string_view { "Assign Audio Source" },
+        std::string_view { "Assign WAV" },
+        std::string_view { "Assign WAV to selected audio track" },
+        std::string_view { "Choose Audio Source" },
+        std::string_view { "Replace Audio Source" },
+        std::string_view { "Add Audio Track" },
+    };
+    for (const auto obsolete : obsoleteAudioCommands) {
+        EXPECT_TRUE(std::find(fileMenu.begin(), fileMenu.end(), obsolete) == fileMenu.end());
+        EXPECT_TRUE(std::find(trackMenu.begin(), trackMenu.end(), obsolete) == trackMenu.end());
+    }
+    return true;
+}
+
+bool testSingleAudioTrackImportMetadataPlaybackAndHistory()
+{
+    const auto sourcePath = createSyntheticPlaybackWavFixture(
+        "import-single",
+        48000,
+        2,
+        96000);
+    const auto sourceBefore = readBinaryFile(sourcePath);
+    const auto preparation = dawhermes::audio::prepareAudioTrackImports(
+        { sourcePath });
+    EXPECT_EQ(preparation.validTracks.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(preparation.skippedFiles.empty());
+
+    ProjectModel project;
+    SelectionState selection;
+    dawhermes::core::ProjectHistory history;
+    auto command = std::make_unique<dawhermes::core::ImportAudioTracksCommand>(
+        project,
+        selection,
+        preparation.validTracks);
+    EXPECT_TRUE(command->redo());
+    EXPECT_EQ(command->createdTrackIds().size(), static_cast<std::size_t>(1));
+    const auto createdId = command->createdTrackIds().front();
+    history.pushExecuted(std::move(command));
+
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(selection.isSelected(createdId));
+
+    const auto* imported = project.findTrackById(createdId);
+    EXPECT_TRUE(imported != nullptr);
+    EXPECT_EQ(imported->type, TrackType::audio);
+    EXPECT_EQ(imported->name, sourcePath.stem().string());
+    EXPECT_EQ(
+        std::filesystem::path(imported->audioSourcePath).lexically_normal(),
+        std::filesystem::absolute(sourcePath).lexically_normal());
+    EXPECT_TRUE(imported->audioSourceMetadata.has_value());
+    EXPECT_TRUE(approxEqual(imported->audioSourceMetadata->sampleRate, 48000.0));
+    EXPECT_EQ(imported->audioSourceMetadata->channelCount, 2);
+    EXPECT_TRUE(approxEqual(imported->audioSourceMetadata->durationSeconds, 2.0));
+    EXPECT_EQ(
+        imported->audioSourceMetadata->frameCount,
+        static_cast<std::uint64_t>(96000));
+    EXPECT_EQ(imported->audioSourceMetadata->bitsPerSample, 16);
+    EXPECT_TRUE(std::filesystem::exists(imported->audioSourcePath));
+
+    const auto summary = dawhermes::audio::createSelectionPlaybackSummary(
+        project,
+        selection);
+    EXPECT_TRUE(summary.playable);
+    EXPECT_EQ(summary.audioTrackCount, static_cast<std::size_t>(1));
+    EXPECT_TRUE(approxEqual(summary.durationSeconds, 2.0, 0.001));
+    EXPECT_TRUE(summary.firstReadableAudioPath.has_value());
+    EXPECT_TRUE(dawhermes::audio::fingerprintWavFile(
+        summary.firstReadableAudioPath.value()).has_value());
+    EXPECT_EQ(readBinaryFile(sourcePath), sourceBefore);
+
+    EXPECT_EQ(history.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(history.undo());
+    EXPECT_TRUE(project.empty());
+    EXPECT_TRUE(!selection.hasSelection());
+    EXPECT_TRUE(history.redo());
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(project.tracks().front().audioSourceMetadata.has_value());
+    EXPECT_EQ(project.tracks().front().name, sourcePath.stem().string());
+    EXPECT_EQ(
+        std::filesystem::path(project.tracks().front().audioSourcePath).lexically_normal(),
+        std::filesystem::absolute(sourcePath).lexically_normal());
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(readBinaryFile(sourcePath), sourceBefore);
+
+    std::error_code error;
+    std::filesystem::remove(sourcePath, error);
+    return true;
+}
+
+bool testBatchAudioTrackImportSkipsInvalidAndRestoresSelection()
+{
+    const auto firstPath = createSyntheticPlaybackWavFixture(
+        "import-batch-first",
+        44100,
+        1,
+        44100);
+    const auto secondPath = createSyntheticPlaybackWavFixture(
+        "import-batch-second",
+        48000,
+        2,
+        96000);
+    const auto invalidPath = createTempWavFixture("import-batch-invalid");
+    const auto firstBefore = readBinaryFile(firstPath);
+    const auto secondBefore = readBinaryFile(secondPath);
+    const auto invalidBefore = readBinaryFile(invalidPath);
+
+    const auto preparation = dawhermes::audio::prepareAudioTrackImports(
+        { firstPath, invalidPath, secondPath });
+    EXPECT_EQ(preparation.validTracks.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(preparation.skippedFiles.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        std::filesystem::path(preparation.validTracks.at(0).sourcePath).lexically_normal(),
+        std::filesystem::absolute(firstPath).lexically_normal());
+    EXPECT_EQ(
+        std::filesystem::path(preparation.validTracks.at(1).sourcePath).lexically_normal(),
+        std::filesystem::absolute(secondPath).lexically_normal());
+
+    ProjectModel project;
+    const auto existingMidiId = project.addTrack(TrackType::midi, "Existing MIDI").id;
+    SelectionState selection;
+    selection.selectTrack(existingMidiId);
+    dawhermes::core::ProjectHistory history;
+    auto command = std::make_unique<dawhermes::core::ImportAudioTracksCommand>(
+        project,
+        selection,
+        preparation.validTracks);
+    EXPECT_TRUE(command->redo());
+    EXPECT_EQ(command->createdTrackIds().size(), static_cast<std::size_t>(2));
+    const auto importedIds = command->createdTrackIds();
+    history.pushExecuted(std::move(command));
+
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(3));
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(selection.isSelected(importedIds.at(0)));
+    EXPECT_TRUE(selection.isSelected(importedIds.at(1)));
+    EXPECT_EQ(
+        project.findTrackById(importedIds.at(0))->name,
+        firstPath.stem().string());
+    EXPECT_EQ(
+        project.findTrackById(importedIds.at(1))->name,
+        secondPath.stem().string());
+
+    const auto summary = dawhermes::audio::createSelectionPlaybackSummary(
+        project,
+        selection);
+    EXPECT_TRUE(summary.playable);
+    EXPECT_EQ(summary.audioTrackCount, static_cast<std::size_t>(2));
+    EXPECT_TRUE(approxEqual(summary.durationSeconds, 2.0, 0.001));
+    EXPECT_EQ(
+        std::filesystem::path(summary.firstReadableAudioPath.value()).lexically_normal(),
+        std::filesystem::absolute(firstPath).lexically_normal());
+
+    EXPECT_TRUE(history.undo());
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(selection.isSelected(existingMidiId));
+    EXPECT_TRUE(history.redo());
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(3));
+    EXPECT_EQ(selection.selectionCount(), static_cast<std::size_t>(2));
+    EXPECT_EQ(readBinaryFile(firstPath), firstBefore);
+    EXPECT_EQ(readBinaryFile(secondPath), secondBefore);
+    EXPECT_EQ(readBinaryFile(invalidPath), invalidBefore);
+
+    const auto invalidOnly = dawhermes::audio::prepareAudioTrackImports(
+        { invalidPath });
+    EXPECT_TRUE(invalidOnly.validTracks.empty());
+    EXPECT_EQ(invalidOnly.skippedFiles.size(), static_cast<std::size_t>(1));
+
+    std::error_code error;
+    std::filesystem::remove(firstPath, error);
+    std::filesystem::remove(secondPath, error);
+    std::filesystem::remove(invalidPath, error);
+    return true;
+}
+
+bool testUnicodeSafeAudioImportPlaybackAndHistory()
+{
+    const auto tempDirectory = createTempDirectory("unicode-audio-path");
+    const auto unicodeDirectory = tempDirectory
+        / std::filesystem::path(L"Za\u017C\u00F3\u0142\u0107-g\u0119\u015Bl\u0105");
+    std::error_code error;
+    std::filesystem::create_directories(unicodeDirectory, error);
+    EXPECT_TRUE(!error);
+
+    const auto asciiFixture = createSyntheticPlaybackWavFixture(
+        "unicode-source",
+        44100,
+        2,
+        4410);
+    const auto unicodePath = unicodeDirectory
+        / std::filesystem::path(
+            L"\u015Acie\u017Cka-\u017C\u00F3\u0142\u0107.wav");
+    std::filesystem::rename(asciiFixture, unicodePath, error);
+    EXPECT_TRUE(!error);
+    const auto sourceBefore = readBinaryFile(unicodePath);
+
+    const auto preparation = dawhermes::audio::prepareAudioTrackImports(
+        { unicodePath });
+    EXPECT_EQ(preparation.validTracks.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(preparation.skippedFiles.empty());
+    EXPECT_EQ(
+        preparation.validTracks.front().trackName,
+        dawhermes::core::pathToUtf8(unicodePath.stem()));
+    EXPECT_EQ(
+        dawhermes::core::pathFromUtf8(
+            preparation.validTracks.front().sourcePath).lexically_normal(),
+        std::filesystem::absolute(unicodePath).lexically_normal());
+
+    ProjectModel project;
+    SelectionState selection;
+    dawhermes::core::ProjectHistory history;
+    auto command = std::make_unique<dawhermes::core::ImportAudioTracksCommand>(
+        project,
+        selection,
+        preparation.validTracks);
+    EXPECT_TRUE(command->redo());
+    const auto trackId = command->createdTrackIds().front();
+    history.pushExecuted(std::move(command));
+
+    const auto* imported = project.findTrackById(trackId);
+    EXPECT_TRUE(imported != nullptr);
+    EXPECT_EQ(
+        imported->name,
+        dawhermes::core::pathToUtf8(unicodePath.stem()));
+    EXPECT_EQ(
+        dawhermes::core::pathFromUtf8(imported->audioSourcePath)
+            .lexically_normal(),
+        std::filesystem::absolute(unicodePath).lexically_normal());
+
+    std::string inspectionError;
+    const auto inspection = dawhermes::ui::inspectWavFile(
+        dawhermes::core::pathFromUtf8(imported->audioSourcePath),
+        inspectionError);
+    EXPECT_TRUE(inspection.has_value());
+    EXPECT_TRUE(inspectionError.empty());
+    EXPECT_EQ(inspection->channelCount, 2);
+
+    const auto summary = dawhermes::audio::createSelectionPlaybackSummary(
+        project,
+        selection);
+    EXPECT_TRUE(summary.playable);
+    EXPECT_EQ(summary.audioTrackCount, static_cast<std::size_t>(1));
+    const auto snapshot = dawhermes::audio::createSelectionPlaybackSnapshot(
+        project,
+        selection);
+    EXPECT_TRUE(snapshot.ok);
+    EXPECT_EQ(snapshot.snapshot.audioTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        dawhermes::core::pathFromUtf8(
+            snapshot.snapshot.audioStems.front().sourcePath)
+            .lexically_normal(),
+        std::filesystem::absolute(unicodePath).lexically_normal());
+
+    const auto fingerprint = dawhermes::audio::fingerprintWavFile(
+        dawhermes::core::pathFromUtf8(imported->audioSourcePath));
+    EXPECT_TRUE(fingerprint.has_value());
+    EXPECT_EQ(
+        dawhermes::core::pathFromUtf8(fingerprint->sourcePath)
+            .lexically_normal(),
+        std::filesystem::absolute(unicodePath).lexically_normal());
+    const auto estimate = dawhermes::audio::analyzeWavBpm(
+        dawhermes::core::pathFromUtf8(imported->audioSourcePath),
+        5.0);
+    EXPECT_TRUE(estimate.analyzedSeconds > 0.0);
+
+    dawhermes::hermes::HermesTrackContext context {
+        imported->id,
+        imported->name,
+        imported->type,
+        imported->audioSourcePath,
+    };
+    EXPECT_TRUE(
+        dawhermes::hermes::validateTrackContextForDrums(context).ok);
+    EXPECT_EQ(readBinaryFile(unicodePath), sourceBefore);
+
+    EXPECT_TRUE(history.undo());
+    EXPECT_TRUE(project.empty());
+    EXPECT_TRUE(history.redo());
+    EXPECT_EQ(project.tracks().size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        dawhermes::core::pathFromUtf8(
+            project.tracks().front().audioSourcePath)
+            .lexically_normal(),
+        std::filesystem::absolute(unicodePath).lexically_normal());
+    EXPECT_EQ(readBinaryFile(unicodePath), sourceBefore);
+
+    std::filesystem::remove_all(tempDirectory, error);
     return true;
 }
 
@@ -1908,6 +2356,1412 @@ bool testMidiPlaybackTransportCommandState()
     return true;
 }
 
+bool testSelectionPlaybackMidiAudioPolicies()
+{
+    const auto monoPath = createSyntheticPlaybackWavFixture(
+        "selection-mono",
+        44100,
+        1,
+        4410);
+    const auto stereoPath = createSyntheticPlaybackWavFixture(
+        "selection-stereo",
+        48000,
+        2,
+        4800);
+
+    ProjectModel project;
+    const auto editedMidiId = project.addTrack(TrackType::midi, "Edited MIDI").id;
+    const auto comparisonMidiId = project.addTrack(TrackType::midi, "Comparison Ghost Source").id;
+    const auto monoAudioId = project.addTrack(TrackType::audio, "Mono Stem").id;
+    const auto stereoAudioId = project.addTrack(TrackType::audio, "Stereo Stem").id;
+    const auto emptyAudioId = project.addTrack(TrackType::audio, "Empty Audio").id;
+    const auto groupId = project.addTrack(TrackType::group, "Group").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        editedMidiId,
+        { MidiNote { 62, 91, 0.0, 1.0, 1, 101 } }));
+    EXPECT_TRUE(project.replaceMidiNotes(
+        comparisonMidiId,
+        { MidiNote { 72, 100, 0.0, 1.0, 1, 201 } }));
+    EXPECT_TRUE(project.setAudioSourcePath(monoAudioId, monoPath.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(stereoAudioId, stereoPath.string()));
+
+    SelectionState selection;
+    selection.selectTrack(editedMidiId);
+    auto midiOnly = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(midiOnly.ok);
+    EXPECT_EQ(midiOnly.snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(midiOnly.snapshot.audioTrackCount(), static_cast<std::size_t>(0));
+    EXPECT_TRUE(midiOnly.snapshot.midi.has_value());
+    EXPECT_EQ(midiOnly.snapshot.midi->events.front().pitch, 62);
+
+    selection.selectTrack(monoAudioId);
+    auto audioOnly = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(audioOnly.ok);
+    EXPECT_EQ(audioOnly.snapshot.midiTrackCount(), static_cast<std::size_t>(0));
+    EXPECT_EQ(audioOnly.snapshot.audioTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(audioOnly.snapshot.audioStems.front().channels.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(approxEqual(audioOnly.snapshot.audioStems.front().sourceSampleRate, 44100.0));
+
+    selection.selectTrack(editedMidiId);
+    selection.toggleTrack(monoAudioId);
+    selection.toggleTrack(stereoAudioId);
+    selection.toggleTrack(emptyAudioId);
+    selection.toggleTrack(groupId);
+    auto combined = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(combined.ok);
+    EXPECT_EQ(combined.snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(combined.snapshot.audioTrackCount(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(combined.snapshot.midi.has_value());
+    EXPECT_EQ(combined.snapshot.midi->events.front().pitch, 62);
+    EXPECT_EQ(combined.snapshot.audioStems.at(1).channels.size(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(approxEqual(combined.snapshot.audioStems.at(1).sourceSampleRate, 48000.0));
+    EXPECT_EQ(
+        dawhermes::audio::describeSelectionPlayback(combined.snapshot),
+        std::string("Playing selection: 1 MIDI track, 2 audio tracks"));
+
+    selection.toggleTrack(comparisonMidiId);
+    auto comparisonSelection = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(comparisonSelection.ok);
+    EXPECT_EQ(comparisonSelection.snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(comparisonSelection.snapshot.midi.has_value());
+    EXPECT_EQ(comparisonSelection.snapshot.midi->events.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(comparisonSelection.snapshot.midi->events.front().pitch, 62);
+
+    std::error_code ec;
+    std::filesystem::remove(monoPath, ec);
+    std::filesystem::remove(stereoPath, ec);
+    return true;
+}
+
+bool testSelectionPlaybackWavSafetyAndTiming()
+{
+    const auto monoPath = createSyntheticPlaybackWavFixture(
+        "safety-mono",
+        44100,
+        1,
+        4410);
+    const auto sourceBytes = readBinaryFile(monoPath);
+    const auto unreadablePath = createTempWavFixture("selection-unreadable");
+    const auto unreadableBytes = readBinaryFile(unreadablePath);
+    const auto missingPath = monoPath.parent_path() / "dawhermes-definitely-missing.wav";
+
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "Edited").id;
+    const auto readableId = project.addTrack(TrackType::audio, "Readable").id;
+    const auto unreadableId = project.addTrack(TrackType::audio, "Unreadable").id;
+    const auto missingId = project.addTrack(TrackType::audio, "Missing").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        { MidiNote { 65, 87, 0.0, 2.0, 3, 999 } }));
+    EXPECT_TRUE(project.setAudioSourcePath(readableId, monoPath.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(unreadableId, unreadablePath.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(missingId, missingPath.string()));
+
+    dawhermes::core::MidiSourceMetadata metadata;
+    metadata.tempoMap = { dawhermes::core::MidiTempoEvent { 0.0, 1000000 } };
+    EXPECT_TRUE(project.setMidiSourceMetadata(midiId, metadata));
+
+    SelectionState selection;
+    selection.selectTrack(midiId);
+    selection.toggleTrack(readableId);
+    selection.toggleTrack(unreadableId);
+    selection.toggleTrack(missingId);
+
+    dawhermes::core::ProjectHistory history;
+    const auto historySize = history.size();
+    const auto result = dawhermes::audio::createSelectionPlaybackSnapshot(project, selection);
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(result.snapshot.audioTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(result.skippedAudioTracks.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(result.snapshot.audioStems.front().sourcePath, monoPath.string());
+    EXPECT_TRUE(approxEqual(result.snapshot.audioStems.front().durationSeconds(), 0.1));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::audioSourceFramePosition(0.05, 44100.0),
+        2205.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::audioSourceFramePosition(0.05, 48000.0),
+        2400.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::audioSourceFramePosition(0.0, 44100.0),
+        0.0));
+    EXPECT_TRUE(result.snapshot.midi.has_value());
+    EXPECT_TRUE(approxEqual(result.snapshot.midi->events.front().timeSeconds, 0.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionPlayheadBeat(0.5, result.snapshot),
+        0.5));
+    EXPECT_EQ(history.size(), historySize);
+    EXPECT_EQ(readBinaryFile(monoPath), sourceBytes);
+    EXPECT_EQ(readBinaryFile(unreadablePath), unreadableBytes);
+    EXPECT_EQ(project.findTrackById(readableId)->audioSourcePath, monoPath.string());
+
+    SelectionState invalidOnly;
+    invalidOnly.selectTrack(unreadableId);
+    invalidOnly.toggleTrack(missingId);
+    const auto invalidResult = dawhermes::audio::createSelectionPlaybackSnapshot(
+        project,
+        invalidOnly);
+    EXPECT_TRUE(!invalidResult.ok);
+    EXPECT_EQ(invalidResult.skippedAudioTracks.size(), static_cast<std::size_t>(2));
+    EXPECT_TRUE(
+        invalidResult.message.find("Skipped unreadable audio track:") == 0);
+
+    std::error_code ec;
+    std::filesystem::remove(monoPath, ec);
+    std::filesystem::remove(unreadablePath, ec);
+    return true;
+}
+
+bool testSelectionPlaybackDecodedAudioBudget()
+{
+    EXPECT_EQ(
+        dawhermes::audio::decodedWavBytes(100, 1).value(),
+        static_cast<std::uint64_t>(400));
+    EXPECT_EQ(
+        dawhermes::audio::decodedWavBytes(100, 2).value(),
+        static_cast<std::uint64_t>(800));
+    EXPECT_TRUE(!dawhermes::audio::decodedWavBytes(100, 0).has_value());
+    EXPECT_TRUE(!dawhermes::audio::decodedWavBytes(100, 3).has_value());
+    EXPECT_TRUE(!dawhermes::audio::decodedWavBytes(
+        std::numeric_limits<std::uint64_t>::max(),
+        2).has_value());
+    static_assert(
+        dawhermes::audio::kMaximumDecodedWavBytes
+            ==
+        static_cast<std::uint64_t>(512ULL * 1024ULL * 1024ULL));
+    static_assert(dawhermes::audio::kWavDecodeBlockFrames == 4096);
+
+    const auto oversizedPath = createSyntheticPlaybackWavFixture(
+        "budget-oversized",
+        44100,
+        2,
+        100);
+    const auto normalPath = createSyntheticPlaybackWavFixture(
+        "budget-normal",
+        44100,
+        1,
+        100);
+    const auto smallerPath = createSyntheticPlaybackWavFixture(
+        "budget-smaller",
+        44100,
+        1,
+        50);
+    const auto oversizedBefore = readBinaryFile(oversizedPath);
+    const auto normalBefore = readBinaryFile(normalPath);
+    const auto smallerBefore = readBinaryFile(smallerPath);
+
+    ProjectModel project;
+    const auto oversizedId =
+        project.addTrack(TrackType::audio, "Oversized").id;
+    const auto normalId = project.addTrack(TrackType::audio, "Normal").id;
+    const auto smallerId = project.addTrack(TrackType::audio, "Smaller").id;
+    EXPECT_TRUE(project.setAudioSourcePath(
+        oversizedId,
+        dawhermes::core::pathToUtf8(oversizedPath)));
+    EXPECT_TRUE(project.setAudioSourcePath(
+        normalId,
+        dawhermes::core::pathToUtf8(normalPath)));
+    EXPECT_TRUE(project.setAudioSourcePath(
+        smallerId,
+        dawhermes::core::pathToUtf8(smallerPath)));
+
+    SelectionState selection;
+    selection.selectTrack(oversizedId);
+    selection.toggleTrack(normalId);
+    selection.toggleTrack(smallerId);
+    dawhermes::audio::SelectionPlaybackOptions options;
+    options.maximumDecodedAudioBytes = 600;
+    const auto result = dawhermes::audio::createSelectionPlaybackSnapshot(
+        project,
+        selection,
+        options);
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.snapshot.audioTrackCount(), static_cast<std::size_t>(2));
+    EXPECT_EQ(result.skippedAudioTracks.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        result.skippedAudioTracks.front().sourceTrackId,
+        oversizedId);
+    EXPECT_TRUE(
+        result.skippedAudioTracks.front().reason.find(
+            "audition memory limit") != std::string::npos);
+    EXPECT_EQ(
+        result.estimatedSelectedAudioBytes,
+        static_cast<std::uint64_t>(1400));
+    EXPECT_EQ(result.decodedAudioBytes, static_cast<std::uint64_t>(600));
+    EXPECT_TRUE(!result.selectedAudioByteEstimateOverflow);
+    EXPECT_EQ(
+        result.snapshot.audioStems.front().channels.front().size(),
+        static_cast<std::size_t>(100));
+    EXPECT_EQ(
+        result.snapshot.audioStems.back().channels.front().size(),
+        static_cast<std::size_t>(50));
+
+    options.maximumDecodedAudioBytes = 500;
+    selection.selectTrack(normalId);
+    selection.toggleTrack(smallerId);
+    const auto aggregateExceeded =
+        dawhermes::audio::createSelectionPlaybackSnapshot(
+            project,
+            selection,
+            options);
+    EXPECT_TRUE(aggregateExceeded.ok);
+    EXPECT_EQ(
+        aggregateExceeded.snapshot.audioTrackCount(),
+        static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        aggregateExceeded.skippedAudioTracks.size(),
+        static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        aggregateExceeded.skippedAudioTracks.front().sourceTrackId,
+        smallerId);
+
+    options.maximumDecodedAudioBytes = 799;
+    selection.selectTrack(oversizedId);
+    const auto onlyExceeded =
+        dawhermes::audio::createSelectionPlaybackSnapshot(
+            project,
+            selection,
+            options);
+    EXPECT_TRUE(!onlyExceeded.ok);
+    EXPECT_EQ(onlyExceeded.snapshot.audioTrackCount(), static_cast<std::size_t>(0));
+    EXPECT_TRUE(
+        onlyExceeded.message.find("audition memory limit")
+        != std::string::npos);
+
+    EXPECT_EQ(readBinaryFile(oversizedPath), oversizedBefore);
+    EXPECT_EQ(readBinaryFile(normalPath), normalBefore);
+    EXPECT_EQ(readBinaryFile(smallerPath), smallerBefore);
+
+    std::error_code error;
+    std::filesystem::remove(oversizedPath, error);
+    std::filesystem::remove(normalPath, error);
+    std::filesystem::remove(smallerPath, error);
+    return true;
+}
+
+bool testSelectionPlaybackTransportAndStopPanicState()
+{
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "MIDI").id;
+    const auto audioId = project.addTrack(TrackType::audio, "Audio").id;
+    const auto emptyMidiId = project.addTrack(TrackType::midi, "Empty MIDI").id;
+    const auto groupId = project.addTrack(TrackType::group, "Group").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        { MidiNote { 60, 100, 0.0, 1.0, 1, 1 } }));
+    EXPECT_TRUE(project.setAudioSourcePath(audioId, "assigned.wav"));
+
+    SelectionState selection;
+    EXPECT_TRUE(!dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        dawhermes::audio::TransportMode::stopped,
+        0.0).playEnabled);
+    selection.selectTrack(emptyMidiId);
+    selection.toggleTrack(groupId);
+    EXPECT_TRUE(!dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        dawhermes::audio::TransportMode::stopped,
+        0.0).playEnabled);
+    selection.selectTrack(midiId);
+    auto ready = dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        dawhermes::audio::TransportMode::stopped,
+        0.5);
+    EXPECT_TRUE(ready.playEnabled);
+    EXPECT_TRUE(!ready.stopEnabled);
+    selection.selectTrack(audioId);
+    ready = dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        dawhermes::audio::TransportMode::stopped,
+        2.0);
+    EXPECT_TRUE(ready.playEnabled);
+    const auto playing = dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        dawhermes::audio::TransportMode::playing,
+        2.0);
+    EXPECT_TRUE(!playing.playEnabled);
+    EXPECT_TRUE(playing.pauseEnabled);
+    EXPECT_TRUE(playing.stopEnabled);
+    EXPECT_TRUE(playing.rewindEnabled);
+    EXPECT_TRUE(playing.fastForwardEnabled);
+    EXPECT_TRUE(playing.panicEnabled);
+
+    const auto paused = dawhermes::audio::selectionTransportCommandState(
+        project,
+        selection,
+        dawhermes::audio::TransportMode::paused,
+        2.0);
+    EXPECT_TRUE(paused.playEnabled);
+    EXPECT_TRUE(!paused.pauseEnabled);
+    EXPECT_TRUE(paused.stopEnabled);
+
+    auto midiSnapshot = dawhermes::audio::createMidiPlaybackSnapshot(
+        *project.findTrackById(midiId));
+    EXPECT_TRUE(midiSnapshot.ok);
+    dawhermes::audio::SelectionPlaybackSnapshot snapshot;
+    snapshot.durationSeconds = midiSnapshot.snapshot.durationSeconds;
+    snapshot.playheadTempoMap = midiSnapshot.snapshot.tempoMap;
+    snapshot.midi = std::move(midiSnapshot.snapshot);
+    dawhermes::audio::AudioStemPlaybackSnapshot stem;
+    stem.sourceTrackId = audioId;
+    stem.sourceTrackName = "Audio";
+    stem.sourcePath = "assigned.wav";
+    stem.sourceSampleRate = 44100.0;
+    stem.frameCount = 2;
+    stem.channels = { { 0.25f, -0.25f } };
+    snapshot.audioStems.push_back(std::move(stem));
+    EXPECT_EQ(snapshot.midiTrackCount(), static_cast<std::size_t>(1));
+    EXPECT_EQ(snapshot.audioTrackCount(), static_cast<std::size_t>(1));
+
+    dawhermes::audio::SharedTransportState state;
+    state.prepare(
+        std::make_shared<const dawhermes::audio::SelectionPlaybackSnapshot>(
+            snapshot),
+        0.0);
+    state.play();
+    EXPECT_TRUE(state.isPlaying());
+    EXPECT_TRUE(state.isPlayheadVisible());
+    EXPECT_TRUE(state.hasPreparedPlayback());
+    EXPECT_TRUE(state.snapshot()->midi.has_value());
+    EXPECT_EQ(state.snapshot()->audioStems.size(), static_cast<std::size_t>(1));
+    state.updatePositionFromAudio(0.25);
+    state.pause();
+    EXPECT_TRUE(state.isPaused());
+    EXPECT_TRUE(state.isPlayheadVisible());
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.25));
+    state.seek(0.40);
+    EXPECT_TRUE(state.isPaused());
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.40));
+    state.play();
+    EXPECT_TRUE(state.isPlaying());
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.40));
+    state.stop();
+    EXPECT_TRUE(!state.isPlaying());
+    EXPECT_TRUE(state.hasPreparedPlayback());
+    EXPECT_TRUE(state.snapshot() != nullptr);
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+    EXPECT_TRUE(!state.isPlayheadVisible());
+    EXPECT_EQ(
+        dawhermes::audio::formatTransportCounter(
+            state.currentSeconds(),
+            state.totalSeconds()),
+        std::string("00:00 / 00:01"));
+
+    state.prepare(
+        std::make_shared<const dawhermes::audio::SelectionPlaybackSnapshot>(
+            std::move(snapshot)),
+        0.0);
+    state.play();
+    EXPECT_TRUE(state.isPlaying());
+    state.panic();
+    EXPECT_TRUE(!state.isPlaying());
+    EXPECT_TRUE(!state.hasPreparedPlayback());
+    EXPECT_TRUE(!state.isPlayheadVisible());
+    return true;
+}
+
+bool testStoppedPlayableSelectionIdentityAndSeekPreservation()
+{
+    dawhermes::audio::SharedTransportState state;
+    state.setPreviewDuration(30.0, 1);
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+    EXPECT_TRUE(!state.isPlayheadVisible());
+
+    state.seek(10.0);
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 10.0));
+    EXPECT_TRUE(state.isPlayheadVisible());
+
+    state.setPreviewDuration(40.0, 1);
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 10.0));
+    EXPECT_TRUE(state.isPlayheadVisible());
+
+    state.complete();
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 40.0));
+    EXPECT_TRUE(state.isPlayheadVisible());
+
+    state.setPreviewDuration(60.0, 2);
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+    EXPECT_TRUE(!state.isPlayheadVisible());
+
+    state.seek(5.0);
+    state.setPreviewDuration(20.0, 2);
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 5.0));
+    EXPECT_TRUE(state.isPlayheadVisible());
+
+    state.setPreviewDuration(3.0, 2);
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 3.0));
+    EXPECT_TRUE(state.isPlayheadVisible());
+    return true;
+}
+
+bool testStoppedTransportResynchronizesCurrentSelection()
+{
+    const auto makeAudioSnapshot = [](
+                                       double durationSeconds,
+                                       double bpm,
+                                       std::uint64_t sourceTrackId) {
+        dawhermes::audio::SelectionPlaybackSnapshot snapshot;
+        snapshot.durationSeconds = durationSeconds;
+        snapshot.playheadTempoMap = {
+            dawhermes::core::MidiTempoEvent {
+                0.0,
+                static_cast<int>(std::llround(60000000.0 / bpm)),
+            },
+        };
+        dawhermes::audio::AudioStemPlaybackSnapshot stem;
+        stem.sourceTrackId = sourceTrackId;
+        stem.sourceTrackName = "Controlled stem";
+        stem.sourcePath = "controlled.wav";
+        stem.sourceSampleRate = 1.0;
+        stem.frameCount = static_cast<std::uint64_t>(
+            std::ceil(durationSeconds));
+        stem.channels = {
+            std::vector<float>(
+                static_cast<std::size_t>(stem.frameCount),
+                0.25f),
+        };
+        snapshot.audioStems.push_back(std::move(stem));
+        return snapshot;
+    };
+
+    dawhermes::audio::SelectionPlaybackSummary summaryB;
+    summaryB.playable = true;
+    summaryB.audioTrackCount = 1;
+    summaryB.durationSeconds = 7.0;
+    summaryB.tempoSource = dawhermes::audio::PlaybackTempoSource::detectedWav;
+    summaryB.tempoMap = {
+        dawhermes::core::MidiTempoEvent {
+            0.0,
+            static_cast<int>(std::llround(60000000.0 / 90.0)),
+        },
+    };
+    summaryB.identity.readableAudioTrackIds = { 202 };
+
+    for (const auto pauseBeforeSelectionChange : { false, true }) {
+        dawhermes::audio::SharedTransportState state;
+        dawhermes::core::TimelineViewportState viewport;
+        viewport.startBeat = 42.0;
+        viewport.visibleBeats = 16.0;
+        const auto viewportBeforeStop = viewport;
+
+        state.setPreviewDuration(20.0, 1);
+        auto snapshotA = makeAudioSnapshot(20.0, 120.0, 101);
+        state.prepare(
+            std::make_shared<const dawhermes::audio::SelectionPlaybackSnapshot>(
+                std::move(snapshotA)),
+            0.0);
+        state.play();
+        state.updatePositionFromAudio(12.0);
+        if (pauseBeforeSelectionChange) {
+            state.pause();
+            EXPECT_TRUE(state.isPaused());
+        } else {
+            EXPECT_TRUE(state.isPlaying());
+        }
+
+        // Selection B is already summarized, but immutable playback A remains
+        // authoritative until Stop.
+        EXPECT_TRUE(state.snapshot() != nullptr);
+        EXPECT_TRUE(approxEqual(state.totalSeconds(), 20.0));
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 12.0));
+
+        state.stop();
+        dawhermes::audio::synchronizeStoppedTransportPreview(
+            state,
+            summaryB.durationSeconds,
+            2);
+
+        EXPECT_EQ(state.mode(), dawhermes::audio::TransportMode::stopped);
+        EXPECT_TRUE(!state.hasPreparedPlayback());
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+        EXPECT_TRUE(approxEqual(state.totalSeconds(), summaryB.durationSeconds));
+        EXPECT_TRUE(!state.isPlayheadVisible());
+        EXPECT_EQ(
+            dawhermes::audio::formatTransportCounter(
+                state.currentSeconds(),
+                state.totalSeconds()),
+            std::string("00:00 / 00:07"));
+        EXPECT_TRUE(approxEqual(
+            dawhermes::audio::selectionSummaryBpm(
+                state.currentSeconds(),
+                summaryB),
+            90.0,
+            0.01));
+        EXPECT_TRUE(approxEqual(viewport.startBeat, viewportBeforeStop.startBeat));
+        EXPECT_TRUE(approxEqual(
+            viewport.visibleBeats,
+            viewportBeforeStop.visibleBeats));
+
+        auto snapshotB = makeAudioSnapshot(7.0, 90.0, 202);
+        state.prepare(
+            std::make_shared<const dawhermes::audio::SelectionPlaybackSnapshot>(
+                std::move(snapshotB)),
+            state.currentSeconds());
+        state.play();
+        EXPECT_TRUE(state.isPlaying());
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+        EXPECT_TRUE(approxEqual(
+            dawhermes::audio::selectionPlaybackBpm(
+                state.currentSeconds(),
+                *state.snapshot()),
+            90.0,
+            0.01));
+
+        state.stop();
+        dawhermes::audio::synchronizeStoppedTransportPreview(
+            state,
+            summaryB.durationSeconds,
+            2);
+        state.seek(100.0);
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 7.0));
+        state.seek(-100.0);
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+
+        state.panic();
+        dawhermes::audio::synchronizeStoppedTransportPreview(
+            state,
+            summaryB.durationSeconds,
+            2);
+        EXPECT_TRUE(!state.hasPreparedPlayback());
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+        EXPECT_TRUE(approxEqual(state.totalSeconds(), 7.0));
+        EXPECT_TRUE(!state.isPlayheadVisible());
+    }
+    return true;
+}
+
+bool testTransportPauseResumeSeekAndCounter()
+{
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "Resume MIDI").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        { MidiNote { 60, 100, 0.0, 4.0, 1, 1 } }));
+    const auto midi = dawhermes::audio::createMidiPlaybackSnapshot(
+        *project.findTrackById(midiId));
+    EXPECT_TRUE(midi.ok);
+
+    dawhermes::audio::SelectionPlaybackSnapshot snapshot;
+    snapshot.midi = midi.snapshot;
+    snapshot.playheadTempoMap = midi.snapshot.tempoMap;
+    snapshot.durationSeconds = 30.0;
+    dawhermes::audio::AudioStemPlaybackSnapshot stem;
+    stem.sourceSampleRate = 1.0;
+    stem.frameCount = 30;
+    stem.channels = { std::vector<float>(30, 0.25f) };
+    snapshot.audioStems.push_back(std::move(stem));
+
+    dawhermes::core::SelectionState trackSelection;
+    trackSelection.selectTrack(midiId);
+    dawhermes::core::MidiNoteSelectionState noteSelection;
+    noteSelection.selectSingle(midiId, project.findTrackById(midiId)->midiNotes.front().id);
+    const auto trackIdsBefore = trackSelection.selectedTrackIds();
+    const auto noteIdsBefore = noteSelection.selectedNoteIds();
+    dawhermes::core::ProjectHistory history;
+    const auto historySize = history.size();
+
+    dawhermes::audio::SharedTransportState state;
+    state.prepare(
+        std::make_shared<const dawhermes::audio::SelectionPlaybackSnapshot>(
+            snapshot),
+        0.0);
+    state.play();
+    state.updatePositionFromAudio(12.25);
+    state.pause();
+    const auto pausedPosition = state.currentSeconds();
+    state.updatePositionFromAudio(18.0);
+    EXPECT_TRUE(state.isPaused());
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), pausedPosition));
+
+    const auto resumeAtPause = dawhermes::audio::createMidiResumeState(
+        midi.snapshot,
+        0.75);
+    EXPECT_EQ(resumeAtPause.activeNoteOns.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(resumeAtPause.activeNoteOns.front().pitch, 60);
+
+    state.seek(dawhermes::audio::seekTransportSeconds(
+        state.currentSeconds(),
+        dawhermes::audio::kTransportSeekSeconds,
+        state.totalSeconds()));
+    EXPECT_TRUE(state.isPaused());
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 17.25));
+    state.play();
+    EXPECT_TRUE(state.isPlaying());
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 17.25));
+
+    state.seek(dawhermes::audio::seekTransportSeconds(
+        state.currentSeconds(),
+        dawhermes::audio::kTransportSeekSeconds,
+        state.totalSeconds()));
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 22.25));
+    state.seek(dawhermes::audio::seekTransportSeconds(
+        state.currentSeconds(),
+        100.0,
+        state.totalSeconds()));
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 30.0));
+    state.seek(dawhermes::audio::seekTransportSeconds(
+        state.currentSeconds(),
+        -45.0,
+        state.totalSeconds()));
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+    state.complete();
+    EXPECT_EQ(state.mode(), dawhermes::audio::TransportMode::stopped);
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), state.totalSeconds()));
+    EXPECT_TRUE(state.isPlayheadVisible());
+    state.stop();
+    EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+    EXPECT_TRUE(!state.isPlayheadVisible());
+
+    EXPECT_EQ(
+        dawhermes::audio::formatTransportCounter(42.0, 197.2),
+        std::string("00:42 / 03:18"));
+    EXPECT_EQ(
+        dawhermes::audio::formatTransportCounter(-10.0, 90.0),
+        std::string("00:00 / 01:30"));
+    EXPECT_EQ(
+        dawhermes::audio::formatTransportCounter(999.0, 90.0),
+        std::string("01:30 / 01:30"));
+    EXPECT_EQ(
+        dawhermes::audio::formatTransportCounter(3723.0, 3723.0),
+        std::string("1:02:03 / 1:02:03"));
+    EXPECT_EQ(
+        dawhermes::audio::formatTransportCounter(0.0, 0.0),
+        std::string("00:00 / 00:00"));
+    EXPECT_TRUE(approxEqual(dawhermes::audio::kTransportSeekSeconds, 5.0));
+    EXPECT_EQ(history.size(), historySize);
+    EXPECT_EQ(trackSelection.selectedTrackIds(), trackIdsBefore);
+    EXPECT_EQ(noteSelection.selectedNoteIds(), noteIdsBefore);
+    return true;
+}
+
+bool testPlaybackTempoSourcePriorityAndDuration()
+{
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "Tempo MIDI").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        { MidiNote { 64, 100, 0.0, 4.0, 1, 1 } }));
+    dawhermes::core::MidiSourceMetadata metadata;
+    metadata.containsExplicitTempoEvents = true;
+    metadata.tempoMap = {
+        dawhermes::core::MidiTempoEvent { 0.0, 500000 },
+        dawhermes::core::MidiTempoEvent { 2.0, 400000 },
+    };
+    EXPECT_TRUE(project.setMidiSourceMetadata(midiId, metadata));
+
+    SelectionState selection;
+    selection.selectTrack(midiId);
+    dawhermes::audio::SelectionPlaybackOptions detectedOptions;
+    detectedOptions.detectedWavBpm = 90.0;
+    const auto explicitResult = dawhermes::audio::createSelectionPlaybackSnapshot(
+        project,
+        selection,
+        detectedOptions);
+    EXPECT_TRUE(explicitResult.ok);
+    EXPECT_EQ(
+        explicitResult.snapshot.tempoSource,
+        dawhermes::audio::PlaybackTempoSource::explicitMidi);
+    EXPECT_TRUE(approxEqual(explicitResult.snapshot.durationSeconds, 1.8));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionPlaybackBpm(0.9, explicitResult.snapshot),
+        120.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionPlaybackBpm(1.1, explicitResult.snapshot),
+        150.0));
+    const auto explicitSummary =
+        dawhermes::audio::createSelectionPlaybackSummary(
+            project,
+            selection,
+            detectedOptions);
+    EXPECT_EQ(
+        explicitSummary.tempoSource,
+        dawhermes::audio::PlaybackTempoSource::explicitMidi);
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionSummaryBpm(0.9, explicitSummary),
+        120.0));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionSummaryBpm(1.1, explicitSummary),
+        150.0));
+
+    dawhermes::audio::SharedTransportState stoppedTempoState;
+    stoppedTempoState.setPreviewDuration(
+        explicitSummary.durationSeconds,
+        1);
+    stoppedTempoState.seek(1.1);
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionSummaryBpm(
+            stoppedTempoState.currentSeconds(),
+            explicitSummary),
+        150.0));
+    stoppedTempoState.stop();
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionSummaryBpm(
+            stoppedTempoState.currentSeconds(),
+            explicitSummary),
+        120.0));
+    stoppedTempoState.complete();
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionSummaryBpm(
+            stoppedTempoState.currentSeconds(),
+            explicitSummary),
+        150.0));
+
+    metadata.containsExplicitTempoEvents = true;
+    metadata.tempoMap = {
+        dawhermes::core::MidiTempoEvent {
+            0.0,
+            static_cast<int>(std::llround(60000000.0 / 128.5)),
+        },
+    };
+    EXPECT_TRUE(project.setMidiSourceMetadata(midiId, metadata));
+    const auto fractional = dawhermes::audio::createSelectionPlaybackSnapshot(
+        project,
+        selection,
+        detectedOptions);
+    EXPECT_TRUE(fractional.ok);
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionPlaybackBpm(0.0, fractional.snapshot),
+        128.5,
+        0.01));
+    const auto fractionalSummary =
+        dawhermes::audio::createSelectionPlaybackSummary(
+            project,
+            selection,
+            detectedOptions);
+    EXPECT_EQ(
+        fractionalSummary.tempoSource,
+        dawhermes::audio::PlaybackTempoSource::explicitMidi);
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionSummaryBpm(0.0, fractionalSummary),
+        128.5,
+        0.01));
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionSummaryBpm(
+            fractionalSummary.durationSeconds,
+            fractionalSummary),
+        128.5,
+        0.01));
+
+    metadata.containsExplicitTempoEvents = false;
+    metadata.tempoMap = { dawhermes::core::MidiTempoEvent {} };
+    EXPECT_TRUE(project.setMidiSourceMetadata(midiId, metadata));
+    const auto detected = dawhermes::audio::createSelectionPlaybackSnapshot(
+        project,
+        selection,
+        detectedOptions);
+    EXPECT_TRUE(detected.ok);
+    EXPECT_EQ(
+        detected.snapshot.tempoSource,
+        dawhermes::audio::PlaybackTempoSource::detectedWav);
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionPlaybackBpm(0.0, detected.snapshot),
+        90.0,
+        0.01));
+    EXPECT_TRUE(approxEqual(detected.snapshot.durationSeconds, 4.0 * (60.0 / 90.0), 0.001));
+
+    const auto fallback = dawhermes::audio::createSelectionPlaybackSnapshot(
+        project,
+        selection);
+    EXPECT_TRUE(fallback.ok);
+    EXPECT_EQ(
+        fallback.snapshot.tempoSource,
+        dawhermes::audio::PlaybackTempoSource::fallback);
+    EXPECT_TRUE(approxEqual(
+        dawhermes::audio::selectionPlaybackBpm(0.0, fallback.snapshot),
+        120.0,
+        0.01));
+
+    const auto activeFallbackTempo = fallback.snapshot.playheadTempoMap;
+    const auto nextPlayback = dawhermes::audio::createSelectionPlaybackSnapshot(
+        project,
+        selection,
+        detectedOptions);
+    EXPECT_EQ(
+        fallback.snapshot.playheadTempoMap,
+        activeFallbackTempo);
+    EXPECT_EQ(
+        nextPlayback.snapshot.tempoSource,
+        dawhermes::audio::PlaybackTempoSource::detectedWav);
+
+    const auto tempDir = createTempDirectory("midi-no-explicit-tempo");
+    const auto midiPath = tempDir / "no-tempo.mid";
+    juce::MidiMessageSequence sequence;
+    auto noteOn = juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100));
+    noteOn.setTimeStamp(0.0);
+    sequence.addEvent(noteOn);
+    auto noteOff = juce::MidiMessage::noteOff(1, 60);
+    noteOff.setTimeStamp(960.0);
+    sequence.addEvent(noteOff);
+    sequence.updateMatchedPairs();
+    juce::MidiFile midiFile;
+    midiFile.setTicksPerQuarterNote(960);
+    midiFile.addTrack(sequence);
+    {
+        juce::FileOutputStream output { juce::File(midiPath.string()) };
+        EXPECT_TRUE(output.openedOk());
+        EXPECT_TRUE(midiFile.writeTo(output, 1));
+    }
+    std::string parseError;
+    const auto parsed = dawhermes::ui::parseMidiImportDocument(midiPath, parseError);
+    EXPECT_TRUE(parsed.has_value());
+    EXPECT_TRUE(!parsed->containsExplicitTempoEvents);
+    EXPECT_EQ(parsed->noteBearingTracks.size(), static_cast<std::size_t>(1));
+    const auto imported = dawhermes::ui::makeImportedMidiSourceMetadata(
+        parsed.value(),
+        parsed->noteBearingTracks.front());
+    EXPECT_TRUE(imported.containsExplicitTempoEvents.has_value());
+    EXPECT_TRUE(!imported.containsExplicitTempoEvents.value());
+
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    return true;
+}
+
+bool testPlaybackSummaryDurationsAndAudioOnlyTempo()
+{
+    const auto audioPath = createSyntheticClickTrackWavFixture(
+        "summary-audio",
+        120.0,
+        48000,
+        2,
+        2.0);
+    const auto sourceBytes = readBinaryFile(audioPath);
+    ProjectModel project;
+    const auto midiId = project.addTrack(TrackType::midi, "Short MIDI").id;
+    const auto audioId = project.addTrack(TrackType::audio, "Long Audio").id;
+    const auto missingId = project.addTrack(TrackType::audio, "Missing Audio").id;
+    const auto groupId = project.addTrack(TrackType::group, "Group").id;
+    EXPECT_TRUE(project.replaceMidiNotes(
+        midiId,
+        { MidiNote { 60, 100, 0.0, 1.0, 1, 1 } }));
+    EXPECT_TRUE(project.setAudioSourcePath(audioId, audioPath.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(
+        missingId,
+        (audioPath.parent_path() / "missing-summary.wav").string()));
+
+    SelectionState selection;
+    selection.selectTrack(midiId);
+    auto midiOnly = dawhermes::audio::createSelectionPlaybackSummary(
+        project,
+        selection);
+    EXPECT_TRUE(midiOnly.playable);
+    EXPECT_EQ(midiOnly.midiTrackCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(midiOnly.audioTrackCount, static_cast<std::size_t>(0));
+    EXPECT_EQ(midiOnly.identity.primaryMidiTrackId.value(), midiId);
+    EXPECT_TRUE(midiOnly.identity.readableAudioTrackIds.empty());
+
+    selection.toggleTrack(audioId);
+    selection.toggleTrack(missingId);
+    selection.toggleTrack(groupId);
+    const auto combined = dawhermes::audio::createSelectionPlaybackSummary(
+        project,
+        selection);
+    EXPECT_TRUE(combined.playable);
+    EXPECT_EQ(combined.midiTrackCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(combined.audioTrackCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(combined.skippedAudioTracks.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(approxEqual(combined.durationSeconds, 2.0, 0.001));
+    EXPECT_EQ(combined.identity.primaryMidiTrackId.value(), midiId);
+    EXPECT_EQ(
+        combined.identity.readableAudioTrackIds,
+        std::vector<std::uint64_t> { audioId });
+
+    selection.selectTrack(audioId);
+    dawhermes::audio::SelectionPlaybackOptions options;
+    options.detectedWavBpm = 120.0;
+    const auto audioOnly = dawhermes::audio::createSelectionPlaybackSummary(
+        project,
+        selection,
+        options);
+    EXPECT_TRUE(audioOnly.playable);
+    EXPECT_EQ(audioOnly.midiTrackCount, static_cast<std::size_t>(0));
+    EXPECT_EQ(audioOnly.audioTrackCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        audioOnly.tempoSource,
+        dawhermes::audio::PlaybackTempoSource::detectedWav);
+    EXPECT_TRUE(approxEqual(audioOnly.durationSeconds, 2.0, 0.001));
+
+    selection.selectTrack(missingId);
+    const auto missingOnly = dawhermes::audio::createSelectionPlaybackSummary(
+        project,
+        selection);
+    EXPECT_TRUE(!missingOnly.playable);
+    EXPECT_TRUE(approxEqual(missingOnly.durationSeconds, 0.0));
+    EXPECT_EQ(
+        dawhermes::audio::formatTransportCounter(0.0, missingOnly.durationSeconds),
+        std::string("00:00 / 00:00"));
+    EXPECT_EQ(readBinaryFile(audioPath), sourceBytes);
+
+    std::error_code ec;
+    std::filesystem::remove(audioPath, ec);
+    return true;
+}
+
+bool testWavBpmDetectionAndSourceSafety()
+{
+    const auto click90 = createSyntheticClickTrackWavFixture(
+        "bpm90-mono-441",
+        90.0,
+        44100,
+        1,
+        12.0);
+    const auto click120 = createSyntheticClickTrackWavFixture(
+        "bpm120-stereo-480",
+        120.0,
+        48000,
+        2,
+        12.0);
+    const auto click140 = createSyntheticClickTrackWavFixture(
+        "bpm140-mono-480",
+        140.0,
+        48000,
+        1,
+        12.0);
+    const auto silence = createSyntheticClickTrackWavFixture(
+        "silence",
+        0.0,
+        44100,
+        1,
+        8.0,
+        0);
+    const auto steadyTone = createSyntheticClickTrackWavFixture(
+        "steady-low-energy",
+        0.0,
+        48000,
+        2,
+        8.0,
+        3);
+    const auto bytes90 = readBinaryFile(click90);
+    const auto bytes120 = readBinaryFile(click120);
+    const auto bytes140 = readBinaryFile(click140);
+
+    const auto estimate90 = dawhermes::audio::analyzeWavBpm(click90);
+    const auto estimate120 = dawhermes::audio::analyzeWavBpm(click120);
+    const auto estimate140 = dawhermes::audio::analyzeWavBpm(click140);
+    EXPECT_TRUE(estimate90.isConfident());
+    EXPECT_TRUE(estimate120.isConfident());
+    EXPECT_TRUE(estimate140.isConfident());
+    EXPECT_TRUE(approxEqual(estimate90.bpm.value(), 90.0, 1.5));
+    EXPECT_TRUE(approxEqual(estimate120.bpm.value(), 120.0, 1.5));
+    EXPECT_TRUE(approxEqual(estimate140.bpm.value(), 140.0, 1.5));
+    EXPECT_TRUE(estimate90.bpm.value() >= 60.0 && estimate90.bpm.value() <= 200.0);
+    EXPECT_TRUE(estimate120.bpm.value() >= 60.0 && estimate120.bpm.value() <= 200.0);
+    EXPECT_TRUE(estimate140.bpm.value() >= 60.0 && estimate140.bpm.value() <= 200.0);
+    EXPECT_TRUE(!dawhermes::audio::analyzeWavBpm(silence).isConfident());
+    EXPECT_TRUE(!dawhermes::audio::analyzeWavBpm(steadyTone).isConfident());
+    EXPECT_EQ(readBinaryFile(click90), bytes90);
+    EXPECT_EQ(readBinaryFile(click120), bytes120);
+    EXPECT_EQ(readBinaryFile(click140), bytes140);
+
+    std::error_code ec;
+    std::filesystem::remove(click90, ec);
+    std::filesystem::remove(click120, ec);
+    std::filesystem::remove(click140, ec);
+    std::filesystem::remove(silence, ec);
+    std::filesystem::remove(steadyTone, ec);
+    return true;
+}
+
+bool testWavBpmCacheReuseAndInvalidation()
+{
+    const auto path = createSyntheticClickTrackWavFixture(
+        "cache",
+        120.0,
+        44100,
+        1,
+        8.0);
+    const auto firstFingerprint = dawhermes::audio::fingerprintWavFile(path);
+    EXPECT_TRUE(firstFingerprint.has_value());
+    dawhermes::audio::WavBpmCache cache;
+    dawhermes::audio::WavBpmEstimate estimate;
+    estimate.bpm = 120.0;
+    estimate.confidence = 0.9;
+    cache.store(firstFingerprint.value(), estimate);
+    const auto cached = cache.find(firstFingerprint.value());
+    EXPECT_TRUE(cached.has_value());
+    EXPECT_TRUE(cached->isConfident());
+    EXPECT_EQ(cache.size(), static_cast<std::size_t>(1));
+
+    {
+        std::ofstream append(path, std::ios::binary | std::ios::app);
+        append.put('\0');
+    }
+    const auto changedFingerprint = dawhermes::audio::fingerprintWavFile(path);
+    EXPECT_TRUE(changedFingerprint.has_value());
+    EXPECT_TRUE(!(changedFingerprint.value() == firstFingerprint.value()));
+    EXPECT_TRUE(!cache.find(changedFingerprint.value()).has_value());
+    dawhermes::audio::WavBpmEstimate lowConfidence;
+    lowConfidence.confidence = 0.2;
+    lowConfidence.analyzedSeconds = 8.0;
+    cache.store(changedFingerprint.value(), lowConfidence);
+    EXPECT_EQ(cache.size(), static_cast<std::size_t>(1));
+    const auto changedCached = cache.find(changedFingerprint.value());
+    EXPECT_TRUE(changedCached.has_value());
+    EXPECT_TRUE(!changedCached->isConfident());
+    EXPECT_TRUE(approxEqual(changedCached->confidence, 0.2));
+    EXPECT_TRUE(!cache.find(firstFingerprint.value()).has_value());
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return true;
+}
+
+bool testWavBpmCacheBoundedLruPolicy()
+{
+    dawhermes::audio::WavBpmCache cache;
+    std::vector<dawhermes::audio::WavFileFingerprint> fingerprints;
+    fingerprints.reserve(dawhermes::audio::kMaximumWavBpmCacheEntries + 1);
+    for (std::size_t index = 0;
+         index < dawhermes::audio::kMaximumWavBpmCacheEntries;
+         ++index) {
+        dawhermes::audio::WavFileFingerprint fingerprint;
+        fingerprint.sourcePath = "cache-entry-" + std::to_string(index);
+        fingerprint.fileSize = index + 1;
+        fingerprints.push_back(fingerprint);
+        dawhermes::audio::WavBpmEstimate estimate;
+        estimate.bpm = 60.0 + static_cast<double>(index % 120);
+        estimate.confidence = index == 7 ? 0.1 : 0.9;
+        cache.store(fingerprint, estimate);
+    }
+    EXPECT_EQ(
+        cache.size(),
+        dawhermes::audio::kMaximumWavBpmCacheEntries);
+
+    EXPECT_TRUE(cache.find(fingerprints.front()).has_value());
+    EXPECT_TRUE(cache.find(fingerprints.at(7)).has_value());
+    EXPECT_TRUE(!cache.find(fingerprints.at(7))->isConfident());
+
+    dawhermes::audio::WavFileFingerprint newest;
+    newest.sourcePath = "cache-entry-newest";
+    newest.fileSize = 9999;
+    dawhermes::audio::WavBpmEstimate newestEstimate;
+    newestEstimate.bpm = 123.0;
+    newestEstimate.confidence = 0.95;
+    cache.store(newest, newestEstimate);
+
+    EXPECT_EQ(
+        cache.size(),
+        dawhermes::audio::kMaximumWavBpmCacheEntries);
+    EXPECT_TRUE(cache.find(fingerprints.front()).has_value());
+    EXPECT_TRUE(!cache.find(fingerprints.at(1)).has_value());
+    EXPECT_TRUE(cache.find(newest).has_value());
+
+    for (std::size_t index = 0; index < 32; ++index) {
+        dawhermes::audio::WavFileFingerprint additional;
+        additional.sourcePath = "cache-entry-additional-"
+            + std::to_string(index);
+        additional.fileSize = 20000 + index;
+        cache.store(additional, newestEstimate);
+        EXPECT_TRUE(
+            cache.size()
+            <= dawhermes::audio::kMaximumWavBpmCacheEntries);
+    }
+    EXPECT_TRUE(cache.find(newest).has_value());
+    return true;
+}
+
+struct ControlledWavBpmAnalysis {
+    explicit ControlledWavBpmAnalysis(std::string pathToBlock)
+        : blockedPath(std::move(pathToBlock))
+    {
+    }
+
+    dawhermes::audio::WavBpmFingerprintFunction fingerprintFunction()
+    {
+        return [this](const std::filesystem::path& sourcePath) {
+            const auto key = dawhermes::core::pathToUtf8(
+                sourcePath.lexically_normal());
+            std::scoped_lock lock(mutex);
+            const auto version = fingerprintVersions.contains(key)
+                ? fingerprintVersions.at(key)
+                : std::uintmax_t { 1 };
+            return std::optional<dawhermes::audio::WavFileFingerprint> {
+                dawhermes::audio::WavFileFingerprint {
+                    key,
+                    version,
+                    {},
+                },
+            };
+        };
+    }
+
+    dawhermes::audio::WavBpmAnalyzeFunction analyzeFunction()
+    {
+        return [this](const std::filesystem::path& sourcePath) {
+            const auto key = dawhermes::core::pathToUtf8(
+                sourcePath.lexically_normal());
+            std::unique_lock lock(mutex);
+            const auto callCount = ++analysisCalls[key];
+            condition.notify_all();
+            if (key == blockedPath && callCount == 1) {
+                condition.wait(lock, [this]() { return releaseBlockedAnalysis; });
+            }
+
+            dawhermes::audio::WavBpmEstimate estimate;
+            estimate.bpm = key.find("B.wav") != std::string::npos
+                ? 130.0
+                : (key.find("C.wav") != std::string::npos ? 150.0 : 110.0);
+            estimate.confidence = 0.9;
+            estimate.analyzedSeconds = 8.0;
+            return estimate;
+        };
+    }
+
+    bool waitForAnalysisCount(const std::string& path, int expectedCount)
+    {
+        std::unique_lock lock(mutex);
+        return condition.wait_for(
+            lock,
+            std::chrono::seconds(3),
+            [&]() { return analysisCalls[path] >= expectedCount; });
+    }
+
+    void setFingerprintVersion(const std::string& path, std::uintmax_t version)
+    {
+        std::scoped_lock lock(mutex);
+        fingerprintVersions[path] = version;
+    }
+
+    void releaseFirstAnalysis()
+    {
+        {
+            std::scoped_lock lock(mutex);
+            releaseBlockedAnalysis = true;
+        }
+        condition.notify_all();
+    }
+
+    int analysisCallCount(const std::string& path)
+    {
+        std::scoped_lock lock(mutex);
+        return analysisCalls[path];
+    }
+
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::map<std::string, std::uintmax_t> fingerprintVersions;
+    std::map<std::string, int> analysisCalls;
+    std::string blockedPath;
+    bool releaseBlockedAnalysis { false };
+};
+
+std::optional<dawhermes::audio::WavBpmAnalysisResult>
+waitForControlledWavBpmResult(
+    dawhermes::audio::WavBpmAnalysisService& service)
+{
+    const auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (auto result = service.pollCompleted(); result.has_value()) {
+            return result;
+        }
+        std::this_thread::yield();
+    }
+    return std::nullopt;
+}
+
+bool testWavBpmNewestRequestWins()
+{
+    const std::filesystem::path pathA("A.wav");
+    const std::filesystem::path pathB("B.wav");
+    const std::filesystem::path pathC("C.wav");
+    const auto keyA = dawhermes::core::pathToUtf8(pathA);
+    const auto keyB = dawhermes::core::pathToUtf8(pathB);
+    const auto keyC = dawhermes::core::pathToUtf8(pathC);
+
+    {
+        ControlledWavBpmAnalysis controlled(keyA);
+        controlled.setFingerprintVersion(keyA, 1);
+        dawhermes::audio::WavBpmAnalysisService service(
+            controlled.fingerprintFunction(),
+            controlled.analyzeFunction());
+        const auto generationA = service.request(pathA);
+        const auto started = controlled.waitForAnalysisCount(keyA, 1);
+        controlled.setFingerprintVersion(keyA, 2);
+        controlled.releaseFirstAnalysis();
+        const auto retried = controlled.waitForAnalysisCount(keyA, 2);
+        const auto completed = waitForControlledWavBpmResult(service);
+        service.stop();
+
+        EXPECT_TRUE(started);
+        EXPECT_TRUE(retried);
+        EXPECT_TRUE(completed.has_value());
+        EXPECT_EQ(completed->requestGeneration, generationA);
+        EXPECT_EQ(completed->fingerprint.sourcePath, keyA);
+        EXPECT_EQ(completed->fingerprint.fileSize, std::uintmax_t { 2 });
+        EXPECT_EQ(controlled.analysisCallCount(keyA), 2);
+        EXPECT_TRUE(!service.isAnalyzing());
+    }
+
+    {
+        ControlledWavBpmAnalysis controlled(keyA);
+        controlled.setFingerprintVersion(keyA, 1);
+        controlled.setFingerprintVersion(keyB, 1);
+        dawhermes::audio::WavBpmAnalysisService service(
+            controlled.fingerprintFunction(),
+            controlled.analyzeFunction());
+        service.request(pathA);
+        const auto startedA = controlled.waitForAnalysisCount(keyA, 1);
+        const auto generationB = service.request(pathB);
+        controlled.setFingerprintVersion(keyA, 2);
+        controlled.releaseFirstAnalysis();
+        const auto startedB = controlled.waitForAnalysisCount(keyB, 1);
+        const auto completed = waitForControlledWavBpmResult(service);
+        service.stop();
+
+        EXPECT_TRUE(startedA);
+        EXPECT_TRUE(startedB);
+        EXPECT_TRUE(completed.has_value());
+        EXPECT_EQ(completed->requestGeneration, generationB);
+        EXPECT_EQ(completed->fingerprint.sourcePath, keyB);
+        EXPECT_EQ(controlled.analysisCallCount(keyA), 1);
+        EXPECT_EQ(controlled.analysisCallCount(keyB), 1);
+        EXPECT_TRUE(!service.isAnalyzing());
+    }
+
+    {
+        ControlledWavBpmAnalysis controlled(keyA);
+        dawhermes::audio::WavBpmAnalysisService service(
+            controlled.fingerprintFunction(),
+            controlled.analyzeFunction());
+        service.request(pathA);
+        const auto startedA = controlled.waitForAnalysisCount(keyA, 1);
+        service.request(pathB);
+        const auto generationC = service.request(pathC);
+        controlled.releaseFirstAnalysis();
+        const auto startedC = controlled.waitForAnalysisCount(keyC, 1);
+        const auto completed = waitForControlledWavBpmResult(service);
+        service.stop();
+
+        EXPECT_TRUE(startedA);
+        EXPECT_TRUE(startedC);
+        EXPECT_TRUE(completed.has_value());
+        EXPECT_EQ(completed->requestGeneration, generationC);
+        EXPECT_EQ(completed->fingerprint.sourcePath, keyC);
+        EXPECT_EQ(controlled.analysisCallCount(keyA), 1);
+        EXPECT_EQ(controlled.analysisCallCount(keyB), 0);
+        EXPECT_EQ(controlled.analysisCallCount(keyC), 1);
+        EXPECT_TRUE(!service.isAnalyzing());
+    }
+
+    {
+        ControlledWavBpmAnalysis controlled(keyA);
+        dawhermes::audio::WavBpmAnalysisService service(
+            controlled.fingerprintFunction(),
+            controlled.analyzeFunction());
+        service.request(pathA);
+        const auto startedA = controlled.waitForAnalysisCount(keyA, 1);
+        std::atomic<bool> stopped { false };
+        std::thread stopper([&]() {
+            service.stop();
+            stopped.store(true, std::memory_order_release);
+        });
+        controlled.releaseFirstAnalysis();
+        stopper.join();
+
+        EXPECT_TRUE(startedA);
+        EXPECT_TRUE(stopped.load(std::memory_order_acquire));
+        EXPECT_TRUE(!service.isAnalyzing());
+    }
+
+    return true;
+}
+
+bool testAsynchronousWavBpmAnalysisAndCacheReuse()
+{
+    const auto path = createSyntheticClickTrackWavFixture(
+        "async-cache",
+        120.0,
+        44100,
+        1,
+        8.0);
+    dawhermes::audio::WavBpmAnalysisService service;
+    const auto firstGeneration = service.request(path);
+    std::optional<dawhermes::audio::WavBpmAnalysisResult> first;
+    for (int attempt = 0; attempt < 500 && !first.has_value(); ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        first = service.pollCompleted();
+    }
+    EXPECT_TRUE(first.has_value());
+    EXPECT_EQ(first->requestGeneration, firstGeneration);
+    EXPECT_TRUE(first->estimate.isConfident());
+    EXPECT_TRUE(approxEqual(first->estimate.bpm.value(), 120.0, 1.5));
+    EXPECT_TRUE(!first->reusedCache);
+
+    const auto secondGeneration = service.request(path);
+    const auto second = service.pollCompleted();
+    EXPECT_TRUE(second.has_value());
+    EXPECT_EQ(second->requestGeneration, secondGeneration);
+    EXPECT_TRUE(second->reusedCache);
+    EXPECT_TRUE(approxEqual(second->estimate.bpm.value(), 120.0, 1.5));
+    service.stop();
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return true;
+}
+
+bool testTransportViewportFollowAndSeekVisibility()
+{
+    dawhermes::core::ProjectHistory history;
+    const auto historySize = history.size();
+    const dawhermes::core::PitchViewportState pitchViewport;
+    EXPECT_TRUE(dawhermes::audio::shouldAutomaticallyFollowPlayhead(
+        dawhermes::audio::TransportMode::playing));
+    EXPECT_TRUE(!dawhermes::audio::shouldAutomaticallyFollowPlayhead(
+        dawhermes::audio::TransportMode::paused));
+    EXPECT_TRUE(!dawhermes::audio::shouldAutomaticallyFollowPlayhead(
+        dawhermes::audio::TransportMode::stopped));
+
+    dawhermes::core::TimelineViewportState viewport;
+    viewport.startBeat = 10.0;
+    viewport.visibleBeats = 20.0;
+    viewport.minVisibleBeats = 1.0;
+    viewport.maxVisibleBeats = 512.0;
+
+    const auto comfortable = dawhermes::core::followTimelinePlayhead(
+        viewport,
+        20.0,
+        100.0);
+    EXPECT_TRUE(approxEqual(comfortable.startBeat, 10.0));
+    EXPECT_TRUE(approxEqual(comfortable.visibleBeats, 20.0));
+
+    const auto followed = dawhermes::core::followTimelinePlayhead(
+        viewport,
+        27.0,
+        100.0);
+    EXPECT_TRUE(followed.startBeat > viewport.startBeat);
+    EXPECT_TRUE(approxEqual(followed.visibleBeats, viewport.visibleBeats));
+    const auto followedRange = dawhermes::core::timelineVisibleRange(followed);
+    EXPECT_TRUE(27.0 >= followedRange.startBeat && 27.0 <= followedRange.endBeat);
+
+    const auto seekForward = dawhermes::core::ensureTimelineBeatVisible(
+        viewport,
+        70.0,
+        100.0);
+    const auto seekForwardRange = dawhermes::core::timelineVisibleRange(seekForward);
+    EXPECT_TRUE(70.0 >= seekForwardRange.startBeat && 70.0 <= seekForwardRange.endBeat);
+    EXPECT_TRUE(approxEqual(seekForward.visibleBeats, viewport.visibleBeats));
+
+    const auto seekBackward = dawhermes::core::ensureTimelineBeatVisible(
+        seekForward,
+        2.0,
+        100.0);
+    const auto seekBackwardRange = dawhermes::core::timelineVisibleRange(seekBackward);
+    EXPECT_TRUE(2.0 >= seekBackwardRange.startBeat && 2.0 <= seekBackwardRange.endBeat);
+    EXPECT_TRUE(approxEqual(seekBackward.visibleBeats, viewport.visibleBeats));
+    EXPECT_TRUE(approxEqual(
+        pitchViewport.highestVisiblePitch,
+        dawhermes::core::PitchViewportState {}.highestVisiblePitch));
+    EXPECT_EQ(history.size(), historySize);
+    return true;
+}
+
 bool testMidiTrackExporterBasicsAndRoundTrip()
 {
     ProjectModel project;
@@ -1952,8 +3806,13 @@ bool testMidiTrackExporterBasicsAndRoundTrip()
     const auto document = dawhermes::ui::parseMidiImportDocument(outputPath, parseError);
     EXPECT_TRUE(document.has_value());
     EXPECT_TRUE(parseError.empty());
+    EXPECT_TRUE(document->containsExplicitTempoEvents);
     EXPECT_EQ(document->noteBearingTracks.size(), static_cast<std::size_t>(1));
     const auto& candidate = document->noteBearingTracks.front();
+    const auto importedMetadata = dawhermes::ui::makeImportedMidiSourceMetadata(
+        document.value(),
+        candidate);
+    EXPECT_TRUE(importedMetadata.containsExplicitTempoEvents.value_or(false));
     EXPECT_EQ(candidate.sourceTrackName, std::string("Bass Edited"));
     EXPECT_EQ(candidate.notes.size(), static_cast<std::size_t>(2));
 
@@ -2291,7 +4150,7 @@ bool testHermesCommandEnablementAudioVsMidi()
             selection),
         HermesCommandAvailability::requiresAudioFile);
 
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(audio.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(audio.id, wavFixture.string()));
 
     EXPECT_EQ(
         dawhermes::hermes::getHermesCommandAvailability(
@@ -2347,7 +4206,7 @@ bool testHermesCommandEnablementValidAudioMidiPair()
     const auto audioId = controller.addTrack(TrackType::audio, "Audio Pair").id;
     const auto midiId = controller.addTrack(TrackType::midi, "MIDI Pair").id;
 
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(audioId, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(audioId, wavFixture.string()));
     EXPECT_TRUE(controller.replaceMidiNotesOnTrack(
         midiId,
         { makeMidiNote(40, 100, 0.0, 0.5) }));
@@ -2512,7 +4371,7 @@ bool testSeparateLayoutCreatesSeparateMidiTracks()
 
     const auto wavFixture = createTempWavFixture("layout-separate");
     const auto& source = controller.addTrack(TrackType::audio, "Source Drums");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -2565,7 +4424,7 @@ bool testGroupedLayoutCreatesSharedProjectHierarchy()
 
     const auto wavFixture = createTempWavFixture("layout-grouped");
     const auto& source = controller.addTrack(TrackType::audio, "Grouped Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -2627,7 +4486,7 @@ bool testSingleTrackLayoutCreatesOneMidiTrack()
 
     const auto wavFixture = createTempWavFixture("layout-single");
     const auto& source = controller.addTrack(TrackType::audio, "Single Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -2682,7 +4541,7 @@ bool testFailureLeavesNoPartialProjectResult()
 
     const auto wavFixture = createTempWavFixture("rollback");
     const auto& source = controller.addTrack(TrackType::audio, "Rollback Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -2726,7 +4585,7 @@ bool testEnabledEmptyLayerCanCreateTrack()
 
     const auto wavFixture = createTempWavFixture("empty-enabled-layer");
     const auto& source = controller.addTrack(TrackType::audio, "Empty Enabled Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -2776,7 +4635,7 @@ bool testZeroNoteResultWithoutMeaningfulLayerIsRejected()
 
     const auto wavFixture = createTempWavFixture("empty-not-meaningful");
     const auto& source = controller.addTrack(TrackType::audio, "Empty Rejected Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -2819,7 +4678,7 @@ bool testUndoRedoRestoresHermesResultWithoutReanalysis()
 
     const auto wavFixture = createTempWavFixture("undo-redo");
     const auto& source = controller.addTrack(TrackType::audio, "Undo Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     const dawhermes::hermes::HermesTrackContext context {
         source.id,
@@ -2956,7 +4815,7 @@ bool testEmbeddedHermesStructuredResultAndInsertion()
     SelectionState selection;
     ProjectController controller(project, selection);
     const auto& source = controller.addTrack(TrackType::audio, "Embedded Source");
-    EXPECT_TRUE(controller.assignAudioSourceToTrack(source.id, wavFixture.string()));
+    EXPECT_TRUE(project.setAudioSourcePath(source.id, wavFixture.string()));
 
     dawhermes::hermes::EmbeddedHermesEngine engine;
     dawhermes::hermes::HermesDrumsOptions options;
@@ -3814,6 +5673,11 @@ int main(int argc, char* argv[])
         return runM2RealAssetsMode(argc, argv);
     }
 
+    const auto skipEmbeddedHermesIntegration =
+        std::any_of(argv + 1, argv + argc, [](const char* argument) {
+            return std::string(argument) == "--skip-embedded-hermes-integration";
+        });
+
     struct NamedTest {
         const char* name;
         bool (*func)();
@@ -3821,7 +5685,11 @@ int main(int argc, char* argv[])
 
     const std::vector<NamedTest> tests {
         { "Track creation", testTrackCreationAudioAndMidi },
-        { "Audio source assignment", testAudioSourceAssignment },
+        { "Audio source model compatibility", testAudioSourceAssignment },
+        { "Direct audio import command policy", testDirectAudioImportCommandPolicy },
+        { "Single audio import metadata/playback/history", testSingleAudioTrackImportMetadataPlaybackAndHistory },
+        { "Batch audio import invalid-skip/selection/history", testBatchAudioTrackImportSkipsInvalidAndRestoresSelection },
+        { "Unicode-safe audio import/playback/history", testUnicodeSafeAudioImportPlaybackAndHistory },
         { "MIDI note replacement", testMidiNoteReplacement },
         { "Stable track IDs", testStableTrackIds },
         { "Selection state", testSelectionState },
@@ -3856,6 +5724,21 @@ int main(int argc, char* argv[])
         { "MIDI playback tempo timing and ordering", testMidiPlaybackTempoTimingAndOrdering },
         { "MIDI playback snapshot and no-history behaviour", testMidiPlaybackSnapshotAndNoHistoryBehaviour },
         { "MIDI playback transport command state", testMidiPlaybackTransportCommandState },
+        { "Selection playback MIDI/audio policies", testSelectionPlaybackMidiAudioPolicies },
+        { "Selection playback WAV safety and timing", testSelectionPlaybackWavSafetyAndTiming },
+        { "Selection playback decoded-audio budget", testSelectionPlaybackDecodedAudioBudget },
+        { "Selection playback transport stop/panic state", testSelectionPlaybackTransportAndStopPanicState },
+        { "Stopped playable-selection identity and seek preservation", testStoppedPlayableSelectionIdentityAndSeekPreservation },
+        { "Stopped transport resynchronizes current selection", testStoppedTransportResynchronizesCurrentSelection },
+        { "Transport pause resume seek and counter", testTransportPauseResumeSeekAndCounter },
+        { "Playback tempo source priority and duration", testPlaybackTempoSourcePriorityAndDuration },
+        { "Playback summary durations and audio-only tempo", testPlaybackSummaryDurationsAndAudioOnlyTempo },
+        { "WAV BPM detection and source safety", testWavBpmDetectionAndSourceSafety },
+        { "WAV BPM cache reuse and invalidation", testWavBpmCacheReuseAndInvalidation },
+        { "WAV BPM cache bounded LRU policy", testWavBpmCacheBoundedLruPolicy },
+        { "WAV BPM newest request wins", testWavBpmNewestRequestWins },
+        { "Asynchronous WAV BPM analysis and cache reuse", testAsynchronousWavBpmAnalysisAndCacheReuse },
+        { "Transport viewport follow and seek visibility", testTransportViewportFollowAndSeekVisibility },
         { "MIDI track exporter basics and round trip", testMidiTrackExporterBasicsAndRoundTrip },
         { "MIDI track exporter tempo/signature/PPQ/ordering", testMidiTrackExporterTempoSignaturePpqAndOrdering },
         { "MIDI track exporter edited state regressions", testMidiTrackExporterEditedStateAndRegressions },
@@ -3882,6 +5765,13 @@ int main(int argc, char* argv[])
 
     int failed = 0;
     for (const auto& test : tests) {
+        if (skipEmbeddedHermesIntegration
+            && test.func == testEmbeddedHermesStructuredResultAndInsertion) {
+            std::cout << "[SKIP] " << test.name
+                      << " (explicit isolated-environment exclusion)\n";
+            continue;
+        }
+
         const bool passed = test.func();
         std::cout << "[" << (passed ? "PASS" : "FAIL") << "] " << test.name << "\n";
         if (!passed) {

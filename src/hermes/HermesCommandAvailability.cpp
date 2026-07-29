@@ -2,6 +2,8 @@
 
 #include <filesystem>
 
+#include "core/Utf8Path.h"
+
 namespace dawhermes::hermes {
 
 HermesCommandAvailability getHermesCommandAvailability(
@@ -47,7 +49,7 @@ HermesCommandAvailability getHermesCommandAvailability(
         if (track->type == core::TrackType::audio) {
             ++audioCount;
             std::error_code ec;
-            const auto sourcePath = std::filesystem::path(track->audioSourcePath);
+            const auto sourcePath = core::pathFromUtf8(track->audioSourcePath);
             if (!track->audioSourcePath.empty()
                 && std::filesystem::exists(sourcePath, ec)
                 && std::filesystem::is_regular_file(sourcePath, ec)) {
@@ -108,7 +110,7 @@ std::string describeAvailability(HermesCommand command, HermesCommandAvailabilit
     case HermesCommandAvailability::requiresAudioTrack:
         return "Requires a selected audio track.";
     case HermesCommandAvailability::requiresAudioFile:
-        return "Selected audio track requires an assigned WAV source file.";
+        return "Selected audio track requires an imported WAV file.";
     case HermesCommandAvailability::requiresMidiTrack:
         return "Requires a selected MIDI track.";
     case HermesCommandAvailability::requiresAudioAndMidi:

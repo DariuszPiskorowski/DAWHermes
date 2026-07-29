@@ -1,4 +1,4 @@
-# DAWHermes Architecture (Milestone 3.3)
+# DAWHermes Architecture (Milestone 3.4)
 
 ## Why a new Windows repository
 
@@ -18,7 +18,9 @@ The codebase is split into explicit layers:
 
 - `src/app` - application lifecycle, top-level window wiring, settings, logging bootstrap.
 - `src/core` - in-memory project and track model, selection/controller state, deterministic layout geometry, timeline viewport/time-map logic, piano-roll geometry, and MIDI comparison model.
-- `src/audio` - deterministic MIDI playback snapshots/timing plus the internal default-device audition synth.
+- `src/audio` - deterministic selection playback snapshots/timing, preloaded WAV
+  stem data, safe source-rate conversion, and the internal default-device
+  audition synth/mixer.
 - `src/midi` - testable MIDI file export utilities that transform project MIDI tracks into standard MIDI files without depending on UI dialogs.
 - `src/ui` - JUCE views, menu bar, context menus, timeline/piano-roll rendering, option dialogs, and MIDI/WAV import parsing utilities.
 - `src/hermes` - neutral Hermes contracts, command availability rules, option validation, embedded Python engine, and connector boundaries.
@@ -74,6 +76,55 @@ Accepted Milestone 3.3 adds selected-track MIDI audition:
 - Timeline and Piano Roll display a UI-timer-driven playhead;
 - no VST, WAV playback, recording, mixer, temporary audio file, or external audio process is involved.
 
+Milestone 3.4 extends the same device and callback into selected-stem audition:
+
+- `SelectionPlaybackModel` chooses one primary selected non-empty MIDI track and
+  every selected audio track with a readable imported WAV;
+- WAV data is decoded in bounded blocks directly into final immutable
+  mono/stereo channel storage, without a second full-file decoded copy;
+- one snapshot has a 512 MiB aggregate decoded-WAV budget; tracks that would
+  exceed it are skipped with concise non-modal status while smaller valid
+  selected tracks remain playable;
+- the callback maps one shared transport clock to MIDI events and WAV source
+  frames, using linear interpolation when device and source sample rates differ;
+- WAV time zero and MIDI transport time zero are shared, while MIDI continues to
+  use its tempo map and WAV remains at original speed;
+- Master Volume, Stop, Panic, device stop, and shutdown affect both synth and WAV;
+- group tracks, empty tracks, non-selected tracks, and visual comparison ghosts
+  contribute no playback;
+- missing/unreadable WAV sources are skipped with concise non-modal status;
+- no callback file I/O, model/selection/history mutation, Hermes, Python,
+  second audio-device manager, or external helper process is introduced.
+- retired decoded stem buffers are reclaimed outside the audio callback.
+- one shared transport state owns stopped/playing/paused mode, current time,
+  selection duration, and the immutable playback snapshot;
+- Play, Pause/resume, Stop, Panic, and clamped 5-second seek operate on that
+  shared state without creating history entries;
+- resume and seek publish precomputed MIDI cursors and reconstruct only notes
+  active at the target time, rather than scanning model data in the callback;
+- Timeline and Piano Roll use the same authoritative transport position and
+  horizontal viewport, with threshold-based follow during active playback;
+- tempo resolution prefers explicit imported MIDI tempo metadata, then a
+  confident asynchronously detected WAV tempo, then a 120 BPM audition fallback;
+- bounded WAV tempo analysis and its 128-entry path/size/mtime LRU session cache
+  run outside the callback, while source audio always plays at original speed;
+- project-model source paths are UTF-8 and are converted explicitly to native
+  Windows/JUCE paths at file boundaries.
+
+Direct WAV import is a prepared batch operation:
+
+- the native File chooser supplies one or more source paths;
+- `AudioTrackImporter` validates mono/stereo WAV metadata without decoding on
+  the audio callback and prepares filename-derived names plus absolute paths;
+- one core `ImportAudioTracksCommand` creates and selects all valid tracks as a
+  single `ProjectHistory` transaction;
+- imported tracks retain sample rate, channel count, duration, frame count, bit
+  depth, and source size metadata;
+- Timeline waveform thumbnails, selection playback duration, and asynchronous
+  BPM analysis consume the imported source path through their existing paths;
+- Undo removes the batch and Redo recreates names, paths, and metadata;
+- WAV sources remain in place and are never copied or modified.
+
 For successful bass and sync operations, temporary Hermes cache job directories are deleted immediately. Failed operations preserve diagnostics in cache.
 
 `StubHermesEngine` remains in the codebase for tests and for explicit placeholder behavior.
@@ -92,7 +143,7 @@ The install script deploys a runnable Release app to `%LOCALAPPDATA%\DAWHermes\a
 
 No PowerShell or terminal launcher is used for normal user launch.
 
-## Current limitations (Milestone 3.3)
+## Current limitations (Milestone 3.4)
 
 Milestone 2 functionality is complete.
 Milestone 3.1 visual functionality is accepted.
@@ -100,7 +151,7 @@ Milestone 3.1 visual functionality is accepted.
 Implemented now:
 
 - workspace shell and command surfaces;
-- file-backed audio source assignment and MIDI import into track model;
+- direct multi-WAV audio-track import and MIDI import into the track model;
 - extracted top-row-3-columns + full-width-bottom MIDI layout geometry;
 - draggable splitter geometry with persisted layout state and reset command;
 - embedded Hermes drums extraction, bass repair, and MIDI/WAV synchronization;
@@ -117,7 +168,7 @@ Implemented now:
 
 Not implemented now:
 
-- WAV/audio-track playback, recording, or advanced device setup UI;
+- recording or advanced device setup UI;
 - Hermes set/fix BPM workflow;
 - AI APIs;
 - ACE exchange;
@@ -131,4 +182,10 @@ Additional Milestone 3.1 boundaries:
 - timeline ruler/lanes and piano roll share one horizontal beat viewport state;
 - waveform drawing is static visualization only and not a playback transport surface;
 - current Timeline and Piano Roll styling is intentionally functional rather than final, with visual polish deferred until near project end.
-- Milestones 3.2 and 3.3 are accepted and published; Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange remain deferred.
+- Milestones 3.2 and 3.3 are accepted and published. Milestone 3.4 is complete
+  and manually accepted. Timeline editing, controller lanes, copy/paste, and
+  Cubase-specific exchange remain deferred.
+- M3.4 playback is audition-grade: it includes Pause/resume, a counter,
+  5-second seeking, playhead follow, and BPM resolution, but no time stretching,
+  beat warping, looping, mixer, effects, or final
+  sample-accurate DAW mixing.

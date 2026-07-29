@@ -54,38 +54,113 @@ bool MidiAuditionEngine::initializeDefaultAudioDevice(std::string& error)
 
 bool MidiAuditionEngine::startPlayback(MidiPlaybackSnapshot snapshot, std::string& error)
 {
-    if (snapshot.events.empty()) {
-        error = "The MIDI playback snapshot is empty.";
+    SelectionPlaybackSnapshot selectionSnapshot;
+    selectionSnapshot.playheadTempoMap = snapshot.tempoMap;
+    selectionSnapshot.durationSeconds = snapshot.durationSeconds;
+    selectionSnapshot.midi = std::move(snapshot);
+    return startPlayback(std::move(selectionSnapshot), 0.0, error);
+}
+
+bool MidiAuditionEngine::startPlayback(
+    SelectionPlaybackSnapshot snapshot,
+    std::string& error)
+{
+    return startPlayback(std::move(snapshot), 0.0, error);
+}
+
+bool MidiAuditionEngine::startPlayback(
+    SelectionPlaybackSnapshot snapshot,
+    double startSeconds,
+    std::string& error)
+{
+    if (!snapshot.isPlayable()) {
+        error = "The selection playback snapshot is empty.";
         return false;
     }
 
     if (!initializeDefaultAudioDevice(error)) {
-        playing_.store(false, std::memory_order_release);
         return false;
     }
 
-    auto immutableSnapshot = std::make_shared<const MidiPlaybackSnapshot>(std::move(snapshot));
-    requestedSnapshot_.store(std::move(immutableSnapshot), std::memory_order_release);
     stopRequested_.store(false, std::memory_order_release);
     panicRequested_.store(false, std::memory_order_release);
-    playheadSeconds_.store(0.0, std::memory_order_release);
-    requestedGeneration_.fetch_add(1, std::memory_order_acq_rel);
-    playing_.store(true, std::memory_order_release);
+    pauseRequested_.store(false, std::memory_order_release);
+    auto immutableSnapshot = std::make_shared<const SelectionPlaybackSnapshot>(std::move(snapshot));
+    retainedSnapshots_.push_back(immutableSnapshot);
+    transportState_.prepare(
+        std::move(immutableSnapshot),
+        startSeconds);
+    transportState_.play();
+    publishCursor(transportState_.currentSeconds());
     return true;
+}
+
+bool MidiAuditionEngine::resume(std::string& error)
+{
+    if (!transportState_.isPaused() || !transportState_.hasPreparedPlayback()) {
+        error = "Playback is not paused.";
+        return false;
+    }
+
+    if (!initializeDefaultAudioDevice(error)) {
+        return false;
+    }
+
+    stopRequested_.store(false, std::memory_order_release);
+    panicRequested_.store(false, std::memory_order_release);
+    pauseRequested_.store(false, std::memory_order_release);
+    transportState_.play();
+    publishCursor(transportState_.currentSeconds());
+    return true;
+}
+
+void MidiAuditionEngine::pause()
+{
+    if (!transportState_.isPlaying()) {
+        return;
+    }
+
+    transportState_.pause();
+    pauseRequested_.store(true, std::memory_order_release);
 }
 
 void MidiAuditionEngine::stop()
 {
     stopRequested_.store(true, std::memory_order_release);
-    playing_.store(false, std::memory_order_release);
-    playheadSeconds_.store(0.0, std::memory_order_release);
+    pauseRequested_.store(false, std::memory_order_release);
+    transportState_.stop();
 }
 
 void MidiAuditionEngine::panic()
 {
     panicRequested_.store(true, std::memory_order_release);
-    playing_.store(false, std::memory_order_release);
-    playheadSeconds_.store(0.0, std::memory_order_release);
+    pauseRequested_.store(false, std::memory_order_release);
+    transportState_.panic();
+}
+
+void MidiAuditionEngine::seekTo(double targetSeconds)
+{
+    const auto wasPlaying = transportState_.isPlaying();
+    transportState_.seek(targetSeconds);
+    if (!transportState_.hasPreparedPlayback()) {
+        return;
+    }
+
+    if (wasPlaying
+        && transportState_.currentSeconds() >= transportState_.totalSeconds() - 1.0e-9) {
+        transportState_.complete();
+    }
+    publishCursor(transportState_.currentSeconds());
+}
+
+void MidiAuditionEngine::setPreviewDuration(
+    double durationSeconds,
+    std::uint64_t playableSelectionGeneration)
+{
+    synchronizeStoppedTransportPreview(
+        transportState_,
+        durationSeconds,
+        playableSelectionGeneration);
 }
 
 void MidiAuditionEngine::setVolume(float normalizedVolume)
@@ -100,7 +175,17 @@ float MidiAuditionEngine::volume() const noexcept
 
 bool MidiAuditionEngine::isPlaying() const noexcept
 {
-    return playing_.load(std::memory_order_acquire);
+    return transportState_.isPlaying();
+}
+
+TransportMode MidiAuditionEngine::transportMode() const noexcept
+{
+    return transportState_.mode();
+}
+
+bool MidiAuditionEngine::isPaused() const noexcept
+{
+    return transportState_.isPaused();
 }
 
 bool MidiAuditionEngine::isAudioDeviceReady() const noexcept
@@ -110,13 +195,82 @@ bool MidiAuditionEngine::isAudioDeviceReady() const noexcept
 
 double MidiAuditionEngine::playheadSeconds() const noexcept
 {
-    return playheadSeconds_.load(std::memory_order_acquire);
+    return transportState_.currentSeconds();
+}
+
+double MidiAuditionEngine::totalDurationSeconds() const noexcept
+{
+    return transportState_.totalSeconds();
+}
+
+bool MidiAuditionEngine::isPlayheadVisible() const noexcept
+{
+    return transportState_.isPlayheadVisible();
 }
 
 double MidiAuditionEngine::playheadBeat() const
 {
-    const auto snapshot = requestedSnapshot_.load(std::memory_order_acquire);
-    return snapshot == nullptr ? 0.0 : midiSecondsToBeat(playheadSeconds(), snapshot->tempoMap);
+    const auto snapshot = transportState_.snapshot();
+    return snapshot == nullptr
+        ? 0.0
+        : selectionPlayheadBeat(playheadSeconds(), *snapshot);
+}
+
+bool MidiAuditionEngine::hasPreparedPlayback() const noexcept
+{
+    return transportState_.hasPreparedPlayback();
+}
+
+std::shared_ptr<const SelectionPlaybackSnapshot>
+MidiAuditionEngine::playbackSnapshot() const noexcept
+{
+    return transportState_.snapshot();
+}
+
+void MidiAuditionEngine::collectRetiredSnapshots()
+{
+    retainedSnapshots_.erase(
+        std::remove_if(
+            retainedSnapshots_.begin(),
+            retainedSnapshots_.end(),
+            [](const auto& snapshot) { return snapshot.use_count() == 1; }),
+        retainedSnapshots_.end());
+}
+
+std::shared_ptr<const MidiAuditionEngine::PlaybackCursor>
+MidiAuditionEngine::buildCursor(double startSeconds) const
+{
+    auto cursor = std::make_shared<PlaybackCursor>();
+    cursor->snapshot = transportState_.snapshot();
+    if (cursor->snapshot == nullptr) {
+        return cursor;
+    }
+
+    cursor->startSeconds = clampTransportSeconds(
+        startSeconds,
+        cursor->snapshot->durationSeconds);
+    if (!cursor->snapshot->midi.has_value()) {
+        return cursor;
+    }
+
+    const auto resume = createMidiResumeState(
+        cursor->snapshot->midi.value(),
+        cursor->startSeconds);
+    cursor->nextEventIndex = resume.nextEventIndex;
+    cursor->activeNoteCount = std::min(
+        resume.activeNoteOns.size(),
+        cursor->activeNoteOns.size());
+    for (std::size_t index = 0; index < cursor->activeNoteCount; ++index) {
+        cursor->activeNoteOns[index] = resume.activeNoteOns[index];
+    }
+
+    return cursor;
+}
+
+void MidiAuditionEngine::publishCursor(double startSeconds)
+{
+    requestedCursor_.store(buildCursor(startSeconds), std::memory_order_release);
+    requestedGeneration_.fetch_add(1, std::memory_order_acq_rel);
 }
 
 void MidiAuditionEngine::clearVoices() noexcept
@@ -173,7 +327,46 @@ float MidiAuditionEngine::renderVoices() noexcept
         }
     }
 
-    return std::clamp(sample * volume_.load(std::memory_order_relaxed), -0.95f, 0.95f);
+    return sample;
+}
+
+MidiAuditionEngine::StereoSample MidiAuditionEngine::renderAudioStems(double transportSeconds) const noexcept
+{
+    StereoSample mix;
+    if (activeSnapshot_ == nullptr) {
+        return mix;
+    }
+
+    for (const auto& stem : activeSnapshot_->audioStems) {
+        if (!stem.isPlayable()) {
+            continue;
+        }
+
+        const auto sourcePosition = audioSourceFramePosition(
+            transportSeconds,
+            stem.sourceSampleRate);
+        if (sourcePosition >= static_cast<double>(stem.frameCount)) {
+            continue;
+        }
+
+        const auto firstFrame = static_cast<std::uint64_t>(std::floor(sourcePosition));
+        const auto secondFrame = std::min(firstFrame + 1, stem.frameCount - 1);
+        const auto fraction = static_cast<float>(sourcePosition - static_cast<double>(firstFrame));
+        const auto interpolate = [firstFrame, secondFrame, fraction](const auto& samples) {
+            const auto first = samples[static_cast<std::size_t>(firstFrame)];
+            const auto second = samples[static_cast<std::size_t>(secondFrame)];
+            return first + ((second - first) * fraction);
+        };
+
+        const auto left = interpolate(stem.channels.front());
+        const auto right = stem.channels.size() == 1
+            ? left
+            : interpolate(stem.channels[1]);
+        mix.left += left;
+        mix.right += right;
+    }
+
+    return mix;
 }
 
 bool MidiAuditionEngine::hasActiveVoices() const noexcept
@@ -202,42 +395,79 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
         clearVoices();
         activeSnapshot_.reset();
         nextEventIndex_ = 0;
-        playbackSamplePosition_ = 0;
-        playing_.store(false, std::memory_order_release);
-        playheadSeconds_.store(0.0, std::memory_order_release);
+        playbackSamplePosition_ = static_cast<std::uint64_t>(std::llround(
+            transportState_.currentSeconds() * std::max(1.0, sampleRate_)));
+        return;
+    }
+
+    if (pauseRequested_.exchange(false, std::memory_order_acq_rel)) {
+        if (requestedGeneration_.load(std::memory_order_acquire)
+            == activeGeneration_) {
+            transportState_.seek(
+                static_cast<double>(playbackSamplePosition_)
+                / std::max(1.0, sampleRate_));
+        }
+        clearVoices();
         return;
     }
 
     const auto requestedGeneration = requestedGeneration_.load(std::memory_order_acquire);
     if (requestedGeneration != activeGeneration_) {
-        activeSnapshot_ = requestedSnapshot_.load(std::memory_order_acquire);
+        const auto cursor = requestedCursor_.load(std::memory_order_acquire);
         activeGeneration_ = requestedGeneration;
-        nextEventIndex_ = 0;
-        playbackSamplePosition_ = 0;
         clearVoices();
+        if (cursor == nullptr || cursor->snapshot == nullptr) {
+            activeSnapshot_.reset();
+            nextEventIndex_ = 0;
+            playbackSamplePosition_ = 0;
+        } else {
+            activeSnapshot_ = cursor->snapshot;
+            nextEventIndex_ = cursor->nextEventIndex;
+            playbackSamplePosition_ = static_cast<std::uint64_t>(std::llround(
+                cursor->startSeconds * std::max(1.0, sampleRate_)));
+            if (transportState_.isPlaying()) {
+                for (std::size_t index = 0; index < cursor->activeNoteCount; ++index) {
+                    startVoice(cursor->activeNoteOns[index]);
+                }
+            }
+        }
     }
 
-    if (!playing_.load(std::memory_order_acquire) || activeSnapshot_ == nullptr) {
+    if (!transportState_.isPlaying() || activeSnapshot_ == nullptr) {
         return;
     }
 
     for (int sampleIndex = 0; sampleIndex < numSamples; ++sampleIndex) {
         const auto currentSeconds = static_cast<double>(playbackSamplePosition_) / std::max(1.0, sampleRate_);
-        while (nextEventIndex_ < activeSnapshot_->events.size()
-               && activeSnapshot_->events[nextEventIndex_].timeSeconds <= currentSeconds + 1.0e-9) {
-            const auto& event = activeSnapshot_->events[nextEventIndex_];
-            if (event.kind == MidiPlaybackEventKind::noteOff) {
-                releaseVoice(event.noteInstanceId);
-            } else {
-                startVoice(event);
+        if (activeSnapshot_->midi.has_value()) {
+            while (nextEventIndex_ < activeSnapshot_->midi->events.size()
+                   && activeSnapshot_->midi->events[nextEventIndex_].timeSeconds <= currentSeconds + 1.0e-9) {
+                const auto& event = activeSnapshot_->midi->events[nextEventIndex_];
+                if (event.kind == MidiPlaybackEventKind::noteOff) {
+                    releaseVoice(event.noteInstanceId);
+                } else {
+                    startVoice(event);
+                }
+                ++nextEventIndex_;
             }
-            ++nextEventIndex_;
         }
 
-        const auto outputSample = renderVoices();
+        const auto synthSample = renderVoices();
+        const auto stemSample = renderAudioStems(currentSeconds);
+        const auto masterGain = volume_.load(std::memory_order_relaxed);
+        const auto leftSample = std::clamp(
+            (synthSample + stemSample.left) * masterGain,
+            -0.95f,
+            0.95f);
+        const auto rightSample = std::clamp(
+            (synthSample + stemSample.right) * masterGain,
+            -0.95f,
+            0.95f);
         for (int channel = 0; channel < numOutputChannels; ++channel) {
             if (outputChannelData[channel] != nullptr) {
-                outputChannelData[channel][sampleIndex] = outputSample;
+                outputChannelData[channel][sampleIndex] = channel == 0
+                    ? leftSample
+                    : rightSample;
             }
         }
 
@@ -245,13 +475,17 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
     }
 
     const auto currentSeconds = static_cast<double>(playbackSamplePosition_) / std::max(1.0, sampleRate_);
-    playheadSeconds_.store(
-        std::min(currentSeconds, activeSnapshot_->durationSeconds),
-        std::memory_order_release);
+    if (requestedGeneration_.load(std::memory_order_acquire) != activeGeneration_) {
+        return;
+    }
+    transportState_.updatePositionFromAudio(
+        std::min(currentSeconds, activeSnapshot_->durationSeconds));
 
-    if (nextEventIndex_ >= activeSnapshot_->events.size() && !hasActiveVoices()) {
-        playing_.store(false, std::memory_order_release);
-        playheadSeconds_.store(activeSnapshot_->durationSeconds, std::memory_order_release);
+    const auto midiFinished = !activeSnapshot_->midi.has_value()
+        || nextEventIndex_ >= activeSnapshot_->midi->events.size();
+    const auto reachedSelectionEnd = currentSeconds >= activeSnapshot_->durationSeconds;
+    if (midiFinished && !hasActiveVoices() && reachedSelectionEnd) {
+        transportState_.complete();
     }
 }
 
@@ -266,7 +500,7 @@ void MidiAuditionEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
 void MidiAuditionEngine::audioDeviceStopped()
 {
     clearVoices();
-    playing_.store(false, std::memory_order_release);
+    transportState_.pause();
     deviceReady_.store(false, std::memory_order_release);
 }
 

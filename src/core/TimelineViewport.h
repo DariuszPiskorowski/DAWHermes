@@ -36,6 +36,20 @@ TimelineViewportState fitTimelineViewport(
     double minVisibleBeats = 1.0,
     double maxVisibleBeats = 512.0);
 
+TimelineViewportState followTimelinePlayhead(
+    const TimelineViewportState& state,
+    double playheadBeat,
+    double contentEndBeat,
+    double followThreshold = 0.80,
+    double targetPosition = 0.65);
+
+TimelineViewportState ensureTimelineBeatVisible(
+    const TimelineViewportState& state,
+    double beat,
+    double contentEndBeat,
+    double leadingContext = 0.10,
+    double trailingContext = 0.20);
+
 TimelineVisibleRange timelineVisibleRange(const TimelineViewportState& state);
 
 double timelineBeatToX(double beat, int width, const TimelineViewportState& state);

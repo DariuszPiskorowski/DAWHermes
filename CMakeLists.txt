@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(
+  DAWHERMES_ENABLE_LTCG
+  "Enable whole-program optimization and link-time code generation for DAWHermes Release builds"
+  OFF)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
 
@@ -38,6 +43,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(pybind11)
 
 add_library(dawhermes_core
+  src/core/AudioTrackImport.cpp
   src/core/ProjectModel.cpp
   src/core/ProjectController.cpp
   src/core/MainLayoutGeometry.cpp
@@ -52,13 +58,21 @@ target_include_directories(dawhermes_core PUBLIC src)
 set_project_warnings(dawhermes_core)
 
 add_library(dawhermes_audio
+  src/audio/AudioTrackImporter.cpp
   src/audio/MidiPlaybackModel.cpp
+  src/audio/TransportModel.cpp
+  src/audio/SelectionPlaybackModel.cpp
+  src/audio/WavBpmDetector.cpp
   src/audio/MidiAuditionEngine.cpp
 )
 target_include_directories(dawhermes_audio PUBLIC src)
 target_link_libraries(
   dawhermes_audio
-  PUBLIC dawhermes_core juce::juce_audio_basics juce::juce_audio_devices)
+  PUBLIC
+    dawhermes_core
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats)
 set_project_warnings(dawhermes_audio)
 
 add_library(dawhermes_midi
@@ -128,8 +142,39 @@ target_link_libraries(DAWHermes
   PRIVATE
     dawhermes_ui
     juce::juce_gui_extra
-    juce::juce_recommended_config_flags
-    juce::juce_recommended_lto_flags)
+    juce::juce_recommended_config_flags)
+
+set(DAWHERMES_FINAL_EXECUTABLE_TARGETS
+  dawhermes_core
+  dawhermes_audio
+  dawhermes_midi
+  dawhermes_hermes
+  dawhermes_ui
+  DAWHermes)
+
+if(DAWHERMES_ENABLE_LTCG)
+  target_link_libraries(DAWHermes PRIVATE juce::juce_recommended_lto_flags)
+else()
+  foreach(target IN LISTS DAWHERMES_FINAL_EXECUTABLE_TARGETS)
+    set_property(
+      TARGET "${target}"
+      PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+  endforeach()
+
+  if(MSVC)
+    foreach(target IN LISTS DAWHERMES_FINAL_EXECUTABLE_TARGETS)
+      target_compile_options(
+        "${target}"
+        PRIVATE
+          "$<$<CONFIG:Release>:/GL->")
+    endforeach()
+
+    target_link_options(
+      DAWHermes
+      PRIVATE
+        "$<$<CONFIG:Release>:/LTCG:OFF>")
+  endif()
+endif()
 
 target_compile_definitions(
   DAWHermes

@@ -8,6 +8,7 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 
 Milestone 3.2 MIDI editing and selected-track export is complete, manually accepted, and published.
 Milestone 3.3 MIDI audition playback is complete, manually accepted, and published.
+Milestone 3.4 is complete and manually accepted.
 
 Milestone 1.1 and Milestone 2 functional integration are complete and accepted.
 Milestone 3.1 visual functionality is accepted.
@@ -18,7 +19,8 @@ Currently implemented:
 - workspace layout with top 3-column work area plus full-width bottom MIDI panel;
 - draggable workspace separators (left/center, center/right, top/bottom split);
 - persistent workspace panel sizes with View -> Reset Panel Layout;
-- audio, MIDI, and group track models with file-backed audio source assignment;
+- File -> Import Audio as Track... for one or more in-place WAV sources, with
+  automatic audio-track creation and waveform connection;
 - File -> Import MIDI as Track... with note-bearing-track selection;
 - File -> Export Selected MIDI Track... for the selected non-empty MIDI track;
 - timeline ruler with bar labels and selectable beat grid (1/4, 1/8, 1/16, 1/32);
@@ -28,7 +30,11 @@ Currently implemented:
 - note hover diagnostics (pitch, velocity, start, duration, channel);
 - View -> Compare Selected MIDI Tracks mode with color-coded delta legend (read-only comparison);
 - piano-roll note selection, marquee selection, creation, deletion, mouse movement, right-edge duration resize, keyboard nudging, Snap, velocity editing, and quantize selected notes to grid;
-- selected-track MIDI audition through the system default audio output with Play, Stop, Panic, safe volume, and Timeline/Piano Roll playheads;
+- synchronized selected-track MIDI and imported-WAV audition through the system
+  default audio output with Play, Pause/resume, Stop, Panic, 5-second seeking,
+  safe volume, BPM, a time counter, and shared Timeline/Piano Roll playheads;
+- Unicode-safe Windows WAV paths, a 128-entry LRU WAV-BPM session cache, and a
+  512 MiB aggregate decoded-audio limit per immutable audition snapshot;
 - track selection and deletion;
 - deliberate right-click context menus;
 - Hermes menu, option dialogs and validation;
@@ -51,7 +57,7 @@ Currently implemented:
 
 Not implemented yet:
 
-- WAV/audio-track playback or recording;
+- recording;
 - Hermes set/fix BPM workflow;
 - VST3 hosting;
 - AI model connection;
@@ -66,7 +72,8 @@ Milestone 3.3 audition uses a deliberately simple internal sine synth. Its funct
 The current Timeline and Piano Roll styling is intentionally functional rather than final.
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
-WAV playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange remain deferred.
+Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange
+remain deferred.
 
 ## Related projects
 
@@ -128,10 +135,61 @@ Build Release:
 .\scripts\build-release.ps1
 ```
 
+For a bounded diagnostic Release build with explicit single-job project and
+compiler parallelism plus persistent resource, text, transcript and MSBuild
+binary logs under the ignored `build\diagnostics` directory:
+
+```powershell
+.\scripts\build-release.ps1 -Diagnostic -ParallelJobs 1
+```
+
+Diagnostic mode builds only the `DAWHermes` Release target. It does not run
+tests, install files or launch the application.
+
+The `DAWHERMES_ENABLE_LTCG` CMake option defaults to `OFF`. The supported local
+scripts explicitly configure `OFF`, and `build-release.ps1` refuses to build
+unless the effective cache value is `DAWHERMES_ENABLE_LTCG=OFF`. This prevents
+the normal local build and install workflow from starting the `/GL`/`/LTCG`
+path that repeatedly froze Windows.
+After an already verified Release build, `install-local.ps1 -SkipBuild`
+installs that artifact without initiating another build and still verifies the
+no-LTCG cache setting. `-BuildDirectory` can select a fresh verified tree
+instead of reusing an older local Release tree.
+
+To use a fresh isolated no-LTCG diagnostic tree:
+
+```powershell
+.\scripts\configure.ps1 `
+    -BuildDirectory build\diagnostic-variants\no-ltcg `
+    -EnableLtcg OFF
+
+.\scripts\build-release.ps1 `
+    -Diagnostic `
+    -ParallelJobs 1 `
+    -BuildDirectory build\diagnostic-variants\no-ltcg
+```
+
+The no-LTCG configuration omits JUCE's recommended LTO flags, disables Release
+interprocedural optimization, compiles participating DAWHermes targets with
+`/GL-`, and links the final executable with `/LTCG:OFF`. Inspect the generated
+projects before executing the diagnostic build. Generated projects, outputs and
+logs remain under the ignored `build` directory.
+
+Never run a local `/GL` or `/LTCG` build. LTCG experiments are allowed only in
+a dedicated future CI diagnostic workflow explicitly requested by the user.
+
 Run tests:
 
 ```powershell
 .\scripts\test.ps1
+```
+
+The standard test script skips the environment-dependent embedded Hermes
+integration test while running the deterministic suite. Run that integration
+explicitly only in a prepared Hermes environment:
+
+```powershell
+.\scripts\test.ps1 -IncludeEmbeddedHermesIntegration
 ```
 
 Run opt-in Milestone 2 real-assets verification (embedded Hermes path, hash and cache checks):
@@ -175,6 +233,7 @@ Initial command structure:
 
 ```text
 File
+|-- Import Audio as Track...
 └── Import MIDI as Track...
 
 Hermes
@@ -189,6 +248,22 @@ Hermes
 
 Command availability for bass/sync requires a selected audio+MIDI pair, non-empty MIDI notes, and an existing audio source file.
 
+The audio workflow is:
+
+```text
+File
+-> Import Audio as Track...
+-> select one or more WAV files
+-> tracks and waveforms appear automatically
+-> select audio and optionally MIDI
+-> Play
+```
+
+Each valid WAV remains referenced at its original absolute path. A multi-file
+import creates one track per valid file, selects the created tracks, and is one
+Undo/Redo transaction. Unreadable files are skipped with one aggregate status;
+source files are never copied, converted, or modified.
+
 Composer Assistant connector defaults in Milestone 1:
 
 - disabled by default;
@@ -202,6 +277,7 @@ The application is divided into:
 
 - `app` - lifecycle and application wiring;
 - `core` - project and track models;
+- `audio` - immutable playback preparation and WAV import/BPM analysis;
 - `midi` - testable selected-track MIDI export;
 - `ui` - JUCE desktop interface;
 - `hermes` - neutral integration contracts and engine implementation;

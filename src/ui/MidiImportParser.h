@@ -25,6 +25,7 @@ struct MidiImportDocument {
     int ticksPerQuarterNote { 960 };
     int totalSourceTrackCount { 0 };
     std::vector<core::MidiTempoEvent> tempoMap;
+    bool containsExplicitTempoEvents { false };
     std::vector<core::MidiTimeSignatureEvent> timeSignatureMap;
     std::vector<MidiImportTrackCandidate> noteBearingTracks;
     double approximateDurationBeats { 0.0 };

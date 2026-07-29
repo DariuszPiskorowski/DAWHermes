@@ -7,6 +7,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "audio/MidiAuditionEngine.h"
+#include "audio/WavBpmDetector.h"
 #include "core/MidiComparisonModel.h"
 #include "core/MidiNoteSelectionState.h"
 #include "core/MidiTimeMap.h"
@@ -58,11 +59,10 @@ private:
         commandRedo,
         commandResetPanelLayout,
         commandToggleMidiComparison,
-        commandAddAudioTrack,
         commandAddMidiTrack,
+        commandImportAudioTrack,
         commandImportMidiTrack,
         commandExportSelectedMidiTrack,
-        commandAssignAudioFile,
         commandDeleteSelectedTrack,
         commandDeleteSelectedNotes,
         commandQuantizeSelectedNotes,
@@ -104,12 +104,11 @@ private:
     void refreshTrackView();
     void updateStatusForSelection();
 
-    void addAudioTrack();
     void addMidiTrack();
+    void importAudioTracks();
     void importMidiTrack();
     bool canExportSelectedMidiTrack() const;
     void exportSelectedMidiTrack();
-    void assignAudioFileToSelectedTrack();
     void deleteSelectedTrack();
     bool canDeleteSelectedMidiNotes() const;
     bool canEditSelectedMidiNotes() const;
@@ -133,8 +132,17 @@ private:
     void synchronizeMidiNoteSelectionWithEditableTrack();
     void updateStatusForMidiNoteSelection();
     void startSelectedMidiPlayback();
+    void pausePlayback();
     void stopMidiPlayback();
     void panicMidiPlayback();
+    void seekPlayback(double deltaSeconds);
+    void refreshTransportSelectionState();
+    void synchronizeStoppedTransportPreview();
+    void requestSelectedWavBpmIfNeeded();
+    void processCompletedWavBpmAnalysis();
+    void updateTransportDisplays();
+    void updatePlaybackPlayhead(bool ensureVisible);
+    void updateHorizontalViewportViews();
     void updateTransportControlState();
     void timerCallback() override;
     void updateVelocityControlState();
@@ -184,6 +192,7 @@ private:
     void initializeVisualWorkspace();
     void updateVisualWorkspace();
     void updateHorizontalScrollRange();
+    double estimateHorizontalContentEndBeat() const;
     void applyHorizontalZoom(double zoomFactor);
     void fitHorizontalToProject();
     void applyPitchZoom(double zoomFactor);
@@ -209,12 +218,18 @@ private:
     core::ProjectHistory projectHistory_;
     core::ProjectController projectController_;
     audio::MidiAuditionEngine midiAuditionEngine_;
+    audio::WavBpmAnalysisService wavBpmAnalysisService_;
 
     juce::MenuBarComponent menuBar_;
 
     juce::Label transportLabel_;
+    juce::TextButton rewindButton_ { "<<" };
     juce::TextButton playButton_ { "Play" };
+    juce::TextButton pauseButton_ { "Pause" };
     juce::TextButton stopButton_ { "Stop" };
+    juce::TextButton fastForwardButton_ { ">>" };
+    juce::Label timeCounterLabel_;
+    juce::Label bpmLabel_;
     juce::TextButton panicButton_ { "Panic" };
     juce::Label volumeLabel_;
     juce::Slider volumeSlider_;
@@ -248,7 +263,14 @@ private:
     bool suppressVelocityEditorCallbacks_ { false };
     bool midiComparisonEnabled_ { false };
     bool suppressViewportControlCallbacks_ { false };
-    bool transportWasPlaying_ { false };
+    audio::SelectionPlaybackSummary transportSelectionSummary_;
+    std::optional<audio::PlayableSelectionIdentity> playableSelectionIdentity_;
+    std::uint64_t playableSelectionGeneration_ { 0 };
+    std::optional<audio::WavBpmAnalysisResult> selectedWavBpmResult_;
+    std::optional<audio::WavFileFingerprint> requestedWavFingerprint_;
+    std::uint64_t wavBpmRequestGeneration_ { 0 };
+    audio::TransportMode previousTransportMode_ { audio::TransportMode::stopped };
+    bool playheadFollowActive_ { false };
     std::optional<double> playbackPlayheadBeat_;
     core::MidiComparisonTolerance midiComparisonTolerance_;
 

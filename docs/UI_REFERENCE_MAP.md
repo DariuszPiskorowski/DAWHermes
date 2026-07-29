@@ -1,4 +1,4 @@
-# UI Reference Map (accepted Milestones 3.1-3.3)
+# UI Reference Map (Milestones 3.1-3.4)
 
 This document captures the structural UI alignment and visual-analysis surfaces active in Milestone 3.1.
 
@@ -102,6 +102,32 @@ Accepted Milestone 3.3 audition surfaces:
 - orange playback playhead in Timeline and Piano Roll;
 - no Record control and no audio-track playback.
 
+Accepted Milestone 3.4 audition surfaces:
+
+- `File -> Import Audio as Track...` opens the native multi-file WAV chooser;
+- each valid WAV creates a filename-named audio track, stores source metadata,
+  connects its Timeline waveform, and participates in one batch Undo/Redo;
+- unreadable batch members are skipped with one non-modal aggregate status;
+- compact `<<`, `Play`, `Pause`, `Stop`, `>>`, counter, BPM, `Panic`, and Master
+  Volume controls are present in the transport strip;
+- one selected MIDI track and all selected readable imported WAV tracks can play
+  together;
+- audio-only and MIDI-only selection remain playable;
+- Pause/resume preserves the immutable playback selection and current position;
+- changing the stopped playable selection resets its position to zero, while
+  refreshing the same selection preserves an intentional stopped seek;
+- `<<` and `>>` seek by 5 seconds and clamp to the selection bounds;
+- Stop silences MIDI/WAV, resets the counter to zero, hides the playhead, and
+  preserves the horizontal viewport; Pause preserves the visible playhead;
+- Panic and Master Volume affect MIDI and WAV;
+- skipped unreadable audio is reported in the existing non-modal status strip;
+- the BPM readout prefers explicit MIDI tempo, then confidently detected WAV
+  tempo, then the 120 BPM audition fallback;
+- Timeline and Piano Roll retain one shared orange playhead and viewport, with
+  threshold-based follow during active playback;
+- no Record, mixer, mute/solo, looping, or audio-editing
+  controls are added.
+
 ## Compare mode
 
 `View -> Compare Selected MIDI Tracks` is enabled only when exactly two MIDI tracks are selected.
@@ -114,4 +140,9 @@ The current Timeline and Piano Roll styling is intentionally functional rather t
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
 MIDI note editing is accepted Milestone 3.2 functionality.
-M3.3 adds selected-track MIDI audition only. WAV playback, Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange are not part of this checkpoint.
+Milestone 3.4 is complete and manually accepted.
+M3.4 adds selected imported-WAV playback alongside the M3.3 internal MIDI synth.
+Its asynchronous cached BPM detector changes beat/time mapping only; it does not
+change WAV speed. M3.4 does not add time stretching, final sample-accurate
+mixing, Timeline editing, controller lanes, copy/paste, or Cubase-specific
+exchange.

@@ -113,6 +113,51 @@ function Get-BuildDir {
     return (Join-Path $RepoRoot 'build')
 }
 
+function Get-CMakeCacheValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CachePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    if (-not (Test-Path -LiteralPath $CachePath)) {
+        return ''
+    }
+
+    $escapedName = [regex]::Escape($Name)
+    foreach ($line in Get-Content -LiteralPath $CachePath) {
+        if ($line -match "^\s*$escapedName\s*(?::[^=]+)?\s*=\s*(.*?)\s*$") {
+            return $Matches[1].Trim()
+        }
+    }
+
+    return ''
+}
+
+function Assert-NoLtcgReleaseTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CachePath
+    )
+
+    if (-not (Test-Path -LiteralPath $CachePath)) {
+        throw "Release build tree is not configured: $CachePath"
+    }
+
+    $ltcgSetting = Get-CMakeCacheValue `
+        -CachePath $CachePath `
+        -Name 'DAWHERMES_ENABLE_LTCG'
+    if ($ltcgSetting -ne 'OFF') {
+        $message =
+            "Unsafe Release build refused: DAWHERMES_ENABLE_LTCG must be exactly OFF " +
+            "in $CachePath (found '$ltcgSetting'). Reconfigure with " +
+            ".\scripts\configure.ps1 -EnableLtcg OFF."
+        throw $message
+    }
+}
+
 function Get-BuiltExecutablePath {
     param(
         [Parameter(Mandatory = $true)]

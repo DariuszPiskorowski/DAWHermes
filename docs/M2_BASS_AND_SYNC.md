@@ -99,11 +99,13 @@ Manual GUI acceptance for Milestone 2 functional integration passed on the insta
 Known limitation:
 
 Milestone 2 functional integration is accepted.
-Musical-quality comparison of original, repaired and synchronized MIDI remains pending visual piano-roll/timeline support in Milestone 3.
+Visual piano-roll/timeline comparison and synchronized MIDI/WAV audition were
+deferred from M2 and are now available through the complete, manually accepted
+M3.1-M3.4 workflows.
 
 ## Remaining out of scope
 
-Milestone 2 does not implement:
+Milestone 2 itself does not implement:
 
 - `Set / Fix BPM...` real engine path;
 - piano-roll editing/audio playback engine;

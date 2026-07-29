@@ -53,7 +53,8 @@ This allows reuse of the local midi-cleaner environment without spawning externa
 
 ## Drums/Bass/Sync data flow
 
-1. User selects audio track with assigned WAV source.
+1. User imports a WAV with `File -> Import Audio as Track...` and selects the
+   resulting audio track.
 2. For pair workflows (bass/sync), the user selects an audio+MIDI pair with valid imported MIDI metadata.
 3. DAWHermes validates Hermes options and track context.
 4. Embedded Python calls:

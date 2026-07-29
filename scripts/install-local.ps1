@@ -1,3 +1,10 @@
+[CmdletBinding()]
+param(
+    [switch]$SkipBuild,
+
+    [string]$BuildDirectory = ''
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -29,9 +36,21 @@ function New-OrUpdateShortcut {
 }
 
 $repoRoot = Get-RepoRoot -ScriptRoot $PSScriptRoot
-$buildDir = Get-BuildDir -RepoRoot $repoRoot
+$buildDir = if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
+    Get-BuildDir -RepoRoot $repoRoot
+} elseif ([System.IO.Path]::IsPathRooted($BuildDirectory)) {
+    [System.IO.Path]::GetFullPath($BuildDirectory)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $BuildDirectory))
+}
 
-& (Join-Path $PSScriptRoot 'build-release.ps1')
+if ($SkipBuild) {
+    $cachePath = Join-Path $buildDir 'CMakeCache.txt'
+    Assert-NoLtcgReleaseTree -CachePath $cachePath
+} else {
+    & (Join-Path $PSScriptRoot 'build-release.ps1') `
+        -BuildDirectory $BuildDirectory
+}
 
 $sourceExe = Get-BuiltExecutablePath -BuildDir $buildDir -Configuration Release
 $sourceDir = Split-Path -Parent $sourceExe
