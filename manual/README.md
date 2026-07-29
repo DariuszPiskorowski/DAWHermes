@@ -34,9 +34,9 @@ A troubleshooting chapter is deliberately not included yet. It will be added lat
 - [Create and use a Loop range](03_TRANSPORT_LOOP_AND_WORK_REGION.md#creating-a-loop-range)
 - [Understand where BPM comes from](05_BPM_TEMPO_AND_TIMING.md#how-dawhermes-chooses-project-tempo)
 - [Edit MIDI notes](06_MIDI_EDITOR.md)
-- [Create drum MIDI with Hermes](07_HERMES_TOOLS.md#drums--make-midi-from-wav)
-- [Repair bass MIDI against audio](07_HERMES_TOOLS.md#bass--repair-midi-against-wav)
-- [Synchronize MIDI with WAV](07_HERMES_TOOLS.md#synchronize-midi-with-wav)
+- [Create drum MIDI with Hermes](07_HERMES_TOOLS.md)
+- [Repair bass MIDI against audio](07_HERMES_TOOLS.md)
+- [Synchronize MIDI with WAV](07_HERMES_TOOLS.md)
 - [Configure the audio output](08_AUDIO_DEVICE_SETTINGS.md)
 - [Export corrected MIDI](09_EXPORT_AND_FILE_EXCHANGE.md)
 
