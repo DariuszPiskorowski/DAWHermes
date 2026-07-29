@@ -260,6 +260,58 @@ See [BPM, Tempo and Timing](05_BPM_TEMPO_AND_TIMING.md) for the full explanation
 8. Read **Audio Device Status...** when you need confirmation.
 9. Play the project.
 
+# 15. Use the planned complete DAWHermes–ACE Studio–Cubase workflow
+
+**Status: Planned; the current application does not perform the ACE or Composer Assistant transfer steps yet**
+
+This is the intended end-to-end workflow for which the major DAWHermes integrations are being developed.
+
+1. Import WAV stems and MIDI into DAWHermes.
+2. Use Hermes to extract, repair or synchronize material where required.
+3. Correct remaining MIDI problems manually in the Piano Roll.
+4. Use Mute/Solo to understand the musical role of each track.
+5. Create a Loop around the passage that needs composition or an ACE Studio performance.
+6. Let Composer Assistant read the work region together with surrounding MIDI and project context.
+7. Ask Composer Assistant to create, continue or refine suitable MIDI.
+8. Audition the proposal repeatedly in the same Loop.
+9. Keep, edit or reject the proposal.
+10. Send the accepted MIDI, lyrics, timing and track-role context to the separately installed ACE Studio application through its local MCP Server.
+11. Create or refine an AI vocal or AI instrument performance in the open ACE Studio project.
+12. Return or exchange the accepted result with the wider DAWHermes workflow.
+13. Audition the returned material against the WAV/MIDI project.
+14. Repeat the Loop, editing and ACE Studio stages when another version is needed.
+15. Export the accepted MIDI and audio material for final arrangement, sound design, mixing and mastering in Cubase.
+
+The project owner has confirmed that the paid ACE Studio installation used for DAWHermes development includes an MCP Server option that can be enabled.
+
+This confirms access to the intended integration mechanism, but the exact endpoint, tool list and supported operations still have to be inspected during the ACE Studio integration milestone.
+
+### What is already possible in this workflow
+
+The current application already supports:
+
+- importing WAV and MIDI;
+- Hermes drum extraction, bass repair and MIDI/WAV synchronization;
+- MIDI editing;
+- whole-project playback;
+- Mute/Solo;
+- Loop work-region preparation;
+- standard selected-track MIDI export.
+
+### What remains planned
+
+The following steps are not implemented yet:
+
+- Composer Assistant generation inside DAWHermes;
+- automatic use of the Loop region as assistant input;
+- DAWHermes connection to the ACE Studio MCP Server;
+- automatic transfer of MIDI, lyrics, project context or results;
+- Cubase-specific project exchange.
+
+ACE Studio is a major planned integration but remains optional for each user. It is installed and licensed separately and must not become a hidden requirement for using the rest of DAWHermes.
+
+See [Composer Assistant](04_COMPOSER_ASSISTANT.md#planned-ace-studio-connection) and [Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md#ace-studio-is-a-planned-first-class-integration).
+
 # Workflow principles
 
 Across all workflows, remember:
@@ -272,6 +324,8 @@ Across all workflows, remember:
 - Loop defines the focused work region;
 - Hermes analyses or corrects existing material;
 - Composer Assistant generation remains planned;
+- ACE Studio is a first-class planned integration, installed and licensed separately;
+- DAWHermes remains usable without ACE Studio;
 - final instruments, mixing and mastering belong in Cubase.
 
 ---
