@@ -157,7 +157,8 @@ void MidiAuditionEngine::setPreviewDuration(
     double durationSeconds,
     std::uint64_t playableSelectionGeneration)
 {
-    transportState_.setPreviewDuration(
+    synchronizeStoppedTransportPreview(
+        transportState_,
         durationSeconds,
         playableSelectionGeneration);
 }

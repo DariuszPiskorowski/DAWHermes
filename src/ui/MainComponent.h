@@ -137,6 +137,7 @@ private:
     void panicMidiPlayback();
     void seekPlayback(double deltaSeconds);
     void refreshTransportSelectionState();
+    void synchronizeStoppedTransportPreview();
     void requestSelectedWavBpmIfNeeded();
     void processCompletedWavBpmAnalysis();
     void updateTransportDisplays();

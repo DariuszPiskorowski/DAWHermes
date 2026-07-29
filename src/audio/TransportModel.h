@@ -68,6 +68,11 @@ private:
     std::atomic<bool> playheadVisible_ { false };
 };
 
+void synchronizeStoppedTransportPreview(
+    SharedTransportState& transportState,
+    double durationSeconds,
+    std::uint64_t playableSelectionGeneration) noexcept;
+
 double clampTransportSeconds(double seconds, double totalSeconds) noexcept;
 double seekTransportSeconds(
     double currentSeconds,

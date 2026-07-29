@@ -201,6 +201,16 @@ std::shared_ptr<const SelectionPlaybackSnapshot> SharedTransportState::snapshot(
     return snapshot_.load(std::memory_order_acquire);
 }
 
+void synchronizeStoppedTransportPreview(
+    SharedTransportState& transportState,
+    double durationSeconds,
+    std::uint64_t playableSelectionGeneration) noexcept
+{
+    transportState.setPreviewDuration(
+        durationSeconds,
+        playableSelectionGeneration);
+}
+
 double clampTransportSeconds(double seconds, double totalSeconds) noexcept
 {
     const auto total = sanitizedDuration(totalSeconds);

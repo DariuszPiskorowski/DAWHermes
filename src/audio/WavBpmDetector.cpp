@@ -336,7 +336,22 @@ std::size_t WavBpmCache::size() const noexcept
 }
 
 WavBpmAnalysisService::WavBpmAnalysisService()
-    : worker_([this](std::stop_token stopToken) { workerLoop(stopToken); })
+    : WavBpmAnalysisService(
+        [](const std::filesystem::path& sourcePath) {
+            return fingerprintWavFile(sourcePath);
+        },
+        [](const std::filesystem::path& sourcePath) {
+            return analyzeWavBpm(sourcePath);
+        })
+{
+}
+
+WavBpmAnalysisService::WavBpmAnalysisService(
+    WavBpmFingerprintFunction fingerprintFunction,
+    WavBpmAnalyzeFunction analyzeFunction)
+    : fingerprintFunction_(std::move(fingerprintFunction)),
+      analyzeFunction_(std::move(analyzeFunction)),
+      worker_([this](std::stop_token stopToken) { workerLoop(stopToken); })
 {
 }
 
@@ -348,12 +363,14 @@ WavBpmAnalysisService::~WavBpmAnalysisService()
 std::uint64_t WavBpmAnalysisService::request(
     const std::filesystem::path& sourcePath)
 {
-    const auto fingerprint = fingerprintWavFile(sourcePath);
+    const auto fingerprint = fingerprintFunction_(sourcePath);
     std::scoped_lock lock(mutex_);
     const auto generation = nextGeneration_++;
+    latestRequestedGeneration_ = generation;
     completed_.reset();
 
     if (!fingerprint.has_value()) {
+        pending_.reset();
         analyzing_ = false;
         return generation;
     }
@@ -365,6 +382,7 @@ std::uint64_t WavBpmAnalysisService::request(
             generation,
             true,
         };
+        pending_.reset();
         analyzing_ = false;
         return generation;
     }
@@ -396,6 +414,9 @@ void WavBpmAnalysisService::stop()
     if (worker_.joinable()) {
         worker_.join();
     }
+    std::scoped_lock lock(mutex_);
+    pending_.reset();
+    analyzing_ = false;
 }
 
 void WavBpmAnalysisService::workerLoop(std::stop_token stopToken)
@@ -412,38 +433,46 @@ void WavBpmAnalysisService::workerLoop(std::stop_token stopToken)
             pending_.reset();
         }
 
-        auto estimate = analyzeWavBpm(
+        auto estimate = analyzeFunction_(
             core::pathFromUtf8(request.fingerprint.sourcePath));
-        const auto currentFingerprint = fingerprintWavFile(
+        const auto currentFingerprint = fingerprintFunction_(
             core::pathFromUtf8(request.fingerprint.sourcePath));
         std::scoped_lock lock(mutex_);
         if (!currentFingerprint.has_value()) {
-            completed_ = WavBpmAnalysisResult {
-                request.fingerprint,
-                WavBpmEstimate {},
-                request.generation,
-                false,
-            };
+            if (request.generation == latestRequestedGeneration_) {
+                completed_ = WavBpmAnalysisResult {
+                    request.fingerprint,
+                    WavBpmEstimate {},
+                    request.generation,
+                    false,
+                };
+            }
             analyzing_ = pending_.has_value();
             continue;
         }
         if (currentFingerprint.has_value()
             && !(currentFingerprint.value() == request.fingerprint)) {
-            pending_ = PendingRequest {
-                currentFingerprint.value(),
-                request.generation,
-            };
-            analyzing_ = true;
-            condition_.notify_one();
+            const auto mayRetry = request.generation == latestRequestedGeneration_
+                && !pending_.has_value();
+            if (mayRetry) {
+                pending_ = PendingRequest {
+                    currentFingerprint.value(),
+                    request.generation,
+                };
+                condition_.notify_one();
+            }
+            analyzing_ = pending_.has_value();
             continue;
         }
         cache_.store(request.fingerprint, estimate);
-        completed_ = WavBpmAnalysisResult {
-            request.fingerprint,
-            std::move(estimate),
-            request.generation,
-            false,
-        };
+        if (request.generation == latestRequestedGeneration_) {
+            completed_ = WavBpmAnalysisResult {
+                request.fingerprint,
+                std::move(estimate),
+                request.generation,
+                false,
+            };
+        }
         analyzing_ = pending_.has_value();
     }
 }

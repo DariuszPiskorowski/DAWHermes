@@ -45,6 +45,11 @@ WavBpmEstimate analyzeWavBpm(
     const std::filesystem::path& sourcePath,
     double maximumAnalysisSeconds = 90.0);
 
+using WavBpmFingerprintFunction = std::function<
+    std::optional<WavFileFingerprint>(const std::filesystem::path&)>;
+using WavBpmAnalyzeFunction = std::function<
+    WavBpmEstimate(const std::filesystem::path&)>;
+
 class WavBpmCache {
 public:
     std::optional<WavBpmEstimate> find(
@@ -68,6 +73,9 @@ private:
 class WavBpmAnalysisService {
 public:
     WavBpmAnalysisService();
+    WavBpmAnalysisService(
+        WavBpmFingerprintFunction fingerprintFunction,
+        WavBpmAnalyzeFunction analyzeFunction);
     ~WavBpmAnalysisService();
 
     WavBpmAnalysisService(const WavBpmAnalysisService&) = delete;
@@ -88,10 +96,13 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable_any condition_;
+    WavBpmFingerprintFunction fingerprintFunction_;
+    WavBpmAnalyzeFunction analyzeFunction_;
     WavBpmCache cache_;
     std::optional<PendingRequest> pending_;
     std::optional<WavBpmAnalysisResult> completed_;
     std::uint64_t nextGeneration_ { 1 };
+    std::uint64_t latestRequestedGeneration_ { 0 };
     bool analyzing_ { false };
     std::jthread worker_;
 };

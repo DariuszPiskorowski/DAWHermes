@@ -2799,6 +2799,142 @@ bool testStoppedPlayableSelectionIdentityAndSeekPreservation()
     return true;
 }
 
+bool testStoppedTransportResynchronizesCurrentSelection()
+{
+    const auto makeAudioSnapshot = [](
+                                       double durationSeconds,
+                                       double bpm,
+                                       std::uint64_t sourceTrackId) {
+        dawhermes::audio::SelectionPlaybackSnapshot snapshot;
+        snapshot.durationSeconds = durationSeconds;
+        snapshot.playheadTempoMap = {
+            dawhermes::core::MidiTempoEvent {
+                0.0,
+                static_cast<int>(std::llround(60000000.0 / bpm)),
+            },
+        };
+        dawhermes::audio::AudioStemPlaybackSnapshot stem;
+        stem.sourceTrackId = sourceTrackId;
+        stem.sourceTrackName = "Controlled stem";
+        stem.sourcePath = "controlled.wav";
+        stem.sourceSampleRate = 1.0;
+        stem.frameCount = static_cast<std::uint64_t>(
+            std::ceil(durationSeconds));
+        stem.channels = {
+            std::vector<float>(
+                static_cast<std::size_t>(stem.frameCount),
+                0.25f),
+        };
+        snapshot.audioStems.push_back(std::move(stem));
+        return snapshot;
+    };
+
+    dawhermes::audio::SelectionPlaybackSummary summaryB;
+    summaryB.playable = true;
+    summaryB.audioTrackCount = 1;
+    summaryB.durationSeconds = 7.0;
+    summaryB.tempoSource = dawhermes::audio::PlaybackTempoSource::detectedWav;
+    summaryB.tempoMap = {
+        dawhermes::core::MidiTempoEvent {
+            0.0,
+            static_cast<int>(std::llround(60000000.0 / 90.0)),
+        },
+    };
+    summaryB.identity.readableAudioTrackIds = { 202 };
+
+    for (const auto pauseBeforeSelectionChange : { false, true }) {
+        dawhermes::audio::SharedTransportState state;
+        dawhermes::core::TimelineViewportState viewport;
+        viewport.startBeat = 42.0;
+        viewport.visibleBeats = 16.0;
+        const auto viewportBeforeStop = viewport;
+
+        state.setPreviewDuration(20.0, 1);
+        auto snapshotA = makeAudioSnapshot(20.0, 120.0, 101);
+        state.prepare(
+            std::make_shared<const dawhermes::audio::SelectionPlaybackSnapshot>(
+                std::move(snapshotA)),
+            0.0);
+        state.play();
+        state.updatePositionFromAudio(12.0);
+        if (pauseBeforeSelectionChange) {
+            state.pause();
+            EXPECT_TRUE(state.isPaused());
+        } else {
+            EXPECT_TRUE(state.isPlaying());
+        }
+
+        // Selection B is already summarized, but immutable playback A remains
+        // authoritative until Stop.
+        EXPECT_TRUE(state.snapshot() != nullptr);
+        EXPECT_TRUE(approxEqual(state.totalSeconds(), 20.0));
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 12.0));
+
+        state.stop();
+        dawhermes::audio::synchronizeStoppedTransportPreview(
+            state,
+            summaryB.durationSeconds,
+            2);
+
+        EXPECT_EQ(state.mode(), dawhermes::audio::TransportMode::stopped);
+        EXPECT_TRUE(!state.hasPreparedPlayback());
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+        EXPECT_TRUE(approxEqual(state.totalSeconds(), summaryB.durationSeconds));
+        EXPECT_TRUE(!state.isPlayheadVisible());
+        EXPECT_EQ(
+            dawhermes::audio::formatTransportCounter(
+                state.currentSeconds(),
+                state.totalSeconds()),
+            std::string("00:00 / 00:07"));
+        EXPECT_TRUE(approxEqual(
+            dawhermes::audio::selectionSummaryBpm(
+                state.currentSeconds(),
+                summaryB),
+            90.0,
+            0.01));
+        EXPECT_TRUE(approxEqual(viewport.startBeat, viewportBeforeStop.startBeat));
+        EXPECT_TRUE(approxEqual(
+            viewport.visibleBeats,
+            viewportBeforeStop.visibleBeats));
+
+        auto snapshotB = makeAudioSnapshot(7.0, 90.0, 202);
+        state.prepare(
+            std::make_shared<const dawhermes::audio::SelectionPlaybackSnapshot>(
+                std::move(snapshotB)),
+            state.currentSeconds());
+        state.play();
+        EXPECT_TRUE(state.isPlaying());
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+        EXPECT_TRUE(approxEqual(
+            dawhermes::audio::selectionPlaybackBpm(
+                state.currentSeconds(),
+                *state.snapshot()),
+            90.0,
+            0.01));
+
+        state.stop();
+        dawhermes::audio::synchronizeStoppedTransportPreview(
+            state,
+            summaryB.durationSeconds,
+            2);
+        state.seek(100.0);
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 7.0));
+        state.seek(-100.0);
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+
+        state.panic();
+        dawhermes::audio::synchronizeStoppedTransportPreview(
+            state,
+            summaryB.durationSeconds,
+            2);
+        EXPECT_TRUE(!state.hasPreparedPlayback());
+        EXPECT_TRUE(approxEqual(state.currentSeconds(), 0.0));
+        EXPECT_TRUE(approxEqual(state.totalSeconds(), 7.0));
+        EXPECT_TRUE(!state.isPlayheadVisible());
+    }
+    return true;
+}
+
 bool testTransportPauseResumeSeekAndCounter()
 {
     ProjectModel project;
@@ -3326,6 +3462,213 @@ bool testWavBpmCacheBoundedLruPolicy()
             <= dawhermes::audio::kMaximumWavBpmCacheEntries);
     }
     EXPECT_TRUE(cache.find(newest).has_value());
+    return true;
+}
+
+struct ControlledWavBpmAnalysis {
+    explicit ControlledWavBpmAnalysis(std::string pathToBlock)
+        : blockedPath(std::move(pathToBlock))
+    {
+    }
+
+    dawhermes::audio::WavBpmFingerprintFunction fingerprintFunction()
+    {
+        return [this](const std::filesystem::path& sourcePath) {
+            const auto key = dawhermes::core::pathToUtf8(
+                sourcePath.lexically_normal());
+            std::scoped_lock lock(mutex);
+            const auto version = fingerprintVersions.contains(key)
+                ? fingerprintVersions.at(key)
+                : std::uintmax_t { 1 };
+            return std::optional<dawhermes::audio::WavFileFingerprint> {
+                dawhermes::audio::WavFileFingerprint {
+                    key,
+                    version,
+                    {},
+                },
+            };
+        };
+    }
+
+    dawhermes::audio::WavBpmAnalyzeFunction analyzeFunction()
+    {
+        return [this](const std::filesystem::path& sourcePath) {
+            const auto key = dawhermes::core::pathToUtf8(
+                sourcePath.lexically_normal());
+            std::unique_lock lock(mutex);
+            const auto callCount = ++analysisCalls[key];
+            condition.notify_all();
+            if (key == blockedPath && callCount == 1) {
+                condition.wait(lock, [this]() { return releaseBlockedAnalysis; });
+            }
+
+            dawhermes::audio::WavBpmEstimate estimate;
+            estimate.bpm = key.find("B.wav") != std::string::npos
+                ? 130.0
+                : (key.find("C.wav") != std::string::npos ? 150.0 : 110.0);
+            estimate.confidence = 0.9;
+            estimate.analyzedSeconds = 8.0;
+            return estimate;
+        };
+    }
+
+    bool waitForAnalysisCount(const std::string& path, int expectedCount)
+    {
+        std::unique_lock lock(mutex);
+        return condition.wait_for(
+            lock,
+            std::chrono::seconds(3),
+            [&]() { return analysisCalls[path] >= expectedCount; });
+    }
+
+    void setFingerprintVersion(const std::string& path, std::uintmax_t version)
+    {
+        std::scoped_lock lock(mutex);
+        fingerprintVersions[path] = version;
+    }
+
+    void releaseFirstAnalysis()
+    {
+        {
+            std::scoped_lock lock(mutex);
+            releaseBlockedAnalysis = true;
+        }
+        condition.notify_all();
+    }
+
+    int analysisCallCount(const std::string& path)
+    {
+        std::scoped_lock lock(mutex);
+        return analysisCalls[path];
+    }
+
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::map<std::string, std::uintmax_t> fingerprintVersions;
+    std::map<std::string, int> analysisCalls;
+    std::string blockedPath;
+    bool releaseBlockedAnalysis { false };
+};
+
+std::optional<dawhermes::audio::WavBpmAnalysisResult>
+waitForControlledWavBpmResult(
+    dawhermes::audio::WavBpmAnalysisService& service)
+{
+    const auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (auto result = service.pollCompleted(); result.has_value()) {
+            return result;
+        }
+        std::this_thread::yield();
+    }
+    return std::nullopt;
+}
+
+bool testWavBpmNewestRequestWins()
+{
+    const std::filesystem::path pathA("A.wav");
+    const std::filesystem::path pathB("B.wav");
+    const std::filesystem::path pathC("C.wav");
+    const auto keyA = dawhermes::core::pathToUtf8(pathA);
+    const auto keyB = dawhermes::core::pathToUtf8(pathB);
+    const auto keyC = dawhermes::core::pathToUtf8(pathC);
+
+    {
+        ControlledWavBpmAnalysis controlled(keyA);
+        controlled.setFingerprintVersion(keyA, 1);
+        dawhermes::audio::WavBpmAnalysisService service(
+            controlled.fingerprintFunction(),
+            controlled.analyzeFunction());
+        const auto generationA = service.request(pathA);
+        const auto started = controlled.waitForAnalysisCount(keyA, 1);
+        controlled.setFingerprintVersion(keyA, 2);
+        controlled.releaseFirstAnalysis();
+        const auto retried = controlled.waitForAnalysisCount(keyA, 2);
+        const auto completed = waitForControlledWavBpmResult(service);
+        service.stop();
+
+        EXPECT_TRUE(started);
+        EXPECT_TRUE(retried);
+        EXPECT_TRUE(completed.has_value());
+        EXPECT_EQ(completed->requestGeneration, generationA);
+        EXPECT_EQ(completed->fingerprint.sourcePath, keyA);
+        EXPECT_EQ(completed->fingerprint.fileSize, std::uintmax_t { 2 });
+        EXPECT_EQ(controlled.analysisCallCount(keyA), 2);
+        EXPECT_TRUE(!service.isAnalyzing());
+    }
+
+    {
+        ControlledWavBpmAnalysis controlled(keyA);
+        controlled.setFingerprintVersion(keyA, 1);
+        controlled.setFingerprintVersion(keyB, 1);
+        dawhermes::audio::WavBpmAnalysisService service(
+            controlled.fingerprintFunction(),
+            controlled.analyzeFunction());
+        service.request(pathA);
+        const auto startedA = controlled.waitForAnalysisCount(keyA, 1);
+        const auto generationB = service.request(pathB);
+        controlled.setFingerprintVersion(keyA, 2);
+        controlled.releaseFirstAnalysis();
+        const auto startedB = controlled.waitForAnalysisCount(keyB, 1);
+        const auto completed = waitForControlledWavBpmResult(service);
+        service.stop();
+
+        EXPECT_TRUE(startedA);
+        EXPECT_TRUE(startedB);
+        EXPECT_TRUE(completed.has_value());
+        EXPECT_EQ(completed->requestGeneration, generationB);
+        EXPECT_EQ(completed->fingerprint.sourcePath, keyB);
+        EXPECT_EQ(controlled.analysisCallCount(keyA), 1);
+        EXPECT_EQ(controlled.analysisCallCount(keyB), 1);
+        EXPECT_TRUE(!service.isAnalyzing());
+    }
+
+    {
+        ControlledWavBpmAnalysis controlled(keyA);
+        dawhermes::audio::WavBpmAnalysisService service(
+            controlled.fingerprintFunction(),
+            controlled.analyzeFunction());
+        service.request(pathA);
+        const auto startedA = controlled.waitForAnalysisCount(keyA, 1);
+        service.request(pathB);
+        const auto generationC = service.request(pathC);
+        controlled.releaseFirstAnalysis();
+        const auto startedC = controlled.waitForAnalysisCount(keyC, 1);
+        const auto completed = waitForControlledWavBpmResult(service);
+        service.stop();
+
+        EXPECT_TRUE(startedA);
+        EXPECT_TRUE(startedC);
+        EXPECT_TRUE(completed.has_value());
+        EXPECT_EQ(completed->requestGeneration, generationC);
+        EXPECT_EQ(completed->fingerprint.sourcePath, keyC);
+        EXPECT_EQ(controlled.analysisCallCount(keyA), 1);
+        EXPECT_EQ(controlled.analysisCallCount(keyB), 0);
+        EXPECT_EQ(controlled.analysisCallCount(keyC), 1);
+        EXPECT_TRUE(!service.isAnalyzing());
+    }
+
+    {
+        ControlledWavBpmAnalysis controlled(keyA);
+        dawhermes::audio::WavBpmAnalysisService service(
+            controlled.fingerprintFunction(),
+            controlled.analyzeFunction());
+        service.request(pathA);
+        const auto startedA = controlled.waitForAnalysisCount(keyA, 1);
+        std::atomic<bool> stopped { false };
+        std::thread stopper([&]() {
+            service.stop();
+            stopped.store(true, std::memory_order_release);
+        });
+        controlled.releaseFirstAnalysis();
+        stopper.join();
+
+        EXPECT_TRUE(startedA);
+        EXPECT_TRUE(stopped.load(std::memory_order_acquire));
+        EXPECT_TRUE(!service.isAnalyzing());
+    }
+
     return true;
 }
 
@@ -5386,12 +5729,14 @@ int main(int argc, char* argv[])
         { "Selection playback decoded-audio budget", testSelectionPlaybackDecodedAudioBudget },
         { "Selection playback transport stop/panic state", testSelectionPlaybackTransportAndStopPanicState },
         { "Stopped playable-selection identity and seek preservation", testStoppedPlayableSelectionIdentityAndSeekPreservation },
+        { "Stopped transport resynchronizes current selection", testStoppedTransportResynchronizesCurrentSelection },
         { "Transport pause resume seek and counter", testTransportPauseResumeSeekAndCounter },
         { "Playback tempo source priority and duration", testPlaybackTempoSourcePriorityAndDuration },
         { "Playback summary durations and audio-only tempo", testPlaybackSummaryDurationsAndAudioOnlyTempo },
         { "WAV BPM detection and source safety", testWavBpmDetectionAndSourceSafety },
         { "WAV BPM cache reuse and invalidation", testWavBpmCacheReuseAndInvalidation },
         { "WAV BPM cache bounded LRU policy", testWavBpmCacheBoundedLruPolicy },
+        { "WAV BPM newest request wins", testWavBpmNewestRequestWins },
         { "Asynchronous WAV BPM analysis and cache reuse", testAsynchronousWavBpmAnalysisAndCacheReuse },
         { "Transport viewport follow and seek visibility", testTransportViewportFollowAndSeekVisibility },
         { "MIDI track exporter basics and round trip", testMidiTrackExporterBasicsAndRoundTrip },

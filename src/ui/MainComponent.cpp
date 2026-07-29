@@ -2618,9 +2618,9 @@ void MainComponent::pausePlayback()
 void MainComponent::stopMidiPlayback()
 {
     midiAuditionEngine_.stop();
+    synchronizeStoppedTransportPreview();
     previousTransportMode_ = audio::TransportMode::stopped;
     playheadFollowActive_ = false;
-    updatePlaybackPlayhead(false);
     updateTransportDisplays();
     statusLabel_.setText("Stopped playback", juce::dontSendNotification);
     updateTransportControlState();
@@ -2629,12 +2629,9 @@ void MainComponent::stopMidiPlayback()
 void MainComponent::panicMidiPlayback()
 {
     midiAuditionEngine_.panic();
-    midiAuditionEngine_.setPreviewDuration(
-        transportSelectionSummary_.durationSeconds,
-        playableSelectionGeneration_);
+    synchronizeStoppedTransportPreview();
     previousTransportMode_ = audio::TransportMode::stopped;
     playheadFollowActive_ = false;
-    updatePlaybackPlayhead(false);
     updateTransportDisplays();
     statusLabel_.setText("Panic: all playback silenced", juce::dontSendNotification);
     updateTransportControlState();
@@ -2696,12 +2693,23 @@ void MainComponent::refreshTransportSelectionState()
     }
     timelineView_.setTempoMap(resolvedTimelineInfo_.tempoMap);
     if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped) {
-        midiAuditionEngine_.setPreviewDuration(
-            summary.durationSeconds,
-            playableSelectionGeneration_);
-        updatePlaybackPlayhead(false);
+        synchronizeStoppedTransportPreview();
     }
     updateTransportDisplays();
+}
+
+void MainComponent::synchronizeStoppedTransportPreview()
+{
+    if (midiAuditionEngine_.transportMode() != audio::TransportMode::stopped) {
+        return;
+    }
+
+    midiAuditionEngine_.setPreviewDuration(
+        transportSelectionSummary_.durationSeconds,
+        playableSelectionGeneration_);
+    resolvedTimelineInfo_.tempoMap = transportSelectionSummary_.tempoMap;
+    timelineView_.setTempoMap(resolvedTimelineInfo_.tempoMap);
+    updatePlaybackPlayhead(false);
 }
 
 void MainComponent::requestSelectedWavBpmIfNeeded()
@@ -2753,6 +2761,15 @@ void MainComponent::processCompletedWavBpmAnalysis()
     selectedWavBpmResult_ = completed;
     if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped) {
         refreshTransportSelectionState();
+    } else {
+        audio::SelectionPlaybackOptions options;
+        if (completed->estimate.isConfident()) {
+            options.detectedWavBpm = completed->estimate.bpm;
+        }
+        transportSelectionSummary_ = audio::createSelectionPlaybackSummary(
+            projectModel_,
+            selectionState_,
+            options);
     }
 
     if (!completed->estimate.isConfident()
