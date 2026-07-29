@@ -2,6 +2,18 @@
 
 [Previous: Common Workflows](10_COMMON_WORKFLOWS.md) | [Back to contents](README.md)
 
+## ACE Bridge 2
+
+A plug-in installed with ACE Studio that can connect a compatible DAW to ACE Studio for MIDI and audio synchronization. DAWHermes does not host VST3 plug-ins yet, so ACE Bridge 2 is not currently available inside DAWHermes.
+
+## ACE-Step
+
+A separate open-source local music-generation model. ACE-Step is not a free edition of ACE Studio and does not automatically provide ACE Studio projects, voices, instruments, Bridge synchronization or MCP tools.
+
+## ACE Studio
+
+A separate commercial AI music workstation planned as a first-class DAWHermes integration for AI vocal and AI instrument workflows. ACE Studio is installed and licensed separately. DAWHermes should remain usable when ACE Studio is not installed.
+
 ## Audio
 
 Recorded sound represented as digital samples. In DAWHermes, imported audio currently uses WAV files.
@@ -40,7 +52,7 @@ A numbered route in MIDI or audio. MIDI channels can separate instrument instruc
 
 ## Composer Assistant
 
-The planned DAW-level musical assistant intended to generate, continue or improve MIDI inside a chosen work region while considering surrounding project context. Full generation is not yet integrated.
+The planned DAW-level musical assistant intended to generate, continue or improve MIDI inside a chosen work region while considering surrounding project context. It is also intended to coordinate the future ACE Studio MCP workflow. Full generation and ACE Studio connection are not yet integrated.
 
 ## Compare mode
 
@@ -96,11 +108,15 @@ Delay between an action or input and the corresponding audio output. Device, buf
 
 ## Loop
 
-A transport mode that repeatedly plays a selected musical time range.
+A transport mode that repeatedly plays a selected musical time range. In DAWHermes the visible Loop range also acts as the work region for focused editing and the planned Composer Assistant workflow.
 
 ## Master Volume
 
 The overall safe audition level for project playback. It is not a production mixer fader or automation control.
+
+## MCP Server
+
+A local server exposed by a compatible application through the Model Context Protocol. ACE Studio 2.0 includes an experimental MCP Server option that the DAWHermes project owner has confirmed is available in the paid development installation. DAWHermes does not connect to it yet.
 
 ## MIDI
 
@@ -228,7 +244,7 @@ A visual representation of audio amplitude through time.
 
 ## Work region
 
-The focused musical passage identified by the Loop range. It is used now for repeated listening and editing and is intended later to define the passage sent to Composer Assistant.
+The focused musical passage identified by the Loop range. It is used now for repeated listening and editing and is intended later to define the passage sent to Composer Assistant and coordinated with ACE Studio.
 
 ---
 
