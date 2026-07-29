@@ -106,8 +106,11 @@ Milestone 3.4 extends the same device and callback into selected-stem audition:
   horizontal viewport, with threshold-based follow during active playback;
 - tempo resolution prefers explicit imported MIDI tempo metadata, then a
   confident asynchronously detected WAV tempo, then a 120 BPM audition fallback;
-- bounded WAV tempo analysis and its 128-entry path/size/mtime LRU session cache
-  run outside the callback, while source audio always plays at original speed;
+- bounded WAV tempo analysis compares local autocorrelation peaks with their
+  half/double-tempo alternatives using beat-grid and intermediate-onset
+  evidence; an insufficient octave score margin remains unconfident;
+- its 128-entry path/size/mtime LRU session cache runs outside the callback,
+  while source audio always plays at original speed;
 - project-model source paths are UTF-8 and are converted explicitly to native
   Windows/JUCE paths at file boundaries.
 
