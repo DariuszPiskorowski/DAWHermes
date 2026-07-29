@@ -84,7 +84,9 @@ The current application does not yet:
 - show candidate versions;
 - insert or replace MIDI in the selected region;
 - compare, accept or reject an assistant result;
-- start or stop the external Composer Assistant service.
+- start or stop the external Composer Assistant service;
+- connect Composer Assistant to ACE Studio;
+- inspect or edit an ACE Studio project through MCP.
 
 A successful connection probe therefore means only that the configured endpoint is reachable.
 
@@ -106,6 +108,88 @@ The intended DAWHermes workflow is:
 10. Keep, edit or reject the proposal.
 
 This workflow is **planned**. The current application does not yet perform steps 5–10.
+
+## Planned ACE Studio connection
+
+ACE Studio is a first-class planned integration for DAWHermes, not a minor optional experiment in the product roadmap.
+
+The long-term aim is for Composer Assistant to act as the musical coordinator between the DAWHermes project and a separately installed ACE Studio application.
+
+The intended relationship is:
+
+```text
+DAWHermes project and Loop work region
+        ↓
+DAWHermes Composer Assistant
+        ↓
+ACE Studio MCP Server
+        ↓
+Open ACE Studio project
+```
+
+The DAWHermes project owner has a paid ACE Studio installation and has personally confirmed that the **MCP Server** option is present and can be enabled in ACE Studio settings.
+
+This confirms that the planned integration can be designed around a mechanism that is actually available in the development environment. It does not depend on an unverified free ACE Studio tier.
+
+### What Composer Assistant may eventually send or coordinate
+
+The planned integration may include:
+
+- the Loop work-region boundaries;
+- surrounding MIDI context;
+- selected melodies or accompaniment tracks;
+- lyrics when relevant;
+- project tempo and timing information;
+- track names and musical roles;
+- instructions for an AI vocal or AI instrument performance.
+
+### What may eventually return from ACE Studio
+
+Depending on the tools exposed by the installed MCP server, the workflow may eventually allow:
+
+- creation or editing of MIDI inside an open ACE Studio project;
+- preparation of AI vocal or AI instrument parts;
+- synchronization of material with the chosen work region;
+- retrieval or exchange of results for audition and further work.
+
+These are planned outcomes, not promises about the current ACE Studio MCP tool set.
+
+Before implementation, the ACE integration milestone must inspect the installed ACE Studio version and record:
+
+- the local MCP endpoint and connection method;
+- the tools exposed by that exact version;
+- which actions require an open ACE Studio project;
+- how MIDI, lyrics, timing and track roles are represented;
+- which results can be read back or exported;
+- whether relevant capabilities differ by membership level;
+- how protocol changes will be handled safely.
+
+The presence of the MCP switch confirms access, but it does not prove that every desired operation is already exposed.
+
+See [Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md#ace-studio-is-a-planned-first-class-integration) for the wider DAWHermes–ACE Studio–Cubase workflow.
+
+## ACE Studio remains a separate application
+
+ACE Studio is not bundled with DAWHermes.
+
+A user who wants the ACE-specific workflow will need a compatible ACE Studio installation and their own valid ACE Studio account or licence.
+
+DAWHermes should remain usable without ACE Studio. Features that do not depend on ACE Studio, including Hermes tools, MIDI editing, playback and standard MIDI export, must continue to work independently.
+
+This means ACE Studio is:
+
+- a major planned integration;
+- optional for an individual user;
+- not a hidden dependency required to launch DAWHermes;
+- not included in the DAWHermes licence or installer.
+
+## ACE Studio and ACE-Step are different
+
+The open-source **ACE-Step** model is not a free edition of ACE Studio.
+
+ACE-Step is a separate local music-generation model with its own interfaces. It does not automatically provide the ACE Studio application, ACE Studio projects, voices, instruments, Bridge synchronization or MCP tools.
+
+A future DAWHermes milestone may evaluate ACE-Step separately, but that would be a different integration from the primary ACE Studio connection.
 
 ## Why the surrounding context matters
 
@@ -179,9 +263,11 @@ Imagine a trance arrangement with a weak four-bar transition before the chorus.
 5. Ask Composer Assistant for a transition variation inside the central four bars.
 6. Keep the outer bars unchanged as context.
 7. Audition the returned MIDI repeatedly with the whole project.
-8. Edit individual notes in the Piano Roll before export.
+8. When the result is intended for an ACE Studio vocal or instrument part, send the accepted context through the planned MCP integration.
+9. Review or refine the performance in ACE Studio.
+10. Return the accepted material to the wider DAWHermes/Cubase workflow.
 
-Only the Loop, listening, selection and manual editing parts are available now. Assistant generation and insertion remain planned.
+Only the Loop, listening, selection and manual editing parts are available now. Assistant generation, ACE Studio MCP exchange and result insertion remain planned.
 
 ## Connector settings in plain language
 
@@ -230,7 +316,10 @@ DAWHermes currently does not:
 - stop its server;
 - configure Reaper;
 - move a model between computers;
-- manage network or VPN software.
+- manage network or VPN software;
+- launch ACE Studio;
+- enable or configure the ACE Studio MCP server;
+- manage an ACE Studio account or licence.
 
 Those remain separate setup responsibilities until the full DAWHermes integration is implemented.
 
@@ -241,6 +330,7 @@ Those remain separate setup responsibilities until the full DAWHermes integratio
 - A successful probe does not prove that generation will work.
 - No generated MIDI is inserted into the project through this connector yet.
 - There is no candidate-management or accept/reject interface yet.
+- ACE Studio MCP is confirmed as available in the owner's installation, but DAWHermes does not connect to it yet.
 - The current connector exists for safe compatibility and reachability testing.
 
 ## How this chapter will change later
@@ -255,9 +345,10 @@ When Composer Assistant becomes operational inside DAWHermes, this chapter must 
 - progress and cancellation;
 - result preview;
 - insertion, replacement and Undo/Redo;
+- exact ACE Studio MCP setup and supported tools;
 - practical examples using real project material.
 
-Until then, every generation workflow in this chapter remains clearly marked as planned.
+Until then, every generation and ACE Studio workflow in this chapter remains clearly marked as planned.
 
 ---
 
