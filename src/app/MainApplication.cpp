@@ -39,9 +39,13 @@ void MainApplication::initialise(const juce::String&)
     AppLogger::initialise(getApplicationVersion());
 
     try {
+        audioDeviceService_ =
+            std::make_unique<audio::AudioDeviceService>(
+                appProperties_.getUserSettings());
         mainWindow_ = std::make_unique<MainWindow>(
             getApplicationName(),
-            appProperties_);
+            appProperties_,
+            *audioDeviceService_);
     } catch (const std::exception& ex) {
         AppLogger::log("Window creation failure: " + juce::String(ex.what()));
         juce::AlertWindow::showMessageBox(
@@ -62,6 +66,7 @@ void MainApplication::initialise(const juce::String&)
 void MainApplication::shutdown()
 {
     mainWindow_.reset();
+    audioDeviceService_.reset();
 
     AppLogger::shutdown();
 }

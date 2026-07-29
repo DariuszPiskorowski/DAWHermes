@@ -2,11 +2,12 @@
 
 #include <optional>
 #include <memory>
+#include <map>
 #include <vector>
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
-#include "audio/MidiAuditionEngine.h"
+#include "audio/AudioDeviceService.h"
 #include "audio/WavBpmDetector.h"
 #include "core/MidiComparisonModel.h"
 #include "core/MidiNoteSelectionState.h"
@@ -15,6 +16,7 @@
 #include "core/ProjectController.h"
 #include "core/ProjectHistory.h"
 #include "core/TimelineGeometry.h"
+#include "core/TimelineLoop.h"
 #include "core/TimelineViewport.h"
 #include "hermes/ComposerAssistantConnector.h"
 #include "hermes/HermesJobRunner.h"
@@ -32,7 +34,9 @@ class MainComponent final : public juce::Component,
                             private juce::ListBoxModel,
                             private juce::Timer {
 public:
-    explicit MainComponent(juce::ApplicationProperties& applicationProperties);
+    MainComponent(
+        juce::ApplicationProperties& applicationProperties,
+        audio::AudioDeviceService& audioDeviceService);
     ~MainComponent() override;
 
     void resized() override;
@@ -66,6 +70,10 @@ private:
         commandDeleteSelectedTrack,
         commandDeleteSelectedNotes,
         commandQuantizeSelectedNotes,
+        commandAudioSettings,
+        commandAudioTestOutput,
+        commandAudioRestart,
+        commandAudioStatus,
         commandAbout,
         commandHermesDrumsMakeMidi,
         commandHermesDrumMapping,
@@ -88,6 +96,10 @@ private:
         int width,
         int height,
         bool rowIsSelected) override;
+    juce::Component* refreshComponentForRow(
+        int rowNumber,
+        bool rowIsSelected,
+        juce::Component* existingComponentToUpdate) override;
     void listBoxItemClicked(int row, const juce::MouseEvent& event) override;
 
     void executeCommand(int commandId);
@@ -136,9 +148,20 @@ private:
     void stopMidiPlayback();
     void panicMidiPlayback();
     void seekPlayback(double deltaSeconds);
+    void showAudioSettings();
+    void testAudioOutput();
+    void restartAudioDevice();
+    void showAudioDeviceStatus();
+    void publishProjectRouting();
+    void setLoopRange(
+        std::optional<core::TimelineLoopRange> range);
+    void clearLoopRange();
+    void toggleLoopPlayback();
     void refreshTransportSelectionState();
     void synchronizeStoppedTransportPreview();
     void requestSelectedWavBpmIfNeeded();
+    audio::SelectionPlaybackOptions
+        projectPlaybackOptionsFromBpmResults() const;
     void processCompletedWavBpmAnalysis();
     void updateTransportDisplays();
     void updatePlaybackPlayhead(bool ensureVisible);
@@ -205,6 +228,7 @@ private:
     void showAbout();
 
     juce::ApplicationProperties& applicationProperties_;
+    audio::AudioDeviceService& audioDeviceService_;
     std::unique_ptr<hermes::HermesJobRunner> hermesJobRunner_;
     hermes::ComposerAssistantConnector composerConnector_;
     hermes::ComposerAssistantSettings composerSettings_;
@@ -217,7 +241,7 @@ private:
     core::MidiNoteSelectionState midiNoteSelectionState_;
     core::ProjectHistory projectHistory_;
     core::ProjectController projectController_;
-    audio::MidiAuditionEngine midiAuditionEngine_;
+    audio::MidiAuditionEngine& midiAuditionEngine_;
     audio::WavBpmAnalysisService wavBpmAnalysisService_;
 
     juce::MenuBarComponent menuBar_;
@@ -228,6 +252,7 @@ private:
     juce::TextButton pauseButton_ { "Pause" };
     juce::TextButton stopButton_ { "Stop" };
     juce::TextButton fastForwardButton_ { ">>" };
+    juce::ToggleButton loopButton_ { "Loop" };
     juce::Label timeCounterLabel_;
     juce::Label bpmLabel_;
     juce::TextButton panicButton_ { "Panic" };
@@ -254,6 +279,7 @@ private:
     MidiComparisonLegend midiComparisonLegend_;
     juce::Label aiAssistantLabel_;
     juce::Label statusLabel_;
+    juce::Label audioStatusLabel_;
 
     core::TimelineViewportState timelineViewportState_;
     core::PitchViewportState pitchViewportState_;
@@ -267,11 +293,17 @@ private:
     std::optional<audio::PlayableSelectionIdentity> playableSelectionIdentity_;
     std::uint64_t playableSelectionGeneration_ { 0 };
     std::optional<audio::WavBpmAnalysisResult> selectedWavBpmResult_;
+    std::map<std::uint64_t, audio::WavBpmAnalysisResult>
+        projectWavBpmResults_;
+    std::optional<std::uint64_t> requestedWavTrackId_;
     std::optional<audio::WavFileFingerprint> requestedWavFingerprint_;
     std::uint64_t wavBpmRequestGeneration_ { 0 };
     audio::TransportMode previousTransportMode_ { audio::TransportMode::stopped };
     bool playheadFollowActive_ { false };
     std::optional<double> playbackPlayheadBeat_;
+    std::optional<core::TimelineLoopRange> timelineLoopRange_;
+    bool timelineLoopEnabled_ { false };
+    std::uint64_t audioStatusGeneration_ { 0 };
     core::MidiComparisonTolerance midiComparisonTolerance_;
 
     core::MainPanelLayoutState panelLayoutState_;

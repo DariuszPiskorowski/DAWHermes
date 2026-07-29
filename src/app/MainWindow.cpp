@@ -8,7 +8,8 @@ namespace dawhermes::app {
 
 MainWindow::MainWindow(
     juce::String name,
-    juce::ApplicationProperties& applicationProperties)
+    juce::ApplicationProperties& applicationProperties,
+    audio::AudioDeviceService& audioDeviceService)
     : juce::DocumentWindow(
           std::move(name),
           juce::Colours::black,
@@ -19,7 +20,11 @@ MainWindow::MainWindow(
     setResizable(true, true);
     setResizeLimits(1024, 640, 3840, 2160);
 
-    setContentOwned(new ui::MainComponent(applicationProperties_), true);
+    setContentOwned(
+        new ui::MainComponent(
+            applicationProperties_,
+            audioDeviceService),
+        true);
 
     if (auto* settings = applicationProperties_.getUserSettings()) {
         const auto state = settings->getValue("windowState");

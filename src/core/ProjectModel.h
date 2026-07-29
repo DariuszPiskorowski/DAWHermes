@@ -23,6 +23,8 @@ public:
     bool setMidiSourceMetadata(std::uint64_t id, MidiSourceMetadata metadata);
     bool clearMidiSourceMetadata(std::uint64_t id);
     bool setGeneratedGroupId(std::uint64_t id, std::string groupId);
+    bool setTrackMuted(std::uint64_t id, bool muted);
+    bool setTrackSoloed(std::uint64_t id, bool soloed);
 
     std::uint64_t allocateMidiNoteId();
     bool repairMidiNoteIds(std::uint64_t trackId);

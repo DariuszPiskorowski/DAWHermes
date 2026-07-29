@@ -13,6 +13,7 @@
 
 #include "core/MidiTimeMap.h"
 #include "core/TimelineGeometry.h"
+#include "core/TimelineLoop.h"
 #include "core/TimelineViewport.h"
 #include "core/Track.h"
 
@@ -30,6 +31,8 @@ public:
     void setTrackRowHeight(int rowHeight);
     void setVerticalScrollPixels(int scrollPixels);
     void setPlayheadBeat(std::optional<double> beat);
+    void setLoopRange(
+        std::optional<core::TimelineLoopRange> range);
 
     void paint(juce::Graphics& g) override;
 
@@ -47,6 +50,7 @@ private:
     int rowHeight_ { 30 };
     int verticalScrollPixels_ { 0 };
     std::optional<double> playheadBeat_;
+    std::optional<core::TimelineLoopRange> loopRange_;
 
     juce::AudioFormatManager audioFormatManager_;
     juce::AudioThumbnailCache thumbnailCache_ { 32 };

@@ -6,13 +6,18 @@ namespace dawhermes::ui {
 class MainComponent;
 }
 
+namespace dawhermes::audio {
+class AudioDeviceService;
+}
+
 namespace dawhermes::app {
 
 class MainWindow final : public juce::DocumentWindow {
 public:
     MainWindow(
         juce::String name,
-        juce::ApplicationProperties& applicationProperties);
+        juce::ApplicationProperties& applicationProperties,
+        audio::AudioDeviceService& audioDeviceService);
 
     ~MainWindow() override;
 

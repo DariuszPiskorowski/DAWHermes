@@ -1,4 +1,4 @@
-# UI Reference Map (Milestones 3.1-3.4)
+# UI Reference Map (Milestones 3.1-4.1)
 
 This document captures the structural UI alignment and visual-analysis surfaces active in Milestone 3.1.
 
@@ -128,6 +128,20 @@ Accepted Milestone 3.4 audition surfaces:
 - no Record, mixer, mute/solo, looping, or audio-editing
   controls are added.
 
+Implemented Milestone 4.1 surfaces (awaiting manual acceptance):
+
+- top-level `Audio` menu with `Audio Settings...`, `Test Output`,
+  `Restart Audio Device`, and `Audio Device Status...`;
+- concise current-device summary in the bottom status area;
+- transport order `<<`, `Play`, `Pause`, `Stop`, `>>`, `Loop`, counter, BPM;
+- Play targets all playable project tracks, independent of selection;
+- accessible `M` and `S` buttons on every track and group row;
+- translucent beat-coordinate loop range across ruler and Timeline lanes;
+- ruler click seeks, drag creates/resizes/moves, and right-click explicitly
+  offers `Clear Loop Range`;
+- Loop remains visible when disabled and repeats inside the audio callback;
+- no Record, arming, monitoring, mixer, VST, or audio-edit controls.
+
 ## Compare mode
 
 `View -> Compare Selected MIDI Tracks` is enabled only when exactly two MIDI tracks are selected.
@@ -141,6 +155,7 @@ Visual polish, spacing, colours and presentation will be revisited near the end 
 
 MIDI note editing is accepted Milestone 3.2 functionality.
 Milestone 3.4 is complete and manually accepted.
+Milestone 4.1 is implemented and awaiting manual acceptance.
 M3.4 adds selected imported-WAV playback alongside the M3.3 internal MIDI synth.
 Its asynchronous cached BPM detector changes beat/time mapping only; it does not
 change WAV speed. M3.4 does not add time stretching, final sample-accurate

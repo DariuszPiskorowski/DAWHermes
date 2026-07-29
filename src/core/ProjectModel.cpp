@@ -149,6 +149,28 @@ bool ProjectModel::setGeneratedGroupId(std::uint64_t id, std::string groupId)
     return true;
 }
 
+bool ProjectModel::setTrackMuted(std::uint64_t id, bool muted)
+{
+    auto* track = findTrackById(id);
+    if (track == nullptr) {
+        return false;
+    }
+
+    track->muted = muted;
+    return true;
+}
+
+bool ProjectModel::setTrackSoloed(std::uint64_t id, bool soloed)
+{
+    auto* track = findTrackById(id);
+    if (track == nullptr) {
+        return false;
+    }
+
+    track->soloed = soloed;
+    return true;
+}
+
 std::uint64_t ProjectModel::allocateMidiNoteId()
 {
     while (nextMidiNoteId_ == 0 || isMidiNoteIdInUse(nextMidiNoteId_)) {

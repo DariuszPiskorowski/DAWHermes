@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -39,9 +40,21 @@ struct SkippedAudioTrack {
     std::string reason;
 };
 
+struct ProjectPlaybackTrackIdentity {
+    std::uint64_t trackId { 0 };
+    std::uint64_t parentTrackId { 0 };
+    core::TrackType type { core::TrackType::audio };
+
+    bool operator==(
+        const ProjectPlaybackTrackIdentity& other) const = default;
+};
+
 struct SelectionPlaybackSnapshot {
     std::optional<MidiPlaybackSnapshot> midi;
+    std::vector<std::uint64_t> midiTrackIds;
     std::vector<AudioStemPlaybackSnapshot> audioStems;
+    std::vector<ProjectPlaybackTrackIdentity>
+        projectTrackRoutingIdentity;
     std::vector<core::MidiTempoEvent> playheadTempoMap;
     PlaybackTempoSource tempoSource { PlaybackTempoSource::fallback };
     double durationSeconds { 0.0 };
@@ -63,12 +76,14 @@ struct SelectionPlaybackSnapshotResult {
 
 struct SelectionPlaybackOptions {
     std::optional<double> detectedWavBpm;
+    std::map<std::uint64_t, double> detectedWavBpms;
     double fallbackBpm { kFallbackPlaybackBpm };
     std::uint64_t maximumDecodedAudioBytes { kMaximumDecodedWavBytes };
 };
 
 struct PlayableSelectionIdentity {
     std::optional<std::uint64_t> primaryMidiTrackId;
+    std::vector<std::uint64_t> midiTrackIds;
     std::vector<std::uint64_t> readableAudioTrackIds;
 
     bool operator==(const PlayableSelectionIdentity& other) const = default;
@@ -84,6 +99,8 @@ struct SelectionPlaybackSummary {
     std::optional<std::string> firstReadableAudioPath;
     std::vector<SkippedAudioTrack> skippedAudioTracks;
     PlayableSelectionIdentity identity;
+    bool conflictingExplicitMidiTempo { false };
+    std::string diagnostic;
 };
 
 struct MidiResumeState {
@@ -101,9 +118,26 @@ SelectionPlaybackSummary createSelectionPlaybackSummary(
     const core::SelectionState& selection,
     const SelectionPlaybackOptions& options = {});
 
+SelectionPlaybackSnapshotResult createProjectPlaybackSnapshot(
+    const core::ProjectModel& project,
+    const SelectionPlaybackOptions& options = {});
+
+SelectionPlaybackSummary createProjectPlaybackSummary(
+    const core::ProjectModel& project,
+    const SelectionPlaybackOptions& options = {});
+
 SelectionTransportCommandState selectionTransportCommandState(
     const core::ProjectModel& project,
     const core::SelectionState& selection,
+    TransportMode mode,
+    double playableDurationSeconds);
+
+SelectionTransportCommandState projectTransportCommandState(
+    const core::ProjectModel& project,
+    TransportMode mode,
+    double playableDurationSeconds);
+SelectionTransportCommandState projectTransportCommandState(
+    bool projectPlayable,
     TransportMode mode,
     double playableDurationSeconds);
 
@@ -130,6 +164,7 @@ double audioSourceFramePosition(
     double sourceSampleRate) noexcept;
 
 std::string describeSelectionPlayback(const SelectionPlaybackSnapshot& snapshot);
+std::string describeProjectPlayback(const SelectionPlaybackSnapshot& snapshot);
 std::string describeSkippedAudioTrack(const SkippedAudioTrack& skipped);
 
 }  // namespace dawhermes::audio

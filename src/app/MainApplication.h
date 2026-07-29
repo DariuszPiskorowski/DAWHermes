@@ -5,6 +5,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "app/MainWindow.h"
+#include "audio/AudioDeviceService.h"
 
 namespace dawhermes::app {
 
@@ -25,6 +26,7 @@ public:
 
 private:
     juce::ApplicationProperties appProperties_;
+    std::unique_ptr<audio::AudioDeviceService> audioDeviceService_;
     std::unique_ptr<MainWindow> mainWindow_;
 };
 

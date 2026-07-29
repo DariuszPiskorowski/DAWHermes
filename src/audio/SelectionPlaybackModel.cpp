@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <unordered_map>
 #include <utility>
 
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -275,6 +276,133 @@ bool selectionHasPotentialPlayback(
         });
 }
 
+bool projectHasPotentialPlayback(const core::ProjectModel& project)
+{
+    for (const auto& track : project.tracks()) {
+        if (track.type == core::TrackType::midi
+            && !track.midiNotes.empty()) {
+            return true;
+        }
+        if (track.type == core::TrackType::audio
+            && !track.audioSourcePath.empty()) {
+            SkippedAudioTrack skipped;
+            if (inspectAudioStem(track, skipped).has_value()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::vector<core::MidiTempoEvent> playbackTempoMapForProject(
+    const core::ProjectModel& project,
+    const SelectionPlaybackOptions& options,
+    PlaybackTempoSource& source,
+    bool& conflictingExplicitMidiTempo)
+{
+    std::optional<std::vector<core::MidiTempoEvent>> firstExplicit;
+    for (const auto& track : project.tracks()) {
+        if (track.type != core::TrackType::midi
+            || track.midiNotes.empty()
+            || !hasExplicitMidiTempo(track)) {
+            continue;
+        }
+
+        const auto map =
+            core::sanitizeTempoMap(track.midiSourceMetadata->tempoMap);
+        if (!firstExplicit.has_value()) {
+            firstExplicit = map;
+        } else if (firstExplicit.value() != map) {
+            conflictingExplicitMidiTempo = true;
+        }
+    }
+
+    if (firstExplicit.has_value()) {
+        source = PlaybackTempoSource::explicitMidi;
+        return firstExplicit.value();
+    }
+
+    for (const auto& track : project.tracks()) {
+        if (track.type != core::TrackType::audio
+            || track.audioSourcePath.empty()) {
+            continue;
+        }
+        SkippedAudioTrack skipped;
+        if (!inspectAudioStem(track, skipped).has_value()) {
+            continue;
+        }
+        const auto detected = options.detectedWavBpms.find(track.id);
+        if (detected != options.detectedWavBpms.end()
+            && std::isfinite(detected->second)
+            && detected->second >= 60.0
+            && detected->second <= 200.0) {
+            source = PlaybackTempoSource::detectedWav;
+            return singleTempoMap(detected->second);
+        }
+    }
+
+    source = PlaybackTempoSource::fallback;
+    return singleTempoMap(options.fallbackBpm);
+}
+
+void appendMidiTrack(
+    const core::Track& track,
+    const std::vector<core::MidiTempoEvent>& tempoMap,
+    SelectionPlaybackSnapshot& destination,
+    std::uint64_t& nextInstanceId)
+{
+    auto result = createMidiPlaybackSnapshot(track, tempoMap);
+    if (!result.ok) {
+        return;
+    }
+
+    if (!destination.midi.has_value()) {
+        MidiPlaybackSnapshot aggregate;
+        aggregate.tempoMap = tempoMap;
+        aggregate.sourceTrackName = "Project MIDI";
+        destination.midi = std::move(aggregate);
+    }
+
+    auto& aggregate = destination.midi.value();
+    std::unordered_map<std::uint64_t, std::uint64_t>
+        globalInstanceIds;
+    for (auto event : result.snapshot.events) {
+        const auto [instance, inserted] =
+            globalInstanceIds.emplace(
+                event.noteInstanceId,
+                nextInstanceId);
+        if (inserted) {
+            ++nextInstanceId;
+        }
+        event.noteInstanceId = instance->second;
+        aggregate.events.push_back(event);
+    }
+    aggregate.durationSeconds = std::max(
+        aggregate.durationSeconds,
+        result.snapshot.durationSeconds);
+    destination.durationSeconds = std::max(
+        destination.durationSeconds,
+        result.snapshot.durationSeconds);
+    destination.midiTrackIds.push_back(track.id);
+}
+
+void sortProjectMidiEvents(MidiPlaybackSnapshot& snapshot)
+{
+    constexpr double epsilon = 1.0e-9;
+    std::stable_sort(
+        snapshot.events.begin(),
+        snapshot.events.end(),
+        [](const auto& left, const auto& right) {
+            if (std::abs(left.timeSeconds - right.timeSeconds) > epsilon) {
+                return left.timeSeconds < right.timeSeconds;
+            }
+            if (left.kind != right.kind) {
+                return left.kind == MidiPlaybackEventKind::noteOff;
+            }
+            return left.noteInstanceId < right.noteInstanceId;
+        });
+}
+
 }  // namespace
 
 std::optional<std::uint64_t> decodedWavBytes(
@@ -332,6 +460,9 @@ bool SelectionPlaybackSnapshot::isPlayable() const noexcept
 
 std::size_t SelectionPlaybackSnapshot::midiTrackCount() const noexcept
 {
+    if (!midiTrackIds.empty()) {
+        return midiTrackIds.size();
+    }
     return midi.has_value() && !midi->events.empty() ? 1U : 0U;
 }
 
@@ -362,6 +493,7 @@ SelectionPlaybackSnapshotResult createSelectionPlaybackSnapshot(
         if (midiResult.ok) {
             result.snapshot.durationSeconds = midiResult.snapshot.durationSeconds;
             result.snapshot.midi = std::move(midiResult.snapshot);
+            result.snapshot.midiTrackIds.push_back(midiTrack->id);
         }
     }
 
@@ -450,6 +582,7 @@ SelectionPlaybackSummary createSelectionPlaybackSummary(
             summary.midiTrackCount = 1;
             summary.durationSeconds = midi.snapshot.durationSeconds;
             summary.identity.primaryMidiTrackId = midiTrack->id;
+            summary.identity.midiTrackIds.push_back(midiTrack->id);
         }
     }
 
@@ -485,6 +618,159 @@ SelectionPlaybackSummary createSelectionPlaybackSummary(
     return summary;
 }
 
+SelectionPlaybackSnapshotResult createProjectPlaybackSnapshot(
+    const core::ProjectModel& project,
+    const SelectionPlaybackOptions& options)
+{
+    SelectionPlaybackSnapshotResult result;
+    bool conflictingTempo = false;
+    result.snapshot.playheadTempoMap = playbackTempoMapForProject(
+        project,
+        options,
+        result.snapshot.tempoSource,
+        conflictingTempo);
+    for (const auto& track : project.tracks()) {
+        result.snapshot.projectTrackRoutingIdentity.push_back({
+            track.id,
+            track.parentTrackId,
+            track.type,
+        });
+    }
+
+    std::uint64_t nextInstanceId = 1;
+    for (const auto& track : project.tracks()) {
+        if (track.type == core::TrackType::midi
+            && !track.midiNotes.empty()) {
+            appendMidiTrack(
+                track,
+                result.snapshot.playheadTempoMap,
+                result.snapshot,
+                nextInstanceId);
+        }
+    }
+    if (result.snapshot.midi.has_value()) {
+        sortProjectMidiEvents(result.snapshot.midi.value());
+    }
+
+    const auto decodedAudioBudget = std::min(
+        options.maximumDecodedAudioBytes,
+        kMaximumDecodedWavBytes);
+    for (const auto& track : project.tracks()) {
+        if (track.type != core::TrackType::audio
+            || track.audioSourcePath.empty()) {
+            continue;
+        }
+
+        SkippedAudioTrack skipped;
+        const auto plan = inspectAudioStem(track, skipped);
+        if (!plan.has_value()) {
+            result.skippedAudioTracks.push_back(std::move(skipped));
+            continue;
+        }
+        result.snapshot.durationSeconds = std::max(
+            result.snapshot.durationSeconds,
+            static_cast<double>(plan->frameCount)
+                / plan->sourceSampleRate);
+
+        if (result.estimatedSelectedAudioBytes
+            > std::numeric_limits<std::uint64_t>::max()
+                - plan->requiredBytes) {
+            result.selectedAudioByteEstimateOverflow = true;
+        } else {
+            result.estimatedSelectedAudioBytes += plan->requiredBytes;
+        }
+
+        if (plan->requiredBytes > decodedAudioBudget
+            - result.decodedAudioBytes) {
+            skipped.sourceTrackId = track.id;
+            skipped.sourceTrackName = track.name;
+            skipped.sourceFileName = sourceFileName(track.audioSourcePath);
+            skipped.reason =
+                "project audio exceeds the 512 MiB playback memory limit";
+            result.skippedAudioTracks.push_back(std::move(skipped));
+            continue;
+        }
+
+        auto stem = loadAudioStem(plan.value(), skipped);
+        if (!stem.has_value()) {
+            result.skippedAudioTracks.push_back(std::move(skipped));
+            continue;
+        }
+        result.decodedAudioBytes += plan->requiredBytes;
+        result.snapshot.audioStems.push_back(std::move(stem.value()));
+    }
+
+    result.ok = result.snapshot.isPlayable();
+    result.message = result.ok
+        ? describeProjectPlayback(result.snapshot)
+        : (result.skippedAudioTracks.empty()
+               ? "The project contains no playable MIDI or WAV tracks."
+               : describeSkippedAudioTrack(result.skippedAudioTracks.front()));
+    if (conflictingTempo) {
+        result.message +=
+            " Conflicting MIDI tempo metadata; using the first project track.";
+    }
+    return result;
+}
+
+SelectionPlaybackSummary createProjectPlaybackSummary(
+    const core::ProjectModel& project,
+    const SelectionPlaybackOptions& options)
+{
+    SelectionPlaybackSummary summary;
+    summary.tempoMap = playbackTempoMapForProject(
+        project,
+        options,
+        summary.tempoSource,
+        summary.conflictingExplicitMidiTempo);
+    if (summary.conflictingExplicitMidiTempo) {
+        summary.diagnostic =
+            "Conflicting MIDI tempo metadata; using the first project track.";
+    }
+
+    for (const auto& track : project.tracks()) {
+        if (track.type == core::TrackType::midi
+            && !track.midiNotes.empty()) {
+            const auto midi =
+                createMidiPlaybackSnapshot(track, summary.tempoMap);
+            if (midi.ok) {
+                ++summary.midiTrackCount;
+                summary.durationSeconds = std::max(
+                    summary.durationSeconds,
+                    midi.snapshot.durationSeconds);
+                summary.identity.midiTrackIds.push_back(track.id);
+                if (!summary.identity.primaryMidiTrackId.has_value()) {
+                    summary.identity.primaryMidiTrackId = track.id;
+                }
+            }
+            continue;
+        }
+
+        if (track.type != core::TrackType::audio
+            || track.audioSourcePath.empty()) {
+            continue;
+        }
+        SkippedAudioTrack skipped;
+        const auto plan = inspectAudioStem(track, skipped);
+        if (!plan.has_value()) {
+            summary.skippedAudioTracks.push_back(std::move(skipped));
+            continue;
+        }
+        ++summary.audioTrackCount;
+        summary.durationSeconds = std::max(
+            summary.durationSeconds,
+            static_cast<double>(plan->frameCount)
+                / plan->sourceSampleRate);
+        summary.identity.readableAudioTrackIds.push_back(track.id);
+        if (!summary.firstReadableAudioPath.has_value()) {
+            summary.firstReadableAudioPath = track.audioSourcePath;
+        }
+    }
+    summary.playable =
+        summary.midiTrackCount > 0 || summary.audioTrackCount > 0;
+    return summary;
+}
+
 SelectionTransportCommandState selectionTransportCommandState(
     const core::ProjectModel& project,
     const core::SelectionState& selection,
@@ -495,6 +781,34 @@ SelectionTransportCommandState selectionTransportCommandState(
     state.playEnabled = mode == TransportMode::paused
         || (mode == TransportMode::stopped
             && selectionHasPotentialPlayback(project, selection));
+    state.pauseEnabled = mode == TransportMode::playing;
+    state.stopEnabled = mode != TransportMode::stopped;
+    state.rewindEnabled = playableDurationSeconds > 0.0;
+    state.fastForwardEnabled = playableDurationSeconds > 0.0;
+    state.panicEnabled = true;
+    return state;
+}
+
+SelectionTransportCommandState projectTransportCommandState(
+    const core::ProjectModel& project,
+    TransportMode mode,
+    double playableDurationSeconds)
+{
+    return projectTransportCommandState(
+        projectHasPotentialPlayback(project),
+        mode,
+        playableDurationSeconds);
+}
+
+SelectionTransportCommandState projectTransportCommandState(
+    bool projectPlayable,
+    TransportMode mode,
+    double playableDurationSeconds)
+{
+    SelectionTransportCommandState state;
+    state.playEnabled = mode == TransportMode::paused
+        || (mode == TransportMode::stopped
+            && projectPlayable);
     state.pauseEnabled = mode == TransportMode::playing;
     state.stopEnabled = mode != TransportMode::stopped;
     state.rewindEnabled = playableDurationSeconds > 0.0;
@@ -615,13 +929,37 @@ std::string describeSelectionPlayback(const SelectionPlaybackSnapshot& snapshot)
     return description;
 }
 
+std::string describeProjectPlayback(const SelectionPlaybackSnapshot& snapshot)
+{
+    std::string description = "Playing project: ";
+    if (snapshot.midiTrackCount() > 0) {
+        description += countLabel(
+            snapshot.midiTrackCount(),
+            "MIDI track",
+            "MIDI tracks");
+    }
+    if (snapshot.midiTrackCount() > 0
+        && snapshot.audioTrackCount() > 0) {
+        description += ", ";
+    }
+    if (snapshot.audioTrackCount() > 0) {
+        description += countLabel(
+            snapshot.audioTrackCount(),
+            "audio track",
+            "audio tracks");
+    }
+    return description;
+}
+
 std::string describeSkippedAudioTrack(const SkippedAudioTrack& skipped)
 {
     const auto displayName = skipped.sourceFileName.empty()
         ? skipped.sourceTrackName
         : skipped.sourceFileName;
     if (skipped.reason
-        == "selected audio exceeds the 512 MiB audition memory limit") {
+            == "selected audio exceeds the 512 MiB audition memory limit"
+        || skipped.reason
+            == "project audio exceeds the 512 MiB playback memory limit") {
         return "Skipped audio track " + displayName + ": " + skipped.reason;
     }
     return "Skipped unreadable audio track: " + displayName;

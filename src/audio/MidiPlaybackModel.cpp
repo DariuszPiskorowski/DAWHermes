@@ -114,14 +114,16 @@ MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(
             MidiPlaybackEventKind::noteOn,
             pitch,
             amplitude,
-            instanceId
+            instanceId,
+            track.id
         });
         result.snapshot.events.push_back(MidiPlaybackEvent {
             midiBeatToSeconds(endBeat, result.snapshot.tempoMap),
             MidiPlaybackEventKind::noteOff,
             pitch,
             0.0f,
-            instanceId
+            instanceId,
+            track.id
         });
         ++instanceId;
     }

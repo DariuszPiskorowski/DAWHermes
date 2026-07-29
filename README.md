@@ -9,6 +9,8 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 Milestone 3.2 MIDI editing and selected-track export is complete, manually accepted, and published.
 Milestone 3.3 MIDI audition playback is complete, manually accepted, and published.
 Milestone 3.4 is complete and manually accepted.
+Milestone 4.1 central device configuration, whole-project playback, Mute/Solo,
+and Timeline Loop is implemented and awaiting manual acceptance.
 
 Milestone 1.1 and Milestone 2 functional integration are complete and accepted.
 Milestone 3.1 visual functionality is accepted.
@@ -30,9 +32,15 @@ Currently implemented:
 - note hover diagnostics (pitch, velocity, start, duration, channel);
 - View -> Compare Selected MIDI Tracks mode with color-coded delta legend (read-only comparison);
 - piano-roll note selection, marquee selection, creation, deletion, mouse movement, right-edge duration resize, keyboard nudging, Snap, velocity editing, and quantize selected notes to grid;
-- synchronized selected-track MIDI and imported-WAV audition through the system
-  default audio output with Play, Pause/resume, Stop, Panic, 5-second seeking,
-  safe volume, BPM, a time counter, and shared Timeline/Piano Roll playheads;
+- one application-lifetime JUCE audio-device service with saved settings,
+  default-output fallback, explicit Audio menu configuration/status/restart,
+  and a safe low-gain Test Output;
+- synchronized whole-project MIDI and imported-WAV playback independent of
+  selection, with Play, Pause/resume, Stop, Panic, 5-second seeking, safe
+  volume, BPM, a counter, and shared Timeline/Piano Roll playheads;
+- live hierarchical track/group Mute and Solo controls;
+- visible beat-coordinate Timeline loop creation, resize, move, clear, and
+  audio-callback wrapping;
 - Unicode-safe Windows WAV paths, a 128-entry LRU WAV-BPM session cache, and a
   512 MiB aggregate decoded-audio limit per immutable audition snapshot;
 - track selection and deletion;
@@ -58,6 +66,7 @@ Currently implemented:
 Not implemented yet:
 
 - recording;
+- input monitoring, track arming, mixer controls, or effects;
 - Hermes set/fix BPM workflow;
 - VST3 hosting;
 - AI model connection;
@@ -74,6 +83,8 @@ Visual polish, spacing, colours and presentation will be revisited near the end 
 
 Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange
 remain deferred.
+
+M4.1 is not yet manually accepted or published.
 
 ## Related projects
 
@@ -255,9 +266,12 @@ File
 -> Import Audio as Track...
 -> select one or more WAV files
 -> tracks and waveforms appear automatically
--> select audio and optionally MIDI
 -> Play
 ```
+
+Play auditions the complete playable project. Selection only chooses editing
+targets. Use row `M`/`S` controls to change live audibility and drag the Timeline
+ruler to define a range for the transport `Loop` toggle.
 
 Each valid WAV remains referenced at its original absolute path. A multi-file
 import creates one track per valid file, selects the created tracks, and is one
@@ -277,7 +291,8 @@ The application is divided into:
 
 - `app` - lifecycle and application wiring;
 - `core` - project and track models;
-- `audio` - immutable playback preparation and WAV import/BPM analysis;
+- `audio` - central device ownership, immutable project playback preparation,
+  WAV import/BPM analysis, live routing, and callback transport rendering;
 - `midi` - testable selected-track MIDI export;
 - `ui` - JUCE desktop interface;
 - `hermes` - neutral integration contracts and engine implementation;
