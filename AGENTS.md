@@ -15,9 +15,13 @@ Primary direction:
 - Reaper is only a quick audition/reference environment.
 - Cubase is the final production and mix destination.
 - Cubase-specific exchange is important, but it must not become the core architectural dependency.
-- ACE Studio exchange is planned as file/workflow integration, not as a hidden hard dependency.
+- ACE Studio is a first-class planned external integration and one of the main product workflows for which DAWHermes is being developed.
+- The primary planned ACE path may use Composer Assistant and the ACE Studio MCP Server, with ACE Bridge 2 evaluated when VST3 hosting exists.
+- The project owner has a paid ACE Studio installation and has confirmed that the MCP Server option is present and can be enabled.
+- ACE Studio remains separately installed and licensed, optional for each user, and must not become a hidden hard dependency required to launch or use the rest of DAWHermes.
+- ACE-Step is a separate open-source model and must not be treated as a free edition of ACE Studio.
 
-Do not redesign the project around external localhost services, browser automation, temporary scripts or manual helper applications.
+Do not redesign the project around external localhost services, browser automation, temporary scripts or manual helper applications. Deliberate external product integrations such as ACE Studio MCP must remain explicit, version-aware, user-controlled boundaries rather than hidden dependencies.
 
 ## Current accepted baseline
 
@@ -169,6 +173,9 @@ Use these only for manual or read-only installed-app validation. Do not hardcode
 - Audio callbacks must not mutate `ProjectModel`, selection or `ProjectHistory`.
 - Prefer immutable snapshots for playback/export style operations.
 - Do not invent successful processing results when an engine is not implemented.
+- Treat ACE Studio MCP as a versioned external boundary: inspect the installed version, endpoint, exposed tools and account requirements before implementation.
+- Do not assume the presence of an MCP switch proves every desired ACE Studio operation exists.
+- Keep non-ACE DAWHermes workflows usable when ACE Studio is absent or disconnected.
 
 ## UI behaviour
 
@@ -218,11 +225,14 @@ Manual-writing rules:
 - Verify every menu path, button label and described behaviour against the current merged application.
 - Clearly separate `Available now`, `Planned`, and `Not available yet` behaviour.
 - Never describe an unimplemented command as working.
-- Update related chapters when one behaviour affects several workflows, especially BPM, Loop, Composer Assistant, Hermes, export and audio-device behaviour.
+- Update related chapters when one behaviour affects several workflows, especially BPM, Loop, Composer Assistant, Hermes, ACE Studio, export and audio-device behaviour.
 - Keep `manual/README.md` navigation, chapter order, baseline commit and links current.
 - Keep the Loop/work-region chapter immediately before the Composer Assistant chapter.
 - Preserve the user's current decision to omit the `Panic` control from the beginner manual unless the user explicitly reverses that decision.
 - A dedicated troubleshooting chapter is deferred until the user explicitly requests it; do not create filler troubleshooting content merely to complete a template.
+- A downloadable DOCX manual is deferred until the project is complete or close to completion; maintain Markdown as the canonical current manual until then.
+- Describe ACE Studio as a first-class planned integration but also state that it is separately installed/licensed and optional for each user.
+- Do not describe ACE-Step as a free ACE Studio edition.
 
 The project `README.md` must link visibly to `manual/README.md` and its `Current status` must be updated whenever accepted user-visible milestones change the actual product summary.
 
