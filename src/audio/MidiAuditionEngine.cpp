@@ -153,9 +153,13 @@ void MidiAuditionEngine::seekTo(double targetSeconds)
     publishCursor(transportState_.currentSeconds());
 }
 
-void MidiAuditionEngine::setPreviewDuration(double durationSeconds)
+void MidiAuditionEngine::setPreviewDuration(
+    double durationSeconds,
+    std::uint64_t playableSelectionGeneration)
 {
-    transportState_.setPreviewDuration(durationSeconds);
+    transportState_.setPreviewDuration(
+        durationSeconds,
+        playableSelectionGeneration);
 }
 
 void MidiAuditionEngine::setVolume(float normalizedVolume)
@@ -196,6 +200,11 @@ double MidiAuditionEngine::playheadSeconds() const noexcept
 double MidiAuditionEngine::totalDurationSeconds() const noexcept
 {
     return transportState_.totalSeconds();
+}
+
+bool MidiAuditionEngine::isPlayheadVisible() const noexcept
+{
+    return transportState_.isPlayheadVisible();
 }
 
 double MidiAuditionEngine::playheadBeat() const

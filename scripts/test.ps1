@@ -21,6 +21,8 @@ if (-not (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
     & (Join-Path $PSScriptRoot 'configure.ps1')
 }
 
+& (Join-Path $PSScriptRoot 'test-cmake-cache-parser.ps1')
+
 & $cmake.Path --build $buildDir --config Debug --target DAWHermesTests
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

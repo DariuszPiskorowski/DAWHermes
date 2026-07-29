@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -34,7 +35,9 @@ struct SelectionTransportCommandState {
 
 class SharedTransportState {
 public:
-    void setPreviewDuration(double durationSeconds) noexcept;
+    void setPreviewDuration(
+        double durationSeconds,
+        std::uint64_t playableSelectionGeneration = 0) noexcept;
     void prepare(
         std::shared_ptr<const SelectionPlaybackSnapshot> snapshot,
         double startSeconds) noexcept;
@@ -52,6 +55,7 @@ public:
     double currentSeconds() const noexcept;
     double totalSeconds() const noexcept;
     bool hasPreparedPlayback() const noexcept;
+    bool isPlayheadVisible() const noexcept;
     std::shared_ptr<const SelectionPlaybackSnapshot> snapshot() const noexcept;
 
 private:
@@ -59,6 +63,9 @@ private:
     std::atomic<TransportMode> mode_ { TransportMode::stopped };
     std::atomic<double> currentSeconds_ { 0.0 };
     std::atomic<double> totalSeconds_ { 0.0 };
+    std::atomic<std::uint64_t> playableSelectionGeneration_ { 0 };
+    std::atomic<bool> hasPlayableSelectionGeneration_ { false };
+    std::atomic<bool> playheadVisible_ { false };
 };
 
 double clampTransportSeconds(double seconds, double totalSeconds) noexcept;

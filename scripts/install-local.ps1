@@ -46,15 +46,7 @@ $buildDir = if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
 
 if ($SkipBuild) {
     $cachePath = Join-Path $buildDir 'CMakeCache.txt'
-    $ltcgSetting = Get-Content -LiteralPath $cachePath |
-        Where-Object { $_ -match '^DAWHERMES_ENABLE_LTCG:[^=]+=(.*)$' } |
-        Select-Object -First 1
-    if ($ltcgSetting -ne 'DAWHERMES_ENABLE_LTCG:BOOL=OFF') {
-        $message =
-            "Unsafe install refused: the existing Release artifact must come " +
-            "from a build tree with DAWHERMES_ENABLE_LTCG=OFF."
-        throw $message
-    }
+    Assert-NoLtcgReleaseTree -CachePath $cachePath
 } else {
     & (Join-Path $PSScriptRoot 'build-release.ps1') `
         -BuildDirectory $BuildDirectory

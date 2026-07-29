@@ -80,7 +80,11 @@ Milestone 3.4 extends the same device and callback into selected-stem audition:
 
 - `SelectionPlaybackModel` chooses one primary selected non-empty MIDI track and
   every selected audio track with a readable imported WAV;
-- WAV data is decoded before playback into immutable mono/stereo sample storage;
+- WAV data is decoded in bounded blocks directly into final immutable
+  mono/stereo channel storage, without a second full-file decoded copy;
+- one snapshot has a 512 MiB aggregate decoded-WAV budget; tracks that would
+  exceed it are skipped with concise non-modal status while smaller valid
+  selected tracks remain playable;
 - the callback maps one shared transport clock to MIDI events and WAV source
   frames, using linear interpolation when device and source sample rates differ;
 - WAV time zero and MIDI transport time zero are shared, while MIDI continues to
@@ -102,8 +106,10 @@ Milestone 3.4 extends the same device and callback into selected-stem audition:
   horizontal viewport, with threshold-based follow during active playback;
 - tempo resolution prefers explicit imported MIDI tempo metadata, then a
   confident asynchronously detected WAV tempo, then a 120 BPM audition fallback;
-- bounded WAV tempo analysis and its path/size/mtime session cache run outside
-  the callback, while source audio always plays at original speed.
+- bounded WAV tempo analysis and its 128-entry path/size/mtime LRU session cache
+  run outside the callback, while source audio always plays at original speed;
+- project-model source paths are UTF-8 and are converted explicitly to native
+  Windows/JUCE paths at file boundaries.
 
 Direct WAV import is a prepared batch operation:
 
@@ -176,10 +182,9 @@ Additional Milestone 3.1 boundaries:
 - timeline ruler/lanes and piano roll share one horizontal beat viewport state;
 - waveform drawing is static visualization only and not a playback transport surface;
 - current Timeline and Piano Roll styling is intentionally functional rather than final, with visual polish deferred until near project end.
-- Milestones 3.2 and 3.3 are accepted and published. Core Milestone 3.4
-  WAV/MIDI playback is manually accepted; the transport completion is installed
-  for final user acceptance. Timeline editing, controller lanes, copy/paste,
-  and Cubase-specific exchange remain deferred.
+- Milestones 3.2 and 3.3 are accepted and published. Milestone 3.4 is complete
+  and manually accepted. Timeline editing, controller lanes, copy/paste, and
+  Cubase-specific exchange remain deferred.
 - M3.4 playback is audition-grade: it includes Pause/resume, a counter,
   5-second seeking, playhead follow, and BPM resolution, but no time stretching,
   beat warping, looping, mixer, effects, or final

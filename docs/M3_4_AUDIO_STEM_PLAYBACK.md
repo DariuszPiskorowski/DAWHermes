@@ -2,8 +2,7 @@
 
 ## Purpose and Status
 
-Core Milestone 3.4 WAV/MIDI playback has been manually accepted. The completed
-transport controls are implemented for a new installed-app acceptance pass.
+Milestone 3.4 is complete and manually accepted.
 
 It allows an imported WAV stem to be heard with the current edited MIDI state so
 Hermes repair and synchronization results can be judged against the source audio.
@@ -72,8 +71,10 @@ The compact transport strip provides:
 - a BPM readout and Master Volume control.
 
 Seeking while playing continues playback from the new position. Seeking while
-paused preserves the paused state. Transport actions do not create
-`ProjectHistory` entries.
+paused preserves the paused state. A different playable selection made while
+stopped resets to project time zero; refreshing the same selection preserves an
+intentional stopped seek. Transport actions do not create `ProjectHistory`
+entries.
 
 ## Shared Clock, Counter, and Playhead
 
@@ -88,7 +89,8 @@ seeks also make the new playhead position visible. The Piano Roll shares the
 same horizontal viewport and therefore follows the same playhead.
 
 Stop resets and hides the active playhead. Natural completion leaves it at the
-selection end.
+selection end. Pause preserves and displays the playhead. Stop does not move the
+horizontal viewport, and its counter remains `00:00 / <duration>`.
 
 ## Tempo Resolution and WAV Analysis
 
@@ -101,7 +103,9 @@ The displayed and playback MIDI tempo uses this deterministic priority:
 Imported MIDI files record whether their source actually contained tempo meta
 events, so a parser fallback is never mistaken for an explicit source tempo.
 Tempo changes in an explicit MIDI tempo map remain effective at their event
-positions.
+positions. The selected playable summary remains authoritative while stopped,
+so Stop, natural completion, and stopped seeking retain the correct explicit
+MIDI BPM even when an inactive playback snapshot still exists.
 
 WAV tempo analysis:
 
@@ -109,7 +113,8 @@ WAV tempo analysis:
 - reads only a bounded leading portion of the source;
 - uses an onset-energy envelope and autocorrelation over the audition BPM range;
 - rejects silence, steady low-energy material, and low-confidence estimates;
-- caches results for the app session by path, size, and modification time;
+- caches results for the app session by path, size, and modification time in a
+  deterministic 128-entry LRU cache;
 - invalidates the cached result when the source fingerprint changes.
 
 Detection changes only the BPM readout and beat/time mapping. WAV samples always
@@ -117,13 +122,20 @@ play at their original speed; there is no time stretching or beat warping.
 
 ## WAV Playback
 
-- WAV data is decoded and copied into the immutable snapshot before playback.
+- WAV data is decoded in bounded blocks directly into its final immutable
+  channel vectors, without a second full-file decoded buffer.
+- One immutable playback snapshot has a 512 MiB aggregate decoded-WAV budget.
+  Required bytes are checked safely before allocation; overflow is rejected.
+- A selected track that would exceed the remaining budget is skipped with
+  concise non-modal status, while smaller valid selected tracks remain playable.
 - Mono WAV is duplicated to left and right output; stereo WAV preserves both channels.
 - Source sample rates such as 44.1 kHz and 48 kHz are supported.
 - Linear interpolation maps shared transport time to source frames when the
   output-device rate differs.
 - WAV files play at their original speed.
 - No source file is modified, rewritten, or reread by the audio callback.
+- Windows source paths are stored as UTF-8 at the model boundary and converted
+  explicitly for native filesystem and JUCE file opening.
 
 Master Volume is applied to the combined internal synth and WAV mix.
 Stop, Panic, device stop, and application shutdown silence both sources.

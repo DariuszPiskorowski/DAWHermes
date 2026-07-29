@@ -13,6 +13,7 @@
 #include "audio/AudioTrackImporter.h"
 #include "core/AudioTrackImport.h"
 #include "core/MidiNoteEditing.h"
+#include "core/Utf8Path.h"
 #include "hermes/HermesCache.h"
 #include "hermes/HermesCommandAvailability.h"
 #include "hermes/HermesValidation.h"
@@ -24,6 +25,14 @@
 namespace dawhermes::ui {
 
 namespace {
+
+std::string juceStringToUtf8(const juce::String& text)
+{
+    return {
+        text.toRawUTF8(),
+        static_cast<std::size_t>(text.getNumBytesAsUTF8())
+    };
+}
 
 juce::String trackTypeLabel(core::TrackType type)
 {
@@ -45,8 +54,10 @@ juce::String basenameForPath(const std::string& path)
         return {};
     }
 
-    const std::filesystem::path fsPath(path);
-    return juce::String(fsPath.filename().string());
+    const auto filename = core::filenameFromUtf8Path(path);
+    return juce::String::fromUTF8(
+        filename.data(),
+        static_cast<int>(filename.size()));
 }
 
 juce::String describeTrack(const core::Track& track)
@@ -1282,7 +1293,9 @@ std::optional<hermes::HermesAudioMidiPairContext> MainComponent::selectedAudioMi
     }
 
     std::error_code ec;
-    const auto audioPath = audioTrack == nullptr ? std::filesystem::path {} : std::filesystem::path(audioTrack->audioSourcePath);
+    const auto audioPath = audioTrack == nullptr
+        ? std::filesystem::path {}
+        : core::pathFromUtf8(audioTrack->audioSourcePath);
 
     if (audioTrack == nullptr
         || midiTrack == nullptr
@@ -1687,7 +1700,8 @@ void MainComponent::importAudioTracks()
     const auto selectedFiles = chooser.getResults();
     selectedPaths.reserve(static_cast<std::size_t>(selectedFiles.size()));
     for (const auto& selectedFile : selectedFiles) {
-        selectedPaths.emplace_back(selectedFile.getFullPathName().toStdString());
+        selectedPaths.emplace_back(core::pathFromUtf8(
+            juceStringToUtf8(selectedFile.getFullPathName())));
     }
 
     auto preparation = audio::prepareAudioTrackImports(selectedPaths);
@@ -2616,7 +2630,8 @@ void MainComponent::panicMidiPlayback()
 {
     midiAuditionEngine_.panic();
     midiAuditionEngine_.setPreviewDuration(
-        transportSelectionSummary_.durationSeconds);
+        transportSelectionSummary_.durationSeconds,
+        playableSelectionGeneration_);
     previousTransportMode_ = audio::TransportMode::stopped;
     playheadFollowActive_ = false;
     updatePlaybackPlayhead(false);
@@ -2667,6 +2682,11 @@ void MainComponent::refreshTransportSelectionState()
         selectionState_,
         options);
     transportSelectionSummary_ = summary;
+    if (!playableSelectionIdentity_.has_value()
+        || !(playableSelectionIdentity_.value() == summary.identity)) {
+        playableSelectionIdentity_ = summary.identity;
+        ++playableSelectionGeneration_;
+    }
     if (const auto snapshot = midiAuditionEngine_.playbackSnapshot();
         snapshot != nullptr
         && midiAuditionEngine_.transportMode() != audio::TransportMode::stopped) {
@@ -2676,7 +2696,9 @@ void MainComponent::refreshTransportSelectionState()
     }
     timelineView_.setTempoMap(resolvedTimelineInfo_.tempoMap);
     if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped) {
-        midiAuditionEngine_.setPreviewDuration(summary.durationSeconds);
+        midiAuditionEngine_.setPreviewDuration(
+            summary.durationSeconds,
+            playableSelectionGeneration_);
         updatePlaybackPlayhead(false);
     }
     updateTransportDisplays();
@@ -2692,7 +2714,8 @@ void MainComponent::requestSelectedWavBpmIfNeeded()
     }
 
     const auto fingerprint = audio::fingerprintWavFile(
-        transportSelectionSummary_.firstReadableAudioPath.value());
+        core::pathFromUtf8(
+            transportSelectionSummary_.firstReadableAudioPath.value()));
     if (!fingerprint.has_value()) {
         requestedWavFingerprint_.reset();
         selectedWavBpmResult_.reset();
@@ -2708,7 +2731,7 @@ void MainComponent::requestSelectedWavBpmIfNeeded()
     requestedWavFingerprint_ = fingerprint;
     selectedWavBpmResult_.reset();
     wavBpmRequestGeneration_ = wavBpmAnalysisService_.request(
-        fingerprint->sourcePath);
+        core::pathFromUtf8(fingerprint->sourcePath));
     if (const auto cached = wavBpmAnalysisService_.pollCompleted();
         cached.has_value()
         && cached->requestGeneration == wavBpmRequestGeneration_
@@ -2782,17 +2805,14 @@ void MainComponent::updateTransportDisplays()
         return;
     }
 
-    if (snapshot == nullptr
+    if (midiAuditionEngine_.transportMode() == audio::TransportMode::stopped
         && transportSelectionSummary_.tempoSource
             == audio::PlaybackTempoSource::explicitMidi) {
-        const auto beat = audio::midiSecondsToBeat(
-            midiAuditionEngine_.playheadSeconds(),
-            transportSelectionSummary_.tempoMap);
         bpmLabel_.setText(
             "BPM " + juce::String(
-                audio::playbackBpmAtBeat(
-                    beat,
-                    transportSelectionSummary_.tempoMap),
+                audio::selectionSummaryBpm(
+                    midiAuditionEngine_.playheadSeconds(),
+                    transportSelectionSummary_),
                 1),
             juce::dontSendNotification);
         bpmLabel_.setTooltip("Explicit MIDI tempo map.");
@@ -2804,12 +2824,14 @@ void MainComponent::updateTransportDisplays()
         && requestedWavFingerprint_.has_value()
         && selectedWavBpmResult_->fingerprint
             == requestedWavFingerprint_.value();
-    const auto resultMatchesPlayback = snapshot == nullptr
+    const auto resultMatchesPlayback =
+        midiAuditionEngine_.transportMode() == audio::TransportMode::stopped
+        || snapshot == nullptr
         || (requestedWavFingerprint_.has_value()
             && !snapshot->audioStems.empty()
-            && std::filesystem::path(snapshot->audioStems.front().sourcePath)
+            && core::pathFromUtf8(snapshot->audioStems.front().sourcePath)
                     .lexically_normal()
-                == std::filesystem::path(
+                == core::pathFromUtf8(
                        requestedWavFingerprint_->sourcePath)
                        .lexically_normal());
     if (resultMatchesSelection && resultMatchesPlayback) {
@@ -2837,7 +2859,7 @@ void MainComponent::updateTransportDisplays()
 void MainComponent::updatePlaybackPlayhead(bool ensureVisible)
 {
     const auto total = midiAuditionEngine_.totalDurationSeconds();
-    if (total <= 0.0) {
+    if (total <= 0.0 || !midiAuditionEngine_.isPlayheadVisible()) {
         playbackPlayheadBeat_.reset();
     } else if (const auto snapshot = midiAuditionEngine_.playbackSnapshot();
                snapshot != nullptr) {
@@ -2960,7 +2982,9 @@ void MainComponent::runHermesDrumsMakeMidi()
         return;
     }
 
-    const auto sourceFile = juce::File(context->audioSourcePath);
+    const auto sourceFile = juce::File(juce::String::fromUTF8(
+        context->audioSourcePath.data(),
+        static_cast<int>(context->audioSourcePath.size())));
     if (!sourceFile.existsAsFile()) {
         const auto message = "Selected WAV source file does not exist: " + context->audioSourcePath;
         app::AppLogger::log("Validation failure: " + juce::String(message));

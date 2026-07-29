@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/Utf8Path.h"
+
 namespace dawhermes::ui {
 
 namespace {
@@ -80,7 +82,9 @@ juce::AudioThumbnail* TimelineView::getOrCreateThumbnail(const std::string& path
     }
 
     auto thumbnail = std::make_unique<juce::AudioThumbnail>(512, audioFormatManager_, thumbnailCache_);
-    const juce::File audioFile(path);
+    const juce::File audioFile(juce::String::fromUTF8(
+        path.data(),
+        static_cast<int>(path.size())));
     if (!audioFile.existsAsFile()) {
         return nullptr;
     }

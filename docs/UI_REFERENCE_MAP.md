@@ -102,7 +102,7 @@ Accepted Milestone 3.3 audition surfaces:
 - orange playback playhead in Timeline and Piano Roll;
 - no Record control and no audio-track playback.
 
-Milestone 3.4 audition surfaces:
+Accepted Milestone 3.4 audition surfaces:
 
 - `File -> Import Audio as Track...` opens the native multi-file WAV chooser;
 - each valid WAV creates a filename-named audio track, stores source metadata,
@@ -114,8 +114,12 @@ Milestone 3.4 audition surfaces:
   together;
 - audio-only and MIDI-only selection remain playable;
 - Pause/resume preserves the immutable playback selection and current position;
+- changing the stopped playable selection resets its position to zero, while
+  refreshing the same selection preserves an intentional stopped seek;
 - `<<` and `>>` seek by 5 seconds and clamp to the selection bounds;
-- Stop, Panic, and Master Volume affect MIDI and WAV;
+- Stop silences MIDI/WAV, resets the counter to zero, hides the playhead, and
+  preserves the horizontal viewport; Pause preserves the visible playhead;
+- Panic and Master Volume affect MIDI and WAV;
 - skipped unreadable audio is reported in the existing non-modal status strip;
 - the BPM readout prefers explicit MIDI tempo, then confidently detected WAV
   tempo, then the 120 BPM audition fallback;
@@ -136,7 +140,8 @@ The current Timeline and Piano Roll styling is intentionally functional rather t
 Visual polish, spacing, colours and presentation will be revisited near the end of DAWHermes development.
 
 MIDI note editing is accepted Milestone 3.2 functionality.
-M3.4 adds selected assigned-WAV playback alongside the M3.3 internal MIDI synth.
+Milestone 3.4 is complete and manually accepted.
+M3.4 adds selected imported-WAV playback alongside the M3.3 internal MIDI synth.
 Its asynchronous cached BPM detector changes beat/time mapping only; it does not
 change WAV speed. M3.4 does not add time stretching, final sample-accurate
 mixing, Timeline editing, controller lanes, copy/paste, or Cubase-specific

@@ -3,6 +3,8 @@
 #include <cmath>
 #include <filesystem>
 
+#include "core/Utf8Path.h"
+
 namespace dawhermes::hermes {
 
 bool isValidResultLayout(HermesResultLayout value)
@@ -122,7 +124,7 @@ ValidationResult validateTrackContextForDrums(const HermesTrackContext& context)
     }
 
     std::error_code ec;
-    const auto sourcePath = std::filesystem::path(context.audioSourcePath);
+    const auto sourcePath = core::pathFromUtf8(context.audioSourcePath);
     if (!std::filesystem::exists(sourcePath, ec) || !std::filesystem::is_regular_file(sourcePath, ec)) {
         return ValidationResult::fail("Selected WAV source file does not exist.");
     }

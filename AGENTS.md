@@ -34,8 +34,12 @@ As of the latest accepted baseline, DAWHermes has:
 - Snap, velocity editing and quantize;
 - ProjectHistory Undo/Redo;
 - selected-track MIDI export;
-- basic internal MIDI audition playback with Play/Stop/Panic/Volume;
-- shared Timeline/Piano Roll playhead for MIDI audition.
+- direct `File -> Import Audio as Track...` for WAV-only audio import;
+- synchronized selected MIDI/WAV audition playback;
+- Play/Pause/Stop/Panic/Volume, counter and BPM transport controls;
+- imported MIDI tempo-map support and bounded WAV BPM estimation;
+- clamped ±5-second seeking and shared Timeline/Piano Roll playhead following;
+- single-transaction audio-import Undo/Redo.
 
 The internal synth is intentionally basic and functional. It is for auditioning pitch, timing, duration and velocity, not final sound quality.
 
@@ -195,6 +199,10 @@ C:\Users\godhimself2u\AppData\Local\DAWHermes\app\DAWHermes.exe
 ## Build and verification
 
 For every behaviour change, run the relevant full verification sequence unless the user explicitly asks for a smaller diagnostic step.
+
+Local Release builds must use `DAWHERMES_ENABLE_LTCG=OFF`.
+Never run local `/GL` or `/LTCG` builds.
+LTCG experiments are allowed only in a dedicated future CI diagnostic workflow explicitly requested by the user.
 
 Standard local verification:
 

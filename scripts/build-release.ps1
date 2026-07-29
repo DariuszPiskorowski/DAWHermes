@@ -33,52 +33,6 @@ function Format-LoggedCommand {
     return "$Executable $($formattedArguments -join ' ')"
 }
 
-function Get-CMakeCacheValue {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$CachePath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Name
-    )
-
-    if (-not (Test-Path -LiteralPath $CachePath)) {
-        return ''
-    }
-
-    $match = Get-Content -LiteralPath $CachePath |
-        Where-Object { $_ -match "^$([regex]::Escape($Name))(:[^=]+)?=(.*)$" } |
-        Select-Object -First 1
-
-    if ($match -and $match -match '^[^=]+=(.*)$') {
-        return $Matches[1]
-    }
-
-    return ''
-}
-
-function Assert-NoLtcgReleaseTree {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$CachePath
-    )
-
-    if (-not (Test-Path -LiteralPath $CachePath)) {
-        throw "Release build tree is not configured: $CachePath"
-    }
-
-    $ltcgSetting = Get-CMakeCacheValue `
-        -CachePath $CachePath `
-        -Name 'DAWHERMES_ENABLE_LTCG'
-    if ($ltcgSetting -ne 'OFF') {
-        $message =
-            "Unsafe Release build refused: DAWHERMES_ENABLE_LTCG must be exactly OFF " +
-            "in $CachePath (found '$ltcgSetting'). Reconfigure with " +
-            ".\scripts\configure.ps1 -EnableLtcg OFF."
-        throw $message
-    }
-}
-
 function Write-DiagnosticLine {
     param(
         [Parameter(Mandatory = $true)]

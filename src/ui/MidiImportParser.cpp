@@ -10,6 +10,8 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "core/Utf8Path.h"
+
 namespace dawhermes::ui {
 
 namespace {
@@ -134,7 +136,10 @@ std::optional<MidiImportDocument> parseMidiImportDocument(
 {
     error.clear();
 
-    const juce::File midiFilePath(filePath.string());
+    const auto filePathUtf8 = core::pathToUtf8(filePath);
+    const juce::File midiFilePath(juce::String::fromUTF8(
+        filePathUtf8.data(),
+        static_cast<int>(filePathUtf8.size())));
     if (!midiFilePath.existsAsFile()) {
         error = "Selected MIDI file does not exist.";
         return std::nullopt;
@@ -160,8 +165,11 @@ std::optional<MidiImportDocument> parseMidiImportDocument(
     }
 
     MidiImportDocument document;
-    document.sourceFilePath = filePath.string();
-    document.sourceFileName = midiFilePath.getFileName().toStdString();
+    document.sourceFilePath = core::absolutePathToUtf8(filePath);
+    const auto sourceFileName = midiFilePath.getFileName();
+    document.sourceFileName.assign(
+        sourceFileName.toRawUTF8(),
+        static_cast<std::size_t>(sourceFileName.getNumBytesAsUTF8()));
     document.midiFileType = midiFileType;
     document.ticksPerQuarterNote = ticksPerQuarterNote;
     document.totalSourceTrackCount = midiFile.getNumTracks();
@@ -318,7 +326,10 @@ std::optional<WavFileInspection> inspectWavFile(
 {
     error.clear();
 
-    const juce::File wavPath(filePath.string());
+    const auto filePathUtf8 = core::pathToUtf8(filePath);
+    const juce::File wavPath(juce::String::fromUTF8(
+        filePathUtf8.data(),
+        static_cast<int>(filePathUtf8.size())));
     if (!wavPath.existsAsFile()) {
         error = "WAV file does not exist.";
         return std::nullopt;

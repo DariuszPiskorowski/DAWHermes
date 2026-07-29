@@ -33,7 +33,9 @@ public:
     void stop();
     void panic();
     void seekTo(double targetSeconds);
-    void setPreviewDuration(double durationSeconds);
+    void setPreviewDuration(
+        double durationSeconds,
+        std::uint64_t playableSelectionGeneration = 0);
 
     void setVolume(float normalizedVolume);
     float volume() const noexcept;
@@ -43,6 +45,7 @@ public:
     bool isAudioDeviceReady() const noexcept;
     double playheadSeconds() const noexcept;
     double totalDurationSeconds() const noexcept;
+    bool isPlayheadVisible() const noexcept;
     double playheadBeat() const;
     bool hasPreparedPlayback() const noexcept;
     std::shared_ptr<const SelectionPlaybackSnapshot> playbackSnapshot() const noexcept;

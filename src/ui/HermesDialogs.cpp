@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "hermes/HermesValidation.h"
+#include "core/Utf8Path.h"
 #include "ui/DrumMappingDialog.h"
 
 namespace dawhermes::ui {
@@ -79,7 +80,8 @@ juce::String contextLine(const hermes::HermesTrackContext& context)
 
 juce::String pairContextLine(const hermes::HermesAudioMidiPairContext& context)
 {
-    const auto wavName = std::filesystem::path(context.audioTrack.audioSourcePath).filename().string();
+    const auto wavName = core::filenameFromUtf8Path(
+        context.audioTrack.audioSourcePath);
     return "Reference WAV: " + juce::String(context.audioTrack.trackName)
         + " (" + juce::String(wavName) + ")"
         + "\nMIDI candidate: " + juce::String(context.midiTrack.trackName)

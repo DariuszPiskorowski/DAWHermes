@@ -10,6 +10,8 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "core/Utf8Path.h"
+
 namespace dawhermes::audio {
 
 namespace {
@@ -19,6 +21,14 @@ constexpr double kMaximumBpm = 200.0;
 constexpr double kEnvelopeRate = 200.0;
 constexpr double kMinimumConfidence = 0.45;
 constexpr int kReadBlockFrames = 4096;
+
+juce::File juceFileFromPath(const std::filesystem::path& sourcePath)
+{
+    const auto utf8 = core::pathToUtf8(sourcePath);
+    return juce::File(juce::String::fromUTF8(
+        utf8.data(),
+        static_cast<int>(utf8.size())));
+}
 
 std::optional<WavFileFingerprint> fingerprintFile(
     const std::filesystem::path& sourcePath)
@@ -30,9 +40,10 @@ std::optional<WavFileFingerprint> fingerprintFile(
     }
 
     WavFileFingerprint fingerprint;
-    fingerprint.sourcePath = std::filesystem::absolute(sourcePath, error).string();
+    fingerprint.sourcePath = core::pathToUtf8(
+        std::filesystem::absolute(sourcePath, error));
     if (error) {
-        fingerprint.sourcePath = sourcePath.string();
+        fingerprint.sourcePath = core::pathToUtf8(sourcePath);
         error.clear();
     }
     fingerprint.fileSize = std::filesystem::file_size(sourcePath, error);
@@ -160,7 +171,7 @@ WavBpmEstimate analyzeWavBpm(
     double maximumAnalysisSeconds)
 {
     WavBpmEstimate estimate;
-    const juce::File sourceFile(sourcePath.string());
+    const auto sourceFile = juceFileFromPath(sourcePath);
     if (!sourceFile.existsAsFile()) {
         return estimate;
     }
@@ -274,12 +285,13 @@ WavBpmEstimate analyzeWavBpm(
 }
 
 std::optional<WavBpmEstimate> WavBpmCache::find(
-    const WavFileFingerprint& fingerprint) const
+    const WavFileFingerprint& fingerprint)
 {
     const auto it = entries_.find(fingerprint.sourcePath);
     if (it == entries_.end() || !(it->second.fingerprint == fingerprint)) {
         return std::nullopt;
     }
+    it->second.lastUse = nextUse_++;
     return it->second.estimate;
 }
 
@@ -287,10 +299,35 @@ void WavBpmCache::store(
     const WavFileFingerprint& fingerprint,
     WavBpmEstimate estimate)
 {
-    entries_[fingerprint.sourcePath] = Entry {
-        fingerprint,
-        std::move(estimate),
-    };
+    if (const auto existing = entries_.find(fingerprint.sourcePath);
+        existing != entries_.end()) {
+        existing->second = Entry {
+            fingerprint,
+            std::move(estimate),
+            nextUse_++,
+        };
+        return;
+    }
+
+    if (entries_.size() >= kMaximumWavBpmCacheEntries) {
+        const auto oldest = std::min_element(
+            entries_.begin(),
+            entries_.end(),
+            [](const auto& left, const auto& right) {
+                return left.second.lastUse < right.second.lastUse;
+            });
+        if (oldest != entries_.end()) {
+            entries_.erase(oldest);
+        }
+    }
+
+    entries_.emplace(
+        fingerprint.sourcePath,
+        Entry {
+            fingerprint,
+            std::move(estimate),
+            nextUse_++,
+        });
 }
 
 std::size_t WavBpmCache::size() const noexcept
@@ -375,9 +412,10 @@ void WavBpmAnalysisService::workerLoop(std::stop_token stopToken)
             pending_.reset();
         }
 
-        auto estimate = analyzeWavBpm(request.fingerprint.sourcePath);
+        auto estimate = analyzeWavBpm(
+            core::pathFromUtf8(request.fingerprint.sourcePath));
         const auto currentFingerprint = fingerprintWavFile(
-            request.fingerprint.sourcePath);
+            core::pathFromUtf8(request.fingerprint.sourcePath));
         std::scoped_lock lock(mutex_);
         if (!currentFingerprint.has_value()) {
             completed_ = WavBpmAnalysisResult {

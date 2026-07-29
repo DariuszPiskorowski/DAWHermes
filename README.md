@@ -8,8 +8,7 @@ The project is not intended to replace every Cubase mixing or mastering feature.
 
 Milestone 3.2 MIDI editing and selected-track export is complete, manually accepted, and published.
 Milestone 3.3 MIDI audition playback is complete, manually accepted, and published.
-Core Milestone 3.4 synchronized WAV/MIDI playback is manually accepted; its
-completed transport workflow awaits a final installed-app acceptance pass.
+Milestone 3.4 is complete and manually accepted.
 
 Milestone 1.1 and Milestone 2 functional integration are complete and accepted.
 Milestone 3.1 visual functionality is accepted.
@@ -34,6 +33,8 @@ Currently implemented:
 - synchronized selected-track MIDI and imported-WAV audition through the system
   default audio output with Play, Pause/resume, Stop, Panic, 5-second seeking,
   safe volume, BPM, a time counter, and shared Timeline/Piano Roll playheads;
+- Unicode-safe Windows WAV paths, a 128-entry LRU WAV-BPM session cache, and a
+  512 MiB aggregate decoded-audio limit per immutable audition snapshot;
 - track selection and deletion;
 - deliberate right-click context menus;
 - Hermes menu, option dialogs and validation;
@@ -145,12 +146,11 @@ binary logs under the ignored `build\diagnostics` directory:
 Diagnostic mode builds only the `DAWHermes` Release target. It does not run
 tests, install files or launch the application.
 
-The `DAWHERMES_ENABLE_LTCG` CMake option remains available and defaults to
-`ON` for future CI/toolchain investigation. The supported local scripts are
-deliberately safer: `configure.ps1` explicitly configures `OFF`, and
-`build-release.ps1` refuses to build unless the selected cache contains exactly
-`DAWHERMES_ENABLE_LTCG=OFF`. This prevents the normal local build and install
-workflow from starting the `/GL`/`/LTCG` path that repeatedly froze Windows.
+The `DAWHERMES_ENABLE_LTCG` CMake option defaults to `OFF`. The supported local
+scripts explicitly configure `OFF`, and `build-release.ps1` refuses to build
+unless the effective cache value is `DAWHERMES_ENABLE_LTCG=OFF`. This prevents
+the normal local build and install workflow from starting the `/GL`/`/LTCG`
+path that repeatedly froze Windows.
 After an already verified Release build, `install-local.ps1 -SkipBuild`
 installs that artifact without initiating another build and still verifies the
 no-LTCG cache setting. `-BuildDirectory` can select a fresh verified tree
@@ -174,6 +174,9 @@ interprocedural optimization, compiles participating DAWHermes targets with
 `/GL-`, and links the final executable with `/LTCG:OFF`. Inspect the generated
 projects before executing the diagnostic build. Generated projects, outputs and
 logs remain under the ignored `build` directory.
+
+Never run a local `/GL` or `/LTCG` build. LTCG experiments are allowed only in
+a dedicated future CI diagnostic workflow explicitly requested by the user.
 
 Run tests:
 

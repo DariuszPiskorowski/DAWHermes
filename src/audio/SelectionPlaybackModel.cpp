@@ -1,15 +1,18 @@
 #include "audio/SelectionPlaybackModel.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <new>
 #include <utility>
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "core/MidiTimeMap.h"
+#include "core/Utf8Path.h"
 
 namespace dawhermes::audio {
 
@@ -17,11 +20,14 @@ namespace {
 
 std::string sourceFileName(const std::string& sourcePath)
 {
-    if (sourcePath.empty()) {
-        return {};
-    }
+    return core::filenameFromUtf8Path(sourcePath);
+}
 
-    return std::filesystem::path(sourcePath).filename().string();
+juce::File juceFileFromUtf8(const std::string& sourcePath)
+{
+    return juce::File(juce::String::fromUTF8(
+        sourcePath.data(),
+        static_cast<int>(sourcePath.size())));
 }
 
 std::string countLabel(std::size_t count, const char* singular, const char* plural)
@@ -82,7 +88,15 @@ std::vector<core::MidiTempoEvent> playbackTempoMapForSelection(
     return singleTempoMap(options.fallbackBpm);
 }
 
-std::optional<double> inspectAudioStemDuration(
+struct AudioStemDecodePlan {
+    const core::Track* track { nullptr };
+    double sourceSampleRate { 0.0 };
+    std::uint64_t frameCount { 0 };
+    int channelCount { 0 };
+    std::uint64_t requiredBytes { 0 };
+};
+
+std::optional<AudioStemDecodePlan> inspectAudioStem(
     const core::Track& track,
     SkippedAudioTrack& skipped)
 {
@@ -95,7 +109,7 @@ std::optional<double> inspectAudioStemDuration(
         return std::nullopt;
     }
 
-    const juce::File sourceFile(track.audioSourcePath);
+    const auto sourceFile = juceFileFromUtf8(track.audioSourcePath);
     if (!sourceFile.existsAsFile()) {
         skipped.reason = "file is missing";
         return std::nullopt;
@@ -119,13 +133,28 @@ std::optional<double> inspectAudioStemDuration(
         return std::nullopt;
     }
 
-    return static_cast<double>(reader->lengthInSamples) / reader->sampleRate;
+    const auto frameCount = static_cast<std::uint64_t>(reader->lengthInSamples);
+    const auto channelCount = static_cast<int>(reader->numChannels);
+    const auto requiredBytes = decodedWavBytes(frameCount, channelCount);
+    if (!requiredBytes.has_value()) {
+        skipped.reason = "selected audio size cannot be represented safely";
+        return std::nullopt;
+    }
+
+    return AudioStemDecodePlan {
+        &track,
+        reader->sampleRate,
+        frameCount,
+        channelCount,
+        requiredBytes.value(),
+    };
 }
 
 std::optional<AudioStemPlaybackSnapshot> loadAudioStem(
-    const core::Track& track,
+    const AudioStemDecodePlan& plan,
     SkippedAudioTrack& skipped)
 {
+    const auto& track = *plan.track;
     skipped.sourceTrackId = track.id;
     skipped.sourceTrackName = track.name;
     skipped.sourceFileName = sourceFileName(track.audioSourcePath);
@@ -135,7 +164,7 @@ std::optional<AudioStemPlaybackSnapshot> loadAudioStem(
         return std::nullopt;
     }
 
-    const juce::File sourceFile(track.audioSourcePath);
+    const auto sourceFile = juceFileFromUtf8(track.audioSourcePath);
     if (!sourceFile.existsAsFile()) {
         skipped.reason = "file is missing";
         return std::nullopt;
@@ -157,17 +186,20 @@ std::optional<AudioStemPlaybackSnapshot> loadAudioStem(
     if (reader->sampleRate <= 0.0
         || reader->lengthInSamples <= 0
         || reader->numChannels < 1
-        || reader->numChannels > 2
-        || reader->lengthInSamples > static_cast<juce::int64>(std::numeric_limits<int>::max())) {
+        || reader->numChannels > 2) {
         skipped.reason = "WAV must contain mono or stereo audio";
         return std::nullopt;
     }
 
-    const auto frameCount = static_cast<int>(reader->lengthInSamples);
+    const auto frameCount = static_cast<std::uint64_t>(reader->lengthInSamples);
     const auto channelCount = static_cast<int>(reader->numChannels);
-    juce::AudioBuffer<float> decoded(channelCount, frameCount);
-    if (!reader->read(&decoded, 0, frameCount, 0, true, channelCount > 1)) {
-        skipped.reason = "WAV data could not be decoded";
+    const auto requiredBytes = decodedWavBytes(frameCount, channelCount);
+    if (!requiredBytes.has_value()
+        || requiredBytes.value() != plan.requiredBytes
+        || frameCount != plan.frameCount
+        || channelCount != plan.channelCount
+        || std::abs(reader->sampleRate - plan.sourceSampleRate) > 1.0e-9) {
+        skipped.reason = "WAV changed while playback was being prepared";
         return std::nullopt;
     }
 
@@ -176,14 +208,44 @@ std::optional<AudioStemPlaybackSnapshot> loadAudioStem(
     snapshot.sourceTrackName = track.name;
     snapshot.sourcePath = track.audioSourcePath;
     snapshot.sourceSampleRate = reader->sampleRate;
-    snapshot.frameCount = static_cast<std::uint64_t>(frameCount);
+    snapshot.frameCount = frameCount;
     snapshot.channels.resize(static_cast<std::size_t>(channelCount));
 
-    for (int channel = 0; channel < channelCount; ++channel) {
-        auto& destination = snapshot.channels[static_cast<std::size_t>(channel)];
-        destination.assign(
-            decoded.getReadPointer(channel),
-            decoded.getReadPointer(channel) + frameCount);
+    try {
+        for (auto& channel : snapshot.channels) {
+            channel.resize(static_cast<std::size_t>(frameCount));
+        }
+    } catch (const std::bad_alloc&) {
+        skipped.reason = "audition memory could not be allocated";
+        return std::nullopt;
+    }
+
+    std::uint64_t frameOffset = 0;
+    while (frameOffset < frameCount) {
+        const auto framesToRead = static_cast<int>(std::min<std::uint64_t>(
+            frameCount - frameOffset,
+            static_cast<std::uint64_t>(kWavDecodeBlockFrames)));
+        std::array<float*, 2> channelPointers {};
+        for (int channel = 0; channel < channelCount; ++channel) {
+            channelPointers[static_cast<std::size_t>(channel)] =
+                snapshot.channels[static_cast<std::size_t>(channel)].data()
+                + static_cast<std::size_t>(frameOffset);
+        }
+        juce::AudioBuffer<float> destination(
+            channelPointers.data(),
+            channelCount,
+            framesToRead);
+        if (!reader->read(
+                &destination,
+                0,
+                framesToRead,
+                static_cast<juce::int64>(frameOffset),
+                true,
+                channelCount > 1)) {
+            skipped.reason = "WAV data could not be decoded";
+            return std::nullopt;
+        }
+        frameOffset += static_cast<std::uint64_t>(framesToRead);
     }
 
     if (!snapshot.isPlayable()) {
@@ -214,6 +276,30 @@ bool selectionHasPotentialPlayback(
 }
 
 }  // namespace
+
+std::optional<std::uint64_t> decodedWavBytes(
+    std::uint64_t frameCount,
+    int channelCount) noexcept
+{
+    if (frameCount == 0 || channelCount < 1 || channelCount > 2) {
+        return std::nullopt;
+    }
+
+    const auto channels = static_cast<std::uint64_t>(channelCount);
+    if (frameCount > std::numeric_limits<std::uint64_t>::max() / channels) {
+        return std::nullopt;
+    }
+    const auto samples = frameCount * channels;
+    if (samples > std::numeric_limits<std::uint64_t>::max() / sizeof(float)) {
+        return std::nullopt;
+    }
+    const auto bytes = samples * sizeof(float);
+    if (frameCount > static_cast<std::uint64_t>(
+                         std::numeric_limits<std::size_t>::max())) {
+        return std::nullopt;
+    }
+    return bytes;
+}
 
 double AudioStemPlaybackSnapshot::durationSeconds() const noexcept
 {
@@ -279,6 +365,7 @@ SelectionPlaybackSnapshotResult createSelectionPlaybackSnapshot(
         }
     }
 
+    std::vector<AudioStemDecodePlan> decodePlans;
     for (const auto selectedId : selection.selectedTrackIds()) {
         const auto* track = project.findTrackById(selectedId);
         if (track == nullptr
@@ -288,12 +375,48 @@ SelectionPlaybackSnapshotResult createSelectionPlaybackSnapshot(
         }
 
         SkippedAudioTrack skipped;
-        auto stem = loadAudioStem(*track, skipped);
+        auto plan = inspectAudioStem(*track, skipped);
+        if (!plan.has_value()) {
+            result.skippedAudioTracks.push_back(std::move(skipped));
+            continue;
+        }
+
+        if (result.estimatedSelectedAudioBytes
+            > std::numeric_limits<std::uint64_t>::max()
+                - plan->requiredBytes) {
+            result.selectedAudioByteEstimateOverflow = true;
+        } else {
+            result.estimatedSelectedAudioBytes += plan->requiredBytes;
+        }
+        decodePlans.push_back(plan.value());
+    }
+
+    for (const auto& plan : decodePlans) {
+        SkippedAudioTrack skipped;
+        const auto decodedAudioBudget = std::min(
+            options.maximumDecodedAudioBytes,
+            kMaximumDecodedWavBytes);
+        if (plan.requiredBytes > decodedAudioBudget
+            - result.decodedAudioBytes) {
+            skipped.sourceTrackId = plan.track->id;
+            skipped.sourceTrackName = plan.track->name;
+            skipped.sourceFileName = sourceFileName(
+                plan.track->audioSourcePath);
+            skipped.reason =
+                "selected audio exceeds the 512 MiB audition memory limit";
+            result.skippedAudioTracks.insert(
+                result.skippedAudioTracks.begin(),
+                std::move(skipped));
+            continue;
+        }
+
+        auto stem = loadAudioStem(plan, skipped);
         if (!stem.has_value()) {
             result.skippedAudioTracks.push_back(std::move(skipped));
             continue;
         }
 
+        result.decodedAudioBytes += plan.requiredBytes;
         result.snapshot.durationSeconds = std::max(
             result.snapshot.durationSeconds,
             stem->durationSeconds());
@@ -326,6 +449,7 @@ SelectionPlaybackSummary createSelectionPlaybackSummary(
         if (midi.ok) {
             summary.midiTrackCount = 1;
             summary.durationSeconds = midi.snapshot.durationSeconds;
+            summary.identity.primaryMidiTrackId = midiTrack->id;
         }
     }
 
@@ -338,19 +462,25 @@ SelectionPlaybackSummary createSelectionPlaybackSummary(
         }
 
         SkippedAudioTrack skipped;
-        const auto duration = inspectAudioStemDuration(*track, skipped);
-        if (!duration.has_value()) {
+        const auto plan = inspectAudioStem(*track, skipped);
+        if (!plan.has_value()) {
             summary.skippedAudioTracks.push_back(std::move(skipped));
             continue;
         }
 
         ++summary.audioTrackCount;
-        summary.durationSeconds = std::max(summary.durationSeconds, duration.value());
+        summary.durationSeconds = std::max(
+            summary.durationSeconds,
+            static_cast<double>(plan->frameCount) / plan->sourceSampleRate);
+        summary.identity.readableAudioTrackIds.push_back(track->id);
         if (!summary.firstReadableAudioPath.has_value()) {
             summary.firstReadableAudioPath = track->audioSourcePath;
         }
     }
 
+    std::sort(
+        summary.identity.readableAudioTrackIds.begin(),
+        summary.identity.readableAudioTrackIds.end());
     summary.playable = summary.midiTrackCount > 0 || summary.audioTrackCount > 0;
     return summary;
 }
@@ -404,6 +534,14 @@ double selectionPlaybackBpm(
 {
     const auto beat = selectionPlayheadBeat(transportSeconds, snapshot);
     return playbackBpmAtBeat(beat, snapshot.playheadTempoMap);
+}
+
+double selectionSummaryBpm(
+    double transportSeconds,
+    const SelectionPlaybackSummary& summary)
+{
+    const auto beat = midiSecondsToBeat(transportSeconds, summary.tempoMap);
+    return playbackBpmAtBeat(beat, summary.tempoMap);
 }
 
 bool hasExplicitMidiTempo(const core::Track& track) noexcept
@@ -482,6 +620,10 @@ std::string describeSkippedAudioTrack(const SkippedAudioTrack& skipped)
     const auto displayName = skipped.sourceFileName.empty()
         ? skipped.sourceTrackName
         : skipped.sourceFileName;
+    if (skipped.reason
+        == "selected audio exceeds the 512 MiB audition memory limit") {
+        return "Skipped audio track " + displayName + ": " + skipped.reason;
+    }
     return "Skipped unreadable audio track: " + displayName;
 }
 

@@ -263,6 +263,8 @@ private:
     bool midiComparisonEnabled_ { false };
     bool suppressViewportControlCallbacks_ { false };
     audio::SelectionPlaybackSummary transportSelectionSummary_;
+    std::optional<audio::PlayableSelectionIdentity> playableSelectionIdentity_;
+    std::uint64_t playableSelectionGeneration_ { 0 };
     std::optional<audio::WavBpmAnalysisResult> selectedWavBpmResult_;
     std::optional<audio::WavFileFingerprint> requestedWavFingerprint_;
     std::uint64_t wavBpmRequestGeneration_ { 0 };

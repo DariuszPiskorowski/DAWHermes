@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(
   DAWHERMES_ENABLE_LTCG
   "Enable whole-program optimization and link-time code generation for DAWHermes Release builds"
-  ON)
+  OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)

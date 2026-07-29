@@ -13,6 +13,8 @@
 
 namespace dawhermes::audio {
 
+constexpr std::size_t kMaximumWavBpmCacheEntries = 128;
+
 struct WavFileFingerprint {
     std::string sourcePath;
     std::uintmax_t fileSize { 0 };
@@ -46,7 +48,7 @@ WavBpmEstimate analyzeWavBpm(
 class WavBpmCache {
 public:
     std::optional<WavBpmEstimate> find(
-        const WavFileFingerprint& fingerprint) const;
+        const WavFileFingerprint& fingerprint);
     void store(
         const WavFileFingerprint& fingerprint,
         WavBpmEstimate estimate);
@@ -56,9 +58,11 @@ private:
     struct Entry {
         WavFileFingerprint fingerprint;
         WavBpmEstimate estimate;
+        std::uint64_t lastUse { 0 };
     };
 
     std::map<std::string, Entry> entries_;
+    std::uint64_t nextUse_ { 1 };
 };
 
 class WavBpmAnalysisService {

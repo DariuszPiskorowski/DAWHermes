@@ -4,6 +4,8 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "core/Utf8Path.h"
+
 namespace dawhermes::audio {
 
 namespace {
@@ -13,7 +15,10 @@ std::optional<core::PreparedAudioTrackImport> prepareAudioTrack(
     std::string& error)
 {
     error.clear();
-    const juce::File sourceFile(sourcePath.string());
+    const auto sourcePathUtf8 = core::pathToUtf8(sourcePath);
+    const juce::File sourceFile(juce::String::fromUTF8(
+        sourcePathUtf8.data(),
+        static_cast<int>(sourcePathUtf8.size())));
     if (!sourceFile.existsAsFile()) {
         error = "file does not exist";
         return std::nullopt;
@@ -51,8 +56,11 @@ std::optional<core::PreparedAudioTrackImport> prepareAudioTrack(
     metadata.fileSizeBytes = static_cast<std::uint64_t>(sourceFile.getSize());
 
     core::PreparedAudioTrackImport prepared;
-    prepared.trackName = sourceFile.getFileNameWithoutExtension().toStdString();
-    prepared.sourcePath = sourceFile.getFullPathName().toStdString();
+    const auto trackName = sourceFile.getFileNameWithoutExtension();
+    prepared.trackName.assign(
+        trackName.toRawUTF8(),
+        static_cast<std::size_t>(trackName.getNumBytesAsUTF8()));
+    prepared.sourcePath = core::absolutePathToUtf8(sourcePath);
     prepared.metadata = metadata;
     return prepared;
 }

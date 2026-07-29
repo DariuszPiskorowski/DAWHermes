@@ -12,6 +12,14 @@
 
 namespace dawhermes::audio {
 
+constexpr std::uint64_t kMaximumDecodedWavBytes =
+    512ULL * 1024ULL * 1024ULL;
+constexpr int kWavDecodeBlockFrames = 4096;
+
+std::optional<std::uint64_t> decodedWavBytes(
+    std::uint64_t frameCount,
+    int channelCount) noexcept;
+
 struct AudioStemPlaybackSnapshot {
     std::uint64_t sourceTrackId { 0 };
     std::string sourceTrackName;
@@ -48,11 +56,22 @@ struct SelectionPlaybackSnapshotResult {
     std::string message;
     SelectionPlaybackSnapshot snapshot;
     std::vector<SkippedAudioTrack> skippedAudioTracks;
+    std::uint64_t estimatedSelectedAudioBytes { 0 };
+    std::uint64_t decodedAudioBytes { 0 };
+    bool selectedAudioByteEstimateOverflow { false };
 };
 
 struct SelectionPlaybackOptions {
     std::optional<double> detectedWavBpm;
     double fallbackBpm { kFallbackPlaybackBpm };
+    std::uint64_t maximumDecodedAudioBytes { kMaximumDecodedWavBytes };
+};
+
+struct PlayableSelectionIdentity {
+    std::optional<std::uint64_t> primaryMidiTrackId;
+    std::vector<std::uint64_t> readableAudioTrackIds;
+
+    bool operator==(const PlayableSelectionIdentity& other) const = default;
 };
 
 struct SelectionPlaybackSummary {
@@ -64,6 +83,7 @@ struct SelectionPlaybackSummary {
     PlaybackTempoSource tempoSource { PlaybackTempoSource::fallback };
     std::optional<std::string> firstReadableAudioPath;
     std::vector<SkippedAudioTrack> skippedAudioTracks;
+    PlayableSelectionIdentity identity;
 };
 
 struct MidiResumeState {
@@ -97,6 +117,9 @@ double playbackBpmAtBeat(
 double selectionPlaybackBpm(
     double transportSeconds,
     const SelectionPlaybackSnapshot& snapshot);
+double selectionSummaryBpm(
+    double transportSeconds,
+    const SelectionPlaybackSummary& summary);
 bool hasExplicitMidiTempo(const core::Track& track) noexcept;
 MidiResumeState createMidiResumeState(
     const MidiPlaybackSnapshot& snapshot,

@@ -63,18 +63,33 @@ std::string formatOneHourOrLonger(double seconds)
 
 }  // namespace
 
-void SharedTransportState::setPreviewDuration(double durationSeconds) noexcept
+void SharedTransportState::setPreviewDuration(
+    double durationSeconds,
+    std::uint64_t playableSelectionGeneration) noexcept
 {
     if (mode() != TransportMode::stopped) {
         return;
     }
 
     const auto duration = sanitizedDuration(durationSeconds);
+    const auto selectionChanged =
+        !hasPlayableSelectionGeneration_.load(std::memory_order_acquire)
+        || playableSelectionGeneration_.load(std::memory_order_acquire)
+            != playableSelectionGeneration;
     snapshot_.store(nullptr, std::memory_order_release);
     totalSeconds_.store(duration, std::memory_order_release);
-    currentSeconds_.store(
-        clampTransportSeconds(currentSeconds(), duration),
-        std::memory_order_release);
+    if (selectionChanged) {
+        currentSeconds_.store(0.0, std::memory_order_release);
+        playheadVisible_.store(false, std::memory_order_release);
+        playableSelectionGeneration_.store(
+            playableSelectionGeneration,
+            std::memory_order_release);
+        hasPlayableSelectionGeneration_.store(true, std::memory_order_release);
+    } else {
+        currentSeconds_.store(
+            clampTransportSeconds(currentSeconds(), duration),
+            std::memory_order_release);
+    }
 }
 
 void SharedTransportState::prepare(
@@ -89,6 +104,7 @@ void SharedTransportState::prepare(
         clampTransportSeconds(startSeconds, duration),
         std::memory_order_release);
     mode_.store(TransportMode::stopped, std::memory_order_release);
+    playheadVisible_.store(playable, std::memory_order_release);
 }
 
 void SharedTransportState::play() noexcept
@@ -109,6 +125,7 @@ void SharedTransportState::stop() noexcept
 {
     mode_.store(TransportMode::stopped, std::memory_order_release);
     currentSeconds_.store(0.0, std::memory_order_release);
+    playheadVisible_.store(false, std::memory_order_release);
 }
 
 void SharedTransportState::panic() noexcept
@@ -122,6 +139,7 @@ void SharedTransportState::complete() noexcept
 {
     currentSeconds_.store(totalSeconds(), std::memory_order_release);
     mode_.store(TransportMode::stopped, std::memory_order_release);
+    playheadVisible_.store(totalSeconds() > 0.0, std::memory_order_release);
 }
 
 void SharedTransportState::seek(double targetSeconds) noexcept
@@ -129,6 +147,7 @@ void SharedTransportState::seek(double targetSeconds) noexcept
     currentSeconds_.store(
         clampTransportSeconds(targetSeconds, totalSeconds()),
         std::memory_order_release);
+    playheadVisible_.store(totalSeconds() > 0.0, std::memory_order_release);
 }
 
 void SharedTransportState::updatePositionFromAudio(double currentSeconds) noexcept
@@ -139,6 +158,7 @@ void SharedTransportState::updatePositionFromAudio(double currentSeconds) noexce
     currentSeconds_.store(
         clampTransportSeconds(currentSeconds, totalSeconds()),
         std::memory_order_release);
+    playheadVisible_.store(totalSeconds() > 0.0, std::memory_order_release);
 }
 
 TransportMode SharedTransportState::mode() const noexcept
@@ -169,6 +189,11 @@ double SharedTransportState::totalSeconds() const noexcept
 bool SharedTransportState::hasPreparedPlayback() const noexcept
 {
     return snapshot_.load(std::memory_order_acquire) != nullptr;
+}
+
+bool SharedTransportState::isPlayheadVisible() const noexcept
+{
+    return playheadVisible_.load(std::memory_order_acquire);
 }
 
 std::shared_ptr<const SelectionPlaybackSnapshot> SharedTransportState::snapshot() const noexcept
