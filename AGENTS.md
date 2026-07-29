@@ -35,11 +35,17 @@ As of the latest accepted baseline, DAWHermes has:
 - ProjectHistory Undo/Redo;
 - selected-track MIDI export;
 - direct `File -> Import Audio as Track...` for WAV-only audio import;
-- synchronized selected MIDI/WAV audition playback;
+- one application-owned audio-device service and one `AudioDeviceManager`;
+- explicit Audio menu settings, status, restart and Test Output;
+- synchronized whole-project MIDI/WAV playback independent of selection;
 - Play/Pause/Stop/Panic/Volume, counter and BPM transport controls;
-- imported MIDI tempo-map support and bounded WAV BPM estimation;
+- live hierarchical track/group Mute and Solo;
+- visible beat-coordinate Timeline Loop creation, resize, move, clear and callback wrapping;
+- imported MIDI tempo-map support and bounded WAV BPM estimation with half/double-tempo handling;
 - clamped ±5-second seeking and shared Timeline/Piano Roll playhead following;
-- single-transaction audio-import Undo/Redo.
+- single-transaction audio-import Undo/Redo;
+- embedded Hermes drums extraction, bass repair and MIDI/WAV synchronization;
+- Composer Assistant compatibility connector settings and explicit manual reachability probe, without music-generation integration.
 
 The internal synth is intentionally basic and functional. It is for auditioning pitch, timing, duration and velocity, not final sound quality.
 
@@ -181,6 +187,45 @@ Accepted M3.2 behaviour:
 - Arrow keys nudge selected MIDI notes; they do not scroll the Piano Roll viewport.
 - A ghost track is a comparison-only read-only overlay and must not be editable.
 
+## Standalone user manual
+
+The beginner user manual is a separate top-level repository section under `manual/`. It is not developer documentation and must not be placed under `docs/`.
+
+The canonical manual language is English.
+
+Every future milestone or change that adds, removes, renames or changes user-visible behaviour must update the relevant manual chapter in the same milestone.
+
+A user-facing milestone is not complete when the implementation works but its manual description is missing, inaccurate or stale.
+
+For each user-visible feature, the manual must explain, where applicable:
+
+- what the feature is;
+- why it exists;
+- when a musician would use it;
+- how to use it step by step;
+- what the user should see;
+- what the user should hear;
+- a practical musical example;
+- common mistakes or confusing interpretations;
+- important limitations;
+- related functions and manual chapters.
+
+Manual-writing rules:
+
+- Write for a beginner musician, including a user who may not know DAW, MIDI, WAV, BPM, quantization, sample rate, buffer size, Hermes or Composer Assistant terminology.
+- Explain unfamiliar terms at first use and keep the glossary updated.
+- Keep source-code details, class names, callback design and developer architecture out of the manual.
+- Verify every menu path, button label and described behaviour against the current merged application.
+- Clearly separate `Available now`, `Planned`, and `Not available yet` behaviour.
+- Never describe an unimplemented command as working.
+- Update related chapters when one behaviour affects several workflows, especially BPM, Loop, Composer Assistant, Hermes, export and audio-device behaviour.
+- Keep `manual/README.md` navigation, chapter order, baseline commit and links current.
+- Keep the Loop/work-region chapter immediately before the Composer Assistant chapter.
+- Preserve the user's current decision to omit the `Panic` control from the beginner manual unless the user explicitly reverses that decision.
+- A dedicated troubleshooting chapter is deferred until the user explicitly requests it; do not create filler troubleshooting content merely to complete a template.
+
+The project `README.md` must link visibly to `manual/README.md` and its `Current status` must be updated whenever accepted user-visible milestones change the actual product summary.
+
 ## Normal application launch
 
 - Normal use must never require Codex, VS Code, Visual Studio or an open terminal.
@@ -227,6 +272,8 @@ For UI changes:
 7. Leave the app ready for user manual acceptance when needed.
 
 Do not claim human/manual acceptance unless the user personally tested and accepted the installed app.
+
+Documentation-only manual work must not run unrelated C++ builds or hardware-dependent tests. It must at minimum verify Markdown links, file references, `git diff --check`, changed paths and repository hygiene.
 
 ## Testing policy
 
