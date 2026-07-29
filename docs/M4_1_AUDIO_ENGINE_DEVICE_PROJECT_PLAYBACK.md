@@ -1,6 +1,6 @@
 # Milestone 4.1: Audio Engine, Device Configuration and Project Playback
 
-Status: implemented; awaiting manual acceptance.
+Status: complete and manually accepted.
 
 ## User workflow
 

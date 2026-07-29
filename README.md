@@ -10,7 +10,7 @@ Milestone 3.2 MIDI editing and selected-track export is complete, manually accep
 Milestone 3.3 MIDI audition playback is complete, manually accepted, and published.
 Milestone 3.4 is complete and manually accepted.
 Milestone 4.1 central device configuration, whole-project playback, Mute/Solo,
-and Timeline Loop is implemented and awaiting manual acceptance.
+and Timeline Loop is complete and manually accepted.
 
 Milestone 1.1 and Milestone 2 functional integration are complete and accepted.
 Milestone 3.1 visual functionality is accepted.
@@ -84,7 +84,7 @@ Visual polish, spacing, colours and presentation will be revisited near the end 
 Timeline editing, controller lanes, copy/paste, and Cubase-specific exchange
 remain deferred.
 
-M4.1 is not yet manually accepted or published.
+M4.1 is complete and manually accepted.
 
 ## Related projects
 

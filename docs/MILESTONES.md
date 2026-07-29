@@ -23,7 +23,7 @@ No network-delivery milestone is defined in this plan.
 
 ## Current milestone scope
 
-Milestone 4.1 is implemented and awaiting manual acceptance:
+Milestone 4.1 is complete and manually accepted:
 
 - one application-lifetime audio-device manager and project callback;
 - explicit Audio settings, test output, restart, and status commands;
@@ -67,4 +67,4 @@ Milestone 3.1 visual functionality is accepted.
 Milestone 3.2 is accepted and published.
 Milestone 3.3 is manually accepted and published.
 Milestone 3.4 is complete and manually accepted.
-Milestone 4.1 is implemented and awaiting manual acceptance.
+Milestone 4.1 is complete and manually accepted.

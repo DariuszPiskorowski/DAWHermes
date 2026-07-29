@@ -128,7 +128,7 @@ Accepted Milestone 3.4 audition surfaces:
 - no Record, mixer, mute/solo, looping, or audio-editing
   controls are added.
 
-Implemented Milestone 4.1 surfaces (awaiting manual acceptance):
+Completed and manually accepted Milestone 4.1 surfaces:
 
 - top-level `Audio` menu with `Audio Settings...`, `Test Output`,
   `Restart Audio Device`, and `Audio Device Status...`;
@@ -155,7 +155,7 @@ Visual polish, spacing, colours and presentation will be revisited near the end 
 
 MIDI note editing is accepted Milestone 3.2 functionality.
 Milestone 3.4 is complete and manually accepted.
-Milestone 4.1 is implemented and awaiting manual acceptance.
+Milestone 4.1 is complete and manually accepted.
 M3.4 adds selected imported-WAV playback alongside the M3.3 internal MIDI synth.
 Its asynchronous cached BPM detector changes beat/time mapping only; it does not
 change WAV speed. M3.4 does not add time stretching, final sample-accurate

@@ -215,5 +215,4 @@ Additional Milestone 3.1 boundaries:
 - M4.1 playback is audition-grade: it adds central device setup,
   whole-project playback, Mute/Solo, and looping, but no time stretching, beat
   warping, mixer, effects, recording, or production instrument hosting.
-- M4.1 is implemented and awaiting manual acceptance; it is not yet accepted
-  or published.
+- M4.1 is complete and manually accepted.
