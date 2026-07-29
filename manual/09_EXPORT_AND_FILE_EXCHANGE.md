@@ -172,49 +172,69 @@ Wrong mapping changes which drum sound is triggered, not the timing of the note.
 - imported MIDI;
 - standard manual transfer of exported MIDI to another DAW.
 
-### Optional future integrations, not available yet
+### Planned major integrations, not available yet
 
-- ACE Studio exchange;
-- a possible local ACE-Step workflow;
+- first-class ACE Studio integration;
 - Cubase-specific exchange/export;
 - multi-track export package;
 - automatic stem and MIDI bundle;
-- one-click transfer;
 - project save/load;
 - audio export from the DAWHermes arrangement.
 
-## ACE Studio is an optional external service
+## ACE Studio is a planned first-class integration
 
-ACE Studio is not a permanent built-in DAWHermes tool and it is not required for normal DAWHermes operation.
+ACE Studio integration is one of the main reasons DAWHermes is being developed. It is not a minor afterthought.
 
-It is a separate commercial AI music workstation. A musician may choose to use it for AI vocals, AI instruments or other ACE Studio features, but another musician can use DAWHermes without installing or paying for ACE Studio.
+The intended long-term workflow is to let DAWHermes prepare, repair, edit and organise musical material, then exchange selected MIDI, audio and project context with ACE Studio for AI vocals and AI instrument performances. The result should return to the same wider production workflow and continue toward final production in Cubase.
 
-Any future DAWHermes connection must therefore remain optional. DAWHermes must still launch, edit, play, use Hermes and export MIDI when ACE Studio is absent.
+However, ACE Studio itself is a separate commercial application and service. It is not bundled with DAWHermes, and its licence is not included with DAWHermes.
 
-The possible future role is:
+A user who wants the ACE Studio part of the workflow will need:
 
-1. prepare or correct MIDI in DAWHermes;
-2. send or exchange selected material with ACE Studio;
-3. use ACE Studio for an optional AI vocal or instrument performance;
-4. bring the resulting MIDI or audio back into the wider production workflow;
-5. continue final production in Cubase.
+- ACE Studio installed separately;
+- a valid ACE Studio membership or licence;
+- access to the required ACE Studio integration feature;
+- any account permissions required by ACE Studio at that time.
 
-This workflow is only a design option. DAWHermes does not currently send tracks directly to ACE Studio, control an ACE Studio project, or receive processed results automatically.
+The rest of DAWHermes should remain usable when ACE Studio is not installed, but the ACE-specific workflow will naturally be unavailable.
 
-## Possible ACE Studio connection methods
+## The current ACE Studio integration surface
 
-ACE Studio currently documents more than one integration surface, but DAWHermes has not selected one.
+ACE Studio 2.0 currently provides two important documented integration paths:
 
-Possible future methods include:
+### ACE Bridge 2
 
-- ordinary MIDI and WAV file exchange;
-- ACE Bridge 2, which connects ACE Studio with compatible DAWs through a plug-in;
-- the experimental ACE Studio MCP server, if it becomes stable and suitable for the DAWHermes workflow;
-- a private or account-specific API, but only when access and permitted use have been confirmed.
+ACE Bridge 2 is a VST3, AU and AAX plug-in installed with ACE Studio. It connects a compatible DAW to ACE Studio for MIDI and audio synchronization.
 
-The manual must not promise a public ACE Studio API connection. At the current manual baseline, there is no verified general public REST API or documented free ACE Studio API tier that DAWHermes can depend on.
+DAWHermes does not host VST3 plug-ins yet, so direct ACE Bridge 2 use must wait until the VST3-hosting milestone or another deliberate bridge design is implemented.
 
-The project owner may have subscription-based or experimental integration access. That access must be verified in the actual ACE Studio account and documentation before implementation begins.
+### ACE Studio MCP Server
+
+ACE Studio 2.0 also includes an experimental local MCP server. When enabled inside ACE Studio, it exposes the current ACE Studio project to compatible AI clients and agents through a local Streamable HTTP endpoint.
+
+This is the most relevant currently documented programmatic integration path for the future DAWHermes AI assistant. It could allow the DAWHermes assistant to inspect and edit an open ACE Studio project without pretending that ACE Studio is part of the DAWHermes executable.
+
+The MCP server is still marked experimental. Its tools, behaviour, limits and compatibility may change before it becomes stable. DAWHermes must therefore treat its protocol as versioned external integration rather than an unchanging internal API.
+
+## Is there a free ACE Studio version with API access?
+
+At the current manual baseline, the official ACE Studio documentation does not list a permanent free ACE Studio desktop plan with MCP or API access.
+
+Official ACE Studio support states that using ACE Studio requires a membership obtained through a subscription, lifetime purchase or voucher. The public pricing page lists paid Artist and Artist Pro plans rather than a continuing free desktop tier.
+
+The ACE Studio MCP server is not presented as a separate cloud API subscription. It runs locally inside ACE Studio 2.0. Therefore, access appears to depend on having a working licensed ACE Studio installation rather than purchasing an additional API package.
+
+ACE Studio also gives registered users monthly AI credits for some web and generative features. Those credits do not by themselves prove that a free user receives full ACE Studio desktop access or access to the local MCP server.
+
+For the project owner, the practical check is simple:
+
+1. open the installed ACE Studio 2.0 application;
+2. open **Preferences**;
+3. look under **General** for **MCP Server**;
+4. confirm that it can be enabled under the current paid account;
+5. verify which MCP tools are exposed before DAWHermes implementation begins.
+
+Because the project owner already has a paid ACE Studio subscription, DAWHermes can be designed around the documented MCP and Bridge capabilities without relying on an unverified free tier.
 
 ## ACE Studio and ACE-Step are different projects
 
@@ -222,28 +242,29 @@ The open-source **ACE-Step** music-generation model on GitHub is not a free edit
 
 They solve different problems:
 
-- **ACE Studio** is a separate desktop music workstation and commercial service with its own voices, instruments, project interface and account features.
-- **ACE-Step** is an open-source local music-generation model that can generate music on the user's own computer.
+- **ACE Studio** is a commercial desktop AI music workstation with AI vocal and instrument workflows, its own project interface, ACE Bridge 2 and an experimental MCP server.
+- **ACE-Step** is an open-source local foundation model for generating music on the user's own computer.
 
-ACE-Step 1.5 provides its own local HTTP API and can run without an ACE Studio subscription. That does not make it an ACE Studio API, and it does not automatically provide ACE Studio's voices, interface, Bridge workflow or project features.
+ACE-Step provides its own local programmatic interfaces, including a local HTTP API in current releases. This does not make it an ACE Studio API, and it does not automatically provide ACE Studio voices, instruments, project editing, Bridge synchronization or Studio account features.
 
-A future DAWHermes milestone could evaluate ACE-Step as a separate optional local generator. That would be a different integration decision from connecting DAWHermes to ACE Studio.
+A future DAWHermes milestone may evaluate ACE-Step separately as a local generation engine. That would be a second integration decision, not a free replacement for the planned ACE Studio connection.
 
-Neither ACE Studio nor ACE-Step is integrated into DAWHermes now.
+Neither ACE Studio nor ACE-Step is integrated into DAWHermes at the current manual baseline.
 
-## Why the manual mentions ACE now
+## Planned ACE Studio workflow
 
-ACE is mentioned so users understand the intended direction without mistaking it for a required dependency.
+The intended direction is:
 
-The correct current interpretation is:
+1. prepare or correct MIDI in DAWHermes;
+2. select the musical work region with Loop;
+3. use the DAWHermes Composer Assistant to understand the project context;
+4. send or apply suitable MIDI, lyrics, track and timing information to ACE Studio;
+5. generate or refine an AI vocal or AI instrument performance in ACE Studio;
+6. audition the returned result with the DAWHermes project;
+7. edit or repeat the operation as needed;
+8. export the accepted material for final production in Cubase.
 
-- ACE Studio may become an optional external destination or service;
-- ACE-Step may be evaluated separately as an optional local model;
-- neither is part of the current DAWHermes installation;
-- no ACE-specific menu command is currently available;
-- the final connection method has not been chosen.
-
-This chapter will be rewritten with exact operating steps only after a real ACE integration has been implemented and manually accepted.
+The exact controls and transfer method have not been implemented yet. They must be documented only after the real integration exists and has been manually accepted.
 
 ## Cubase-specific export status
 
