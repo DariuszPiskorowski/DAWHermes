@@ -17,6 +17,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -114,6 +115,49 @@ struct FakePluginState {
     double playHeadPpq { 0.0 };
     bool playHeadLooping { false };
     float outputLevel { 0.2f };
+    int throwOnPrepareCall { 0 };
+};
+
+struct TemporaryPluginSettings {
+    TemporaryPluginSettings()
+        : directory(
+              juce::File::getSpecialLocation(
+                  juce::File::tempDirectory)
+                  .getNonexistentChildFile(
+                      "dawhermes-vst3-test",
+                      {},
+                      false))
+    {
+        if (!directory.createDirectory()) {
+            throw std::runtime_error(
+                "Could not create temporary VST3 test settings directory.");
+        }
+        juce::PropertiesFile::Options options;
+        options.applicationName = "DAWHermesTests";
+        options.filenameSuffix = "settings";
+        options.storageFormat =
+            juce::PropertiesFile::storeAsXML;
+        settings = std::make_unique<juce::PropertiesFile>(
+            directory.getChildFile(
+                "DAWHermesTests.settings"),
+            options);
+    }
+
+    ~TemporaryPluginSettings()
+    {
+        settings.reset();
+        const auto tempRoot =
+            juce::File::getSpecialLocation(
+                juce::File::tempDirectory);
+        if (directory.getParentDirectory() == tempRoot
+            && directory.getFileName().startsWith(
+                "dawhermes-vst3-test")) {
+            directory.deleteRecursively();
+        }
+    }
+
+    juce::File directory;
+    std::unique_ptr<juce::PropertiesFile> settings;
 };
 
 class FakeInstrumentInstance final
@@ -136,7 +180,15 @@ public:
     }
 
     const juce::String getName() const override { return name_; }
-    void prepareToPlay(double, int) override { ++state_.prepareCount; }
+    void prepareToPlay(double, int) override
+    {
+        ++state_.prepareCount;
+        if (state_.throwOnPrepareCall
+            == state_.prepareCount) {
+            throw std::runtime_error(
+                "Synthetic prepare failure");
+        }
+    }
     void releaseResources() override { ++state_.releaseCount; }
     bool isBusesLayoutSupported(
         const BusesLayout& layouts) const override
@@ -6676,7 +6728,6 @@ bool testVst3InstrumentAssignmentModel()
     assignment.pluginIdentifier = "stable-id";
     assignment.pluginName = "Instrument";
     assignment.pluginManufacturer = "Maker";
-    assignment.pluginFileOrIdentifier = "private-local-path";
     EXPECT_TRUE(project.setInstrumentAssignment(
         midiId,
         assignment));
@@ -6734,7 +6785,9 @@ bool testVst3CatalogFilteringAndOrdering()
 
 bool testVst3CatalogStartupAndSettingsSafety()
 {
-    dawhermes::plugins::Vst3PluginCatalog catalog(nullptr);
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3PluginCatalog catalog(
+        temporarySettings.settings.get());
     EXPECT_TRUE(!catalog.scanStatus().running);
     EXPECT_EQ(
         catalog.formatManager().getNumFormats(),
@@ -6755,6 +6808,64 @@ bool testVst3CatalogStartupAndSettingsSafety()
     const auto repository =
         juce::File::getCurrentWorkingDirectory();
     EXPECT_TRUE(!catalog.catalogFile().isAChildOf(repository));
+    EXPECT_TRUE(
+        catalog.catalogFile().isAChildOf(
+            temporarySettings.directory));
+    return true;
+}
+
+bool testVst3DeadManRecoveryPlanning()
+{
+    const juce::StringArray candidates {
+        "C:\\VST3\\Alpha.vst3",
+        "C:\\VST3\\Beta.vst3",
+        "C:\\VST3\\Gamma.vst3"
+    };
+    const juce::StringArray recoveryEntries {
+        "c:/vst3/BETA.vst3",
+        "C:\\VST3\\Beta.vst3",
+        "C:\\Removed\\Stale.vst3",
+        ""
+    };
+
+    const auto safeScan =
+        dawhermes::plugins::prepareVst3ScanRecoveryPlan(
+            candidates,
+            recoveryEntries,
+            false);
+    EXPECT_EQ(
+        safeScan.recoveredFailureCount,
+        1);
+    EXPECT_EQ(
+        safeScan.staleRecoveryCount,
+        1);
+    EXPECT_EQ(
+        safeScan.candidatesToScan.size(),
+        2);
+    EXPECT_TRUE(
+        safeScan.candidatesToScan.contains(
+            candidates[0]));
+    EXPECT_TRUE(
+        !safeScan.candidatesToScan.contains(
+            candidates[1]));
+    EXPECT_TRUE(
+        safeScan.candidatesToScan.contains(
+            candidates[2]));
+
+    const auto deliberateRetry =
+        dawhermes::plugins::prepareVst3ScanRecoveryPlan(
+            candidates,
+            recoveryEntries,
+            true);
+    EXPECT_EQ(
+        deliberateRetry.recoveredFailureCount,
+        1);
+    EXPECT_EQ(
+        deliberateRetry.staleRecoveryCount,
+        1);
+    EXPECT_EQ(
+        deliberateRetry.candidatesToScan,
+        candidates);
     return true;
 }
 
@@ -6804,7 +6915,9 @@ bool testVst3PluginPositionInfo()
 
 bool testVst3IndependentRuntimeAndLatency()
 {
-    dawhermes::plugins::Vst3InstrumentHost host(nullptr);
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
     host.prepareDevice(48000.0, 64);
     FakePluginState first;
     FakePluginState second;
@@ -6848,9 +6961,29 @@ bool testVst3IndependentRuntimeAndLatency()
         host.activeInstanceCount(),
         static_cast<std::size_t>(2));
 
+    FakePluginState failedPreparation;
+    failedPreparation.throwOnPrepareCall = 1;
+    EXPECT_TRUE(!host.installPreparedInstanceForTesting(
+        11,
+        std::make_unique<FakeInstrumentInstance>(
+            failedPreparation,
+            0,
+            "Broken Replacement"),
+        makeFakePluginDescription(
+            "Broken Replacement",
+            103),
+        error));
+    EXPECT_TRUE(host.hasInstrument(11));
+    EXPECT_EQ(
+        host.instrumentName(11),
+        juce::String("Independent"));
+
     host.prepareDevice(44100.0, 32);
     EXPECT_EQ(first.prepareCount, 2);
     EXPECT_EQ(second.prepareCount, 2);
+    EXPECT_EQ(
+        host.instrumentName(11),
+        juce::String("Independent"));
 
     dawhermes::plugins::PluginTransportPosition position;
     position.playing = true;
@@ -6907,6 +7040,31 @@ bool testVst3IndependentRuntimeAndLatency()
     EXPECT_TRUE(first.resetCount >= 16);
     EXPECT_TRUE(second.resetCount >= 16);
 
+    const auto firstReleasesBeforeReplacement =
+        first.releaseCount;
+    FakePluginState replacement;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        11,
+        std::make_unique<FakeInstrumentInstance>(
+            replacement,
+            0,
+            "Replacement"),
+        makeFakePluginDescription(
+            "Replacement",
+            104),
+        error));
+    EXPECT_EQ(
+        host.instrumentName(11),
+        juce::String("Replacement"));
+    EXPECT_EQ(
+        host.activeInstanceCount(),
+        static_cast<std::size_t>(2));
+    host.beginAudioBlock(1, position);
+    host.collectRetiredRuntimes();
+    EXPECT_TRUE(
+        first.releaseCount
+        > firstReleasesBeforeReplacement);
+
     host.useInternalSynth(11);
     EXPECT_TRUE(!host.hasInstrument(11));
     EXPECT_TRUE(host.hasInstrument(22));
@@ -6916,9 +7074,54 @@ bool testVst3IndependentRuntimeAndLatency()
     return true;
 }
 
+bool testVst3DeviceReprepareFailureFallsBack()
+{
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
+    host.prepareDevice(48000.0, 64);
+
+    FakePluginState failing;
+    failing.throwOnPrepareCall = 2;
+    juce::String error;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        42,
+        std::make_unique<FakeInstrumentInstance>(
+            failing,
+            0,
+            "Device Sensitive"),
+        makeFakePluginDescription(
+            "Device Sensitive",
+            301),
+        error));
+    EXPECT_TRUE(host.hasInstrument(42));
+
+    host.prepareDevice(44100.0, 128);
+    EXPECT_TRUE(!host.hasInstrument(42));
+    EXPECT_EQ(
+        host.activeInstanceCount(),
+        static_cast<std::size_t>(0));
+    const auto failures =
+        host.takeRuntimeFailures();
+    EXPECT_EQ(
+        failures.size(),
+        static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        failures.front().trackId,
+        static_cast<std::uint64_t>(42));
+    EXPECT_EQ(
+        failures.front().instrumentName,
+        juce::String("Device Sensitive"));
+    EXPECT_TRUE(failures.front().reason.isNotEmpty());
+    EXPECT_TRUE(host.takeRuntimeFailures().empty());
+    return true;
+}
+
 bool testVst3WholeProjectRoutingAndFallback()
 {
-    dawhermes::plugins::Vst3InstrumentHost host(nullptr);
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
     FakePluginState pluginState;
     juce::String error;
     const auto description =
@@ -7113,8 +7316,10 @@ int main(int argc, char* argv[])
         { "VST3 instrument assignment model", testVst3InstrumentAssignmentModel },
         { "VST3 catalog filtering and ordering", testVst3CatalogFilteringAndOrdering },
         { "VST3 catalog startup and settings safety", testVst3CatalogStartupAndSettingsSafety },
+        { "VST3 dead-man recovery planning", testVst3DeadManRecoveryPlanning },
         { "VST3 plugin position info", testVst3PluginPositionInfo },
         { "VST3 independent runtime and latency", testVst3IndependentRuntimeAndLatency },
+        { "VST3 device reprepare failure fallback", testVst3DeviceReprepareFailureFallsBack },
         { "VST3 whole-project routing and fallback", testVst3WholeProjectRoutingAndFallback },
         { "WAV BPM octave candidate selection", testWavBpmOctaveCandidateSelection },
         { "WAV BPM detection and source safety", testWavBpmDetectionAndSourceSafety },

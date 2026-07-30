@@ -3129,9 +3129,6 @@ void MainComponent::selectVst3InstrumentForSelectedTrack()
             assignment.pluginManufacturer =
                 juceStringToUtf8(
                     ready.manufacturerName);
-            assignment.pluginFileOrIdentifier =
-                juceStringToUtf8(
-                    ready.fileOrIdentifier);
             if (!safe->projectModel_
                      .setInstrumentAssignment(
                          trackId,
@@ -3555,6 +3552,33 @@ void MainComponent::timerCallback()
             juce::String(
                 audioDeviceService_.currentStatusMessage()),
             juce::dontSendNotification);
+    }
+    const auto runtimeFailures =
+        instrumentHost_.takeRuntimeFailures();
+    if (!runtimeFailures.empty()) {
+        bool modelChanged = false;
+        for (const auto& failure : runtimeFailures) {
+            auto* track =
+                projectModel_.findTrackById(failure.trackId);
+            if (track == nullptr
+                || track->type != core::TrackType::midi) {
+                continue;
+            }
+            modelChanged =
+                projectModel_.setInstrumentAssignment(
+                    failure.trackId,
+                    {})
+                || modelChanged;
+            statusLabel_.setText(
+                juce::String(track->name)
+                    + ": "
+                    + failure.reason
+                    + " Using Internal Audition Synth.",
+                juce::dontSendNotification);
+        }
+        if (modelChanged) {
+            refreshTrackView();
+        }
     }
 
     const auto mode = midiAuditionEngine_.transportMode();

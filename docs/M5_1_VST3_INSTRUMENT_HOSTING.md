@@ -69,6 +69,10 @@ Status: M5.1 implemented and awaiting manual user acceptance.
   candidates, filters non-instruments, deduplicates stable identifiers, and
   publishes a deterministic catalog only after the scan completes. The
   previously usable catalog remains intact after cancellation or failure.
+- A normal scan omits candidates retained by the previous dead-man record so
+  the remaining catalog can recover. `Rescan All` deliberately retries them.
+  Stale recovery entries that no longer match discovered candidates are
+  ignored and reported without blocking the scan.
 
 ## Failure behaviour
 
@@ -77,5 +81,8 @@ Status: M5.1 implemented and awaiting manual user acceptance.
   the internal audition synth for that track.
 - Device changes stop playback, clear notes, and reprepare active plugin
   instances for the new sample rate and block size before playback resumes.
+- A runtime that fails device reprepare is removed outside the callback. The
+  message thread changes that track visibly to the Internal Audition Synth;
+  successfully reprepared track assignments are preserved.
 - No plugin binary, preset, generated scan artifact, or user music asset is
   copied into or committed to the repository.

@@ -30,6 +30,13 @@ bool descriptionOrder(
         < stableVst3Identifier(right);
 }
 
+juce::String scanCandidateKey(juce::String candidate)
+{
+    return candidate.trim()
+        .replaceCharacter('/', '\\')
+        .toLowerCase();
+}
+
 }  // namespace
 
 juce::String stableVst3Identifier(
@@ -64,6 +71,48 @@ std::vector<juce::PluginDescription> filterAndSortVst3Instruments(
         result.push_back(description);
     }
     std::sort(result.begin(), result.end(), descriptionOrder);
+    return result;
+}
+
+Vst3ScanRecoveryPlan prepareVst3ScanRecoveryPlan(
+    const juce::StringArray& candidates,
+    const juce::StringArray& deadMansPedalEntries,
+    bool retryRecoveredFailures)
+{
+    Vst3ScanRecoveryPlan result;
+    std::set<juce::String> candidateKeys;
+    for (const auto& candidate : candidates) {
+        const auto key = scanCandidateKey(candidate);
+        if (key.isNotEmpty()) {
+            candidateKeys.insert(key);
+        }
+    }
+
+    std::set<juce::String> recoveredKeys;
+    std::set<juce::String> staleKeys;
+    for (const auto& entry : deadMansPedalEntries) {
+        const auto key = scanCandidateKey(entry);
+        if (key.isEmpty()) {
+            continue;
+        }
+        if (candidateKeys.contains(key)) {
+            recoveredKeys.insert(key);
+        } else {
+            staleKeys.insert(key);
+        }
+    }
+
+    result.recoveredFailureCount =
+        static_cast<int>(recoveredKeys.size());
+    result.staleRecoveryCount =
+        static_cast<int>(staleKeys.size());
+    for (const auto& candidate : candidates) {
+        if (retryRecoveredFailures
+            || !recoveredKeys.contains(
+                scanCandidateKey(candidate))) {
+            result.candidatesToScan.add(candidate);
+        }
+    }
     return result;
 }
 
@@ -183,6 +232,21 @@ void Vst3PluginCatalog::run()
         return;
     }
 
+    const auto discoveredCandidates =
+        format->searchPathsForPlugins(
+            defaultSearchPath(),
+            true,
+            false);
+    juce::StringArray deadMansPedalEntries;
+    deadMansPedalFile().readLines(
+        deadMansPedalEntries);
+    deadMansPedalEntries.removeEmptyStrings();
+    const auto recoveryPlan =
+        prepareVst3ScanRecoveryPlan(
+            discoveredCandidates,
+            deadMansPedalEntries,
+            rescanExisting_);
+
     juce::PluginDirectoryScanner scanner(
         candidateList,
         *format,
@@ -190,9 +254,21 @@ void Vst3PluginCatalog::run()
         true,
         deadMansPedalFile(),
         false);
+    scanner.setFilesOrIdentifiersToScan(
+        recoveryPlan.candidatesToScan);
+    {
+        const std::scoped_lock lock(mutex_);
+        status_.recoverySkippedCount =
+            rescanExisting_
+            ? 0
+            : recoveryPlan.recoveredFailureCount;
+        status_.staleRecoveryCount =
+            recoveryPlan.staleRecoveryCount;
+    }
 
     juce::String current;
-    bool more = true;
+    bool more =
+        !recoveryPlan.candidatesToScan.isEmpty();
     while (more
            && !threadShouldExit()
            && !cancelRequested_.load(std::memory_order_acquire)) {
@@ -217,6 +293,8 @@ void Vst3PluginCatalog::run()
     const auto filtered =
         filterAndSortVst3Instruments(candidateList.getTypes());
     const auto failedCount = scanner.getFailedFiles().size();
+    auto publishedInstrumentCount =
+        static_cast<int>(instruments().size());
 
     if (!cancelled) {
         juce::KnownPluginList persisted;
@@ -227,6 +305,8 @@ void Vst3PluginCatalog::run()
             const std::scoped_lock lock(mutex_);
             instruments_ = filtered;
             status_.catalogReplaced = true;
+            publishedInstrumentCount =
+                static_cast<int>(instruments_.size());
         }
     }
 
@@ -235,16 +315,18 @@ void Vst3PluginCatalog::run()
     status_.completed = true;
     status_.progress = cancelled ? status_.progress : 1.0f;
     status_.failedCount = failedCount;
-    status_.instrumentCount =
-        static_cast<int>(cancelled
-                             ? instruments_.size()
-                             : filtered.size());
+    status_.instrumentCount = publishedInstrumentCount;
     status_.currentCandidate.clear();
-    status_.summary = cancelled
-        ? "Scan cancelled. The previous catalog was retained."
-        : (status_.catalogReplaced
-               ? "VST3 instrument scan completed."
-               : "Scan finished, but the catalog could not be saved; the previous catalog was retained.");
+    if (cancelled) {
+        status_.summary =
+            "Scan cancelled. The previous catalog was retained.";
+    } else if (status_.catalogReplaced) {
+        status_.summary =
+            "VST3 instrument scan completed.";
+    } else {
+        status_.summary =
+            "Scan finished, but the catalog could not be saved; the previous catalog was retained.";
+    }
 }
 
 void Vst3PluginCatalog::load()

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace dawhermes::plugins {
 
@@ -90,22 +91,13 @@ public:
         const auto blockSize = std::max(1, maximumBlockSize);
         if (prepared_) {
             instance_->releaseResources();
+            prepared_ = false;
         }
         instance_->setPlayConfigDetails(
             0,
             outputChannels_,
             std::max(1.0, sampleRate),
             blockSize);
-        instance_->prepareToPlay(
-            std::max(1.0, sampleRate),
-            blockSize);
-        prepared_ = true;
-        latencySamples_.store(
-            std::clamp(
-                instance_->getLatencySamples(),
-                0,
-                kMaximumHostedInstrumentLatencySamples),
-            std::memory_order_release);
         scratch_.setSize(
             outputChannels_,
             blockSize,
@@ -122,6 +114,21 @@ public:
                 0.0f);
         }
         delayWrite_ = 0;
+
+        instance_->prepareToPlay(
+            std::max(1.0, sampleRate),
+            blockSize);
+        prepared_ = true;
+        const auto latency = instance_->getLatencySamples();
+        if (latency > kMaximumHostedInstrumentLatencySamples) {
+            instance_->releaseResources();
+            prepared_ = false;
+            throw std::runtime_error(
+                "Hosted instrument latency exceeds the bounded limit.");
+        }
+        latencySamples_.store(
+            std::max(0, latency),
+            std::memory_order_release);
     }
 
     ~Runtime()
@@ -316,6 +323,7 @@ Vst3InstrumentHost::Vst3InstrumentHost(
 
 Vst3InstrumentHost::~Vst3InstrumentHost()
 {
+    lifetimeState_->store(false, std::memory_order_release);
     closeAllEditors();
     releaseDevice();
 }
@@ -343,10 +351,44 @@ void Vst3InstrumentHost::prepareDevice(
         std::memory_order_release);
     const auto registry =
         requestedRegistry_.load(std::memory_order_acquire);
-    if (registry != nullptr) {
-        for (const auto& runtime : registry->runtimes) {
+    if (registry == nullptr) {
+        return;
+    }
+
+    auto next = std::make_shared<Registry>();
+    std::vector<InstrumentRuntimeFailure> failures;
+    for (const auto& runtime : registry->runtimes) {
+        try {
             runtime->prepare(sampleRate, maximumBlockSize);
+            next->runtimes.push_back(runtime);
+            next->maximumLatencySamples = std::max(
+                next->maximumLatencySamples,
+                runtime->latencySamples());
+        } catch (...) {
+            failures.push_back({
+                runtime->trackId(),
+                runtime->name(),
+                "The instrument could not be prepared for the current audio device."
+            });
         }
+    }
+    const auto layoutChanged =
+        next->maximumLatencySamples
+        != registry->maximumLatencySamples;
+    if (failures.empty() && !layoutChanged) {
+        return;
+    }
+
+    for (const auto& failure : failures) {
+        closeEditor(failure.trackId);
+    }
+    publishRegistry(std::move(next));
+    if (!failures.empty()) {
+        const std::scoped_lock lock(messageMutex_);
+        runtimeFailures_.insert(
+            runtimeFailures_.end(),
+            failures.begin(),
+            failures.end());
     }
 }
 
@@ -370,13 +412,41 @@ void Vst3InstrumentHost::assignAsync(
     const juce::PluginDescription& description,
     AssignmentCallback callback)
 {
+    std::uint64_t requestId = 0;
+    {
+        const std::scoped_lock lock(messageMutex_);
+        requestId = ++nextAssignmentRequestId_;
+        pendingAssignmentRequests_[trackId] = requestId;
+    }
+    const std::weak_ptr<std::atomic<bool>> lifetime =
+        lifetimeState_;
     catalog_.formatManager().createPluginInstanceAsync(
         description,
         sampleRate(),
         maximumBlockSize(),
-        [this, trackId, description, callback = std::move(callback)](
+        [this,
+         lifetime,
+         trackId,
+         requestId,
+         description,
+         callback = std::move(callback)](
             std::unique_ptr<juce::AudioPluginInstance> instance,
             const juce::String& creationError) mutable {
+            const auto alive = lifetime.lock();
+            if (alive == nullptr
+                || !alive->load(std::memory_order_acquire)) {
+                return;
+            }
+            {
+                const std::scoped_lock lock(messageMutex_);
+                const auto pending =
+                    pendingAssignmentRequests_.find(trackId);
+                if (pending == pendingAssignmentRequests_.end()
+                    || pending->second != requestId) {
+                    return;
+                }
+            }
+
             juce::String error = creationError;
             const auto ok = instance != nullptr
                 && publishInstance(
@@ -384,6 +454,15 @@ void Vst3InstrumentHost::assignAsync(
                     std::move(instance),
                     description,
                     error);
+            {
+                const std::scoped_lock lock(messageMutex_);
+                const auto pending =
+                    pendingAssignmentRequests_.find(trackId);
+                if (pending != pendingAssignmentRequests_.end()
+                    && pending->second == requestId) {
+                    pendingAssignmentRequests_.erase(pending);
+                }
+            }
             if (callback) {
                 callback(
                     ok,
@@ -396,6 +475,10 @@ void Vst3InstrumentHost::assignAsync(
 void Vst3InstrumentHost::useInternalSynth(
     std::uint64_t trackId)
 {
+    {
+        const std::scoped_lock lock(messageMutex_);
+        pendingAssignmentRequests_.erase(trackId);
+    }
     closeEditor(trackId);
     publishWithoutTrack(trackId);
 }
@@ -570,6 +653,15 @@ void Vst3InstrumentHost::collectRetiredRuntimes()
                 return registry.use_count() == 1;
             }),
         retainedRegistries_.end());
+}
+
+std::vector<InstrumentRuntimeFailure>
+Vst3InstrumentHost::takeRuntimeFailures()
+{
+    const std::scoped_lock lock(messageMutex_);
+    std::vector<InstrumentRuntimeFailure> result;
+    result.swap(runtimeFailures_);
+    return result;
 }
 
 bool Vst3InstrumentHost::installPreparedInstanceForTesting(

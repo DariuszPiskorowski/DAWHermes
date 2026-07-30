@@ -18,8 +18,16 @@ struct Vst3ScanStatus {
     float progress { 0.0f };
     int instrumentCount { 0 };
     int failedCount { 0 };
+    int recoverySkippedCount { 0 };
+    int staleRecoveryCount { 0 };
     juce::String currentCandidate;
     juce::String summary;
+};
+
+struct Vst3ScanRecoveryPlan {
+    juce::StringArray candidatesToScan;
+    int recoveredFailureCount { 0 };
+    int staleRecoveryCount { 0 };
 };
 
 juce::String stableVst3Identifier(
@@ -27,6 +35,11 @@ juce::String stableVst3Identifier(
 
 std::vector<juce::PluginDescription> filterAndSortVst3Instruments(
     const juce::Array<juce::PluginDescription>& descriptions);
+
+Vst3ScanRecoveryPlan prepareVst3ScanRecoveryPlan(
+    const juce::StringArray& candidates,
+    const juce::StringArray& deadMansPedalEntries,
+    bool retryRecoveredFailures);
 
 class Vst3PluginCatalog final : private juce::Thread {
 public:

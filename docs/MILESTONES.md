@@ -38,6 +38,8 @@ Milestone 5.1 is implemented and awaiting manual user acceptance:
   device callback without doubling the internal synth;
 - Mute/Solo, Loop, Pause, Stop, seek, device restart, master volume and
   whole-project MIDI/WAV synchronization retained;
+- safe per-track Internal Audition Synth fallback when a runtime cannot
+  reprepare for a changed audio device;
 - JUCE plugin playhead delivery and bounded latency compensation across VST3,
   internal-synth and WAV sources;
 - deterministic fake-processor coverage without requiring installed plugins

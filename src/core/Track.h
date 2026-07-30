@@ -88,7 +88,6 @@ struct InstrumentAssignment {
     std::string pluginIdentifier;
     std::string pluginName;
     std::string pluginManufacturer;
-    std::string pluginFileOrIdentifier;
 
     bool operator==(const InstrumentAssignment& other) const = default;
 };

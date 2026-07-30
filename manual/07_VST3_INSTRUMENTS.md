@@ -9,6 +9,10 @@ installed 64-bit VST3 instrument. VST3 instruments are useful when you want to
 hear the complete MIDI arrangement with familiar sounds while keeping imported
 WAV tracks synchronized.
 
+A **VST3** is a Windows plug-in format used by many software instruments. The
+plug-in produces sound from MIDI notes, while the MIDI track still stores the
+pitch, timing, duration, channel, and playing intensity.
+
 DAWHermes hosts instruments for audition. It does not bundle any third-party
 plugin, copy plugin files, save a project, manage presets, render a final mix,
 or host audio effects in this milestone.
@@ -28,8 +32,10 @@ DAWHermes never scans plugins at startup.
 Playback stops before a scan begins. DAWHermes tests one candidate at a time
 and keeps the previous usable catalog if a scan is cancelled or cannot be
 saved. A plugin that crashes while being inspected is recorded in a recovery
-file in the DAWHermes settings folder, allowing later candidates to be tested
-on the next scan.
+file in the DAWHermes settings folder. The next normal **Scan** skips that
+candidate so the remaining instruments can be tested. **Rescan All**
+deliberately retries recovered candidates as well as every other candidate.
+Recovery entries that no longer match an installed candidate are ignored.
 
 Only VST3 entries that identify themselves as instruments and provide audio
 output appear in the list. Effects, MIDI-only tools, unsupported formats, and
@@ -94,6 +100,32 @@ Changing or restarting the audio device stops playback and clears held notes.
 Active instruments are prepared for the new sample rate and buffer size.
 Catalog browsing and scanning remain available when no audio output device is
 open, but audition playback requires an output device.
+
+If an assigned instrument cannot prepare for a new device configuration,
+DAWHermes removes that runtime, changes the track back to the Internal Audition
+Synth, and shows a status message. Other successfully prepared instruments
+remain assigned.
+
+## Practical example
+
+Suppose one MIDI track contains bass notes and another contains a piano part.
+Assign a bass VST3 to the bass track and a piano VST3 to the piano track. Press
+Play with the imported drum WAV audible. All three parts should share the same
+transport position. Solo the bass track to inspect its timing, then create a
+short Loop around a difficult bar and listen for clean note restarts at the
+Loop boundary.
+
+## Common mistakes
+
+- Selecting a MIDI track does not open its instrument controls. Right-click the
+  track deliberately and use the **Instrument** submenu.
+- An empty selection list usually means that no deliberate scan has completed.
+- Audio effects do not appear because this milestone hosts instruments only.
+- Closing an editor window does not unassign the instrument.
+- Changing a sound in a plug-in is session-only. DAWHermes does not yet save
+  projects, presets, or plug-in state.
+- If a normal Scan skips a previously failed candidate, use **Rescan All** only
+  when you deliberately want to retry it.
 
 ## Current limitations
 

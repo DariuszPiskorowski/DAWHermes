@@ -30,6 +30,12 @@ struct PluginTransportPosition {
     double loopEndPpq { 0.0 };
 };
 
+struct InstrumentRuntimeFailure {
+    std::uint64_t trackId { 0 };
+    juce::String instrumentName;
+    juce::String reason;
+};
+
 juce::AudioPlayHead::PositionInfo makePluginPositionInfo(
     const PluginTransportPosition& position);
 
@@ -88,6 +94,8 @@ public:
     bool refreshLatencyLayoutIfNeeded();
     std::size_t activeInstanceCount() const noexcept;
     void collectRetiredRuntimes();
+    std::vector<InstrumentRuntimeFailure>
+    takeRuntimeFailures();
 
     bool installPreparedInstanceForTesting(
         std::uint64_t trackId,
@@ -128,6 +136,12 @@ private:
     mutable std::mutex messageMutex_;
     std::vector<std::shared_ptr<const Registry>> retainedRegistries_;
     std::map<std::uint64_t, std::unique_ptr<EditorWindow>> editorWindows_;
+    std::vector<InstrumentRuntimeFailure> runtimeFailures_;
+    std::uint64_t nextAssignmentRequestId_ { 0 };
+    std::map<std::uint64_t, std::uint64_t> pendingAssignmentRequests_;
+    std::shared_ptr<std::atomic<bool>> lifetimeState_ {
+        std::make_shared<std::atomic<bool>>(true)
+    };
 };
 
 }  // namespace dawhermes::plugins

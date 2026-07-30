@@ -102,9 +102,17 @@ A tempo interpretation that counts the pulse at half the faster rate. A 140 BPM 
 
 The built-in DAWHermes analysis and correction system. Current Hermes workflows include drum audio-to-MIDI extraction, bass MIDI repair and MIDI/WAV synchronization.
 
+## Internal Audition Synth
+
+The simple built-in DAWHermes sound used when a MIDI track has no active VST3 instrument. It is intended for checking notes and timing, not for final production sound.
+
 ## Latency
 
 Delay between an action or input and the corresponding audio output. Device, buffer and driver settings influence latency.
+
+## Latency compensation
+
+Extra delay applied to faster playback paths so they remain synchronized with an instrument that reports a larger processing delay.
 
 ## Loop
 
@@ -149,6 +157,10 @@ The beginning or attack of a sound event. Audio analysis often uses onsets to lo
 ## Piano Roll
 
 The MIDI editing grid that places time horizontally and pitch vertically against a piano keyboard.
+
+## Plug-in editor
+
+The window supplied by a VST3 instrument for changing its sound and parameters. DAWHermes uses a generic parameter editor when the instrument has no native editor.
 
 ## Pitch
 
@@ -229,6 +241,10 @@ The controls and state used to play, pause, stop, seek and loop through the proj
 ## Velocity
 
 A MIDI value representing note-playing intensity. Depending on the instrument, it may affect loudness, attack or tone.
+
+## VST3
+
+A plug-in format commonly used for Windows software instruments and audio effects. DAWHermes currently hosts VST3 instruments for audition but does not host VST3 effects.
 
 ## Viewport
 

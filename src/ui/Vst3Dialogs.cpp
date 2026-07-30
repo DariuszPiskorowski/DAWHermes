@@ -130,8 +130,16 @@ void Vst3PluginManagerComponent::timerCallback()
         text << "  Instruments: "
              << static_cast<int>(all_.size());
         if (scan.failedCount > 0) {
-            text << "  Skipped/failed: "
+            text << "  Failed: "
                  << scan.failedCount;
+        }
+        if (scan.recoverySkippedCount > 0) {
+            text << "  Skipped after crash: "
+                 << scan.recoverySkippedCount;
+        }
+        if (scan.staleRecoveryCount > 0) {
+            text << "  Stale recovery entries ignored: "
+                 << scan.staleRecoveryCount;
         }
     }
     status_.setText(text, juce::dontSendNotification);
