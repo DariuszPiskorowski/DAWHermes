@@ -18,7 +18,7 @@ Installation instructions in the same package explicitly require launching `comp
 ## Protocol summary
 
 - transport: XML-RPC over HTTP
-- default endpoint: `127.0.0.1:3456`
+- default local endpoint: `127.0.0.1:3456`
 - deployment model: separately launched local server process
 
 This matches legacy Reaper integration expectations.
@@ -27,23 +27,27 @@ This matches legacy Reaper integration expectations.
 
 DAWHermes adds a connector boundary (`ComposerAssistantConnector`) and UI settings, but does not auto-connect and does not alter Reaper-side behavior.
 
-Default DAWHermes settings are conservative:
+Current DAWHermes connector behaviour is conservative:
 
-- connector disabled
-- host `100.126.75.32`
+- connector disabled by default
+- host is user-configurable
 - port `3456`
 - timeout `800 ms`
-- loopback-only safety disabled by default (user-toggleable)
+- loopback-only safety is user-toggleable
+
+Documentation must not publish the project owner's real LAN, VPN or Tailscale endpoint. When a remote host example is needed, use the documentation-only placeholder `192.0.2.42` or the symbolic form `<COMPOSER_ASSISTANT_HOST>`. Neither value identifies a real machine and neither should be copied into a working installation without replacement.
 
 A manual TCP probe action is available for operator-controlled reachability validation.
 
 ## Why this does not break existing Reaper integration
 
 - DAWHermes does not modify Reaper scripts.
-- DAWHermes does not start/stop the Composer Assistant server.
+- DAWHermes does not start or stop the Composer Assistant server.
 - DAWHermes keeps the same default port expected by existing scripts.
 - Connection attempts happen only when explicitly requested from DAWHermes UI.
 
-## Scope note on Ubuntu endpoint mention
+## Scope note on remote endpoints
 
-A remote Ubuntu service endpoint can be configured in DAWHermes settings by changing host/port and disabling loopback-only mode, but this is opt-in and outside the default safety profile.
+A remote Linux service endpoint can be configured in DAWHermes settings by changing the host and port and disabling loopback-only mode. This is opt-in and outside the default local safety profile.
+
+Real private-network addresses belong only in the user's local application settings. They must not be copied into repository documentation, README files, manuals, PR descriptions, issue comments or public reports unless the user explicitly approves publication.
