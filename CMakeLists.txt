@@ -23,6 +23,15 @@ set(JUCE_BUILD_EXAMPLES OFF CACHE BOOL "Disable JUCE examples" FORCE)
 set(JUCE_BUILD_EXTRAS OFF CACHE BOOL "Disable JUCE extras" FORCE)
 set(JUCE_ENABLE_MODULE_SOURCE_GROUPS ON)
 set(PYBIND11_FINDPYTHON ON)
+add_compile_definitions(
+  JUCE_PLUGINHOST_VST3=1
+  JUCE_PLUGINHOST_VST=0
+  JUCE_PLUGINHOST_AU=0
+  JUCE_PLUGINHOST_AU3=0
+  JUCE_PLUGINHOST_AAX=0
+  JUCE_PLUGINHOST_ARA=0
+  JUCE_PLUGINHOST_LADSPA=0
+  JUCE_PLUGINHOST_LV2=0)
 
 find_package(Python3 3.11 EXACT COMPONENTS Interpreter Development REQUIRED)
 
@@ -59,6 +68,19 @@ add_library(dawhermes_core
 target_include_directories(dawhermes_core PUBLIC src)
 set_project_warnings(dawhermes_core)
 
+add_library(dawhermes_plugins
+  src/plugins/Vst3PluginCatalog.cpp
+  src/plugins/Vst3InstrumentHost.cpp
+)
+target_include_directories(dawhermes_plugins PUBLIC src)
+target_link_libraries(
+  dawhermes_plugins
+  PUBLIC
+    dawhermes_core
+    juce::juce_audio_processors
+    juce::juce_gui_extra)
+set_project_warnings(dawhermes_plugins)
+
 add_library(dawhermes_audio
   src/audio/AudioDeviceService.cpp
   src/audio/AudioTrackImporter.cpp
@@ -73,6 +95,7 @@ target_link_libraries(
   dawhermes_audio
   PUBLIC
     dawhermes_core
+    dawhermes_plugins
     juce::juce_audio_basics
     juce::juce_audio_devices
     juce::juce_audio_formats
@@ -119,13 +142,14 @@ add_library(dawhermes_ui
   src/ui/MidiComparisonLegend.cpp
   src/ui/HermesDialogs.cpp
   src/ui/DrumMappingDialog.cpp
+  src/ui/Vst3Dialogs.cpp
   src/app/MainWindow.cpp
   src/app/AppLogger.cpp
   src/app/MainApplication.cpp
 )
 target_include_directories(dawhermes_ui PUBLIC src)
 target_link_libraries(dawhermes_ui
-  PUBLIC dawhermes_audio dawhermes_core dawhermes_midi dawhermes_hermes
+  PUBLIC dawhermes_audio dawhermes_core dawhermes_plugins dawhermes_midi dawhermes_hermes
   PRIVATE juce::juce_gui_extra juce::juce_audio_formats juce::juce_audio_utils)
 target_compile_definitions(
   dawhermes_ui
@@ -150,6 +174,7 @@ target_link_libraries(DAWHermes
 
 set(DAWHERMES_FINAL_EXECUTABLE_TARGETS
   dawhermes_core
+  dawhermes_plugins
   dawhermes_audio
   dawhermes_midi
   dawhermes_hermes
@@ -194,7 +219,7 @@ add_executable(DAWHermesTests
 )
 target_link_libraries(
   DAWHermesTests
-  PRIVATE dawhermes_audio dawhermes_core dawhermes_midi dawhermes_hermes juce::juce_audio_formats)
+  PRIVATE dawhermes_audio dawhermes_core dawhermes_plugins dawhermes_midi dawhermes_hermes juce::juce_audio_formats)
 set_project_warnings(DAWHermesTests)
 
 add_test(NAME DAWHermesTests COMMAND DAWHermesTests)

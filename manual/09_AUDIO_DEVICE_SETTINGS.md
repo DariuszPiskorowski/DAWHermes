@@ -1,6 +1,6 @@
-# 8. Audio Device Settings
+# 9. Audio Device Settings
 
-[Previous: Hermes Tools](07_HERMES_TOOLS.md) | [Back to contents](README.md) | [Next: Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md)
+[Previous: Hermes Tools](08_HERMES_TOOLS.md) | [Back to contents](README.md) | [Next: Export and File Exchange](10_EXPORT_AND_FILE_EXCHANGE.md)
 
 ## Why audio-device settings matter
 
@@ -303,4 +303,4 @@ A larger buffer may reduce clicks at the cost of greater delay.
 
 ---
 
-[Previous: Hermes Tools](07_HERMES_TOOLS.md) | [Back to contents](README.md) | [Next: Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md)
+[Previous: Hermes Tools](08_HERMES_TOOLS.md) | [Back to contents](README.md) | [Next: Export and File Exchange](10_EXPORT_AND_FILE_EXCHANGE.md)

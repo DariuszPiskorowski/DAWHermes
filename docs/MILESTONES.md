@@ -14,7 +14,8 @@
 6. M4 - Audio engine and device configuration:
 	- M4.1 central device configuration, whole-project playback, Mute/Solo,
 	  and Timeline Loop.
-7. M5 - VST3 hosting.
+7. M5 - VST3 hosting:
+	- M5.1 per-MIDI-track VST3 instrument hosting.
 8. M6 - DAW-level AI assistant.
 9. M7 - ACE Studio file exchange.
 10. M8 - Cubase export.
@@ -22,6 +23,25 @@
 No network-delivery milestone is defined in this plan.
 
 ## Current milestone scope
+
+Milestone 5.1 is implemented and awaiting manual user acceptance:
+
+- JUCE 8.0.13 VST3 host support only, with VST2, AU, AAX and other host
+  formats explicitly disabled;
+- cached instrument-only catalog in the normal user settings area, deliberate
+  scan/rescan, stable identifiers, deterministic ordering, filtering,
+  cancellation between candidates and dead-man crash recovery;
+- one Internal Audition Synth or one independent VST3 instance per MIDI track;
+- asynchronous transactional assignment, one editor window per assigned
+  track, and safe fallback when an instance cannot be prepared;
+- per-track channel/velocity/note routing integrated into the single M4.1
+  device callback without doubling the internal synth;
+- Mute/Solo, Loop, Pause, Stop, seek, device restart, master volume and
+  whole-project MIDI/WAV synchronization retained;
+- JUCE plugin playhead delivery and bounded latency compensation across VST3,
+  internal-synth and WAV sources;
+- deterministic fake-processor coverage without requiring installed plugins
+  or physical audio hardware.
 
 Milestone 4.1 is complete and manually accepted:
 

@@ -23,6 +23,7 @@
 #include "ui/CommandLabels.h"
 #include "ui/HermesDialogs.h"
 #include "ui/MidiImportParser.h"
+#include "ui/Vst3Dialogs.h"
 
 namespace dawhermes::ui {
 
@@ -72,7 +73,13 @@ juce::String describeTrack(const core::Track& track)
             line << "  (" << basenameForPath(track.audioSourcePath) << ")";
         }
     } else if (track.type == core::TrackType::midi) {
-        line << "  (notes: " << static_cast<int>(track.midiNotes.size()) << ")";
+        line << "  (notes: " << static_cast<int>(track.midiNotes.size())
+             << "; instrument: "
+             << (track.instrument.kind
+                         == core::InstrumentKind::vst3
+                     ? juce::String(track.instrument.pluginName)
+                     : juce::String("Internal Audition Synth"))
+             << ")";
     } else {
         line << "  (folder)";
     }
@@ -421,6 +428,7 @@ MainComponent::MainComponent(
     audio::AudioDeviceService& audioDeviceService)
     : applicationProperties_(applicationProperties),
       audioDeviceService_(audioDeviceService),
+      instrumentHost_(audioDeviceService_.instrumentHost()),
       hermesJobRunner_(std::make_unique<hermes::HermesJobRunner>()),
       panelLayoutState_(core::defaultMainPanelLayoutState()),
       dragStartPanelLayoutState_(core::defaultMainPanelLayoutState()),
@@ -571,6 +579,7 @@ MainComponent::~MainComponent()
     stopTimer();
     wavBpmAnalysisService_.stop();
     midiAuditionEngine_.panic();
+    instrumentHost_.closeAllEditors();
 
     if (hermesJobRunner_ != nullptr) {
         hermesJobRunner_->stop();
@@ -914,7 +923,7 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
 juce::StringArray MainComponent::getMenuBarNames()
 {
     return {
-        "File", "Edit", "View", "Track", "Audio", "Tools", "Help"
+        "File", "Edit", "View", "Track", "Audio", "Plugins", "Tools", "Help"
     };
 }
 
@@ -979,6 +988,11 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
             juce::String(command_labels::audioDeviceStatus.data()));
         break;
     case 5:
+        menu.addItem(
+            commandVst3Manager,
+            "VST3 Instrument Manager...");
+        break;
+    case 6:
         menu.addSubMenu("Hermes", buildHermesMenu());
         menu.addSeparator();
         menu.addItem(commandClearHermesCache, "Clear Hermes Cache");
@@ -986,7 +1000,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(commandComposerAssistantSettings, "Composer Assistant Connector Settings...");
         menu.addItem(commandComposerAssistantProbe, "Test Composer Assistant Connection");
         break;
-    case 6:
+    case 7:
         menu.addItem(commandAbout, "About DAWHermes");
         break;
     default:
@@ -1169,6 +1183,18 @@ void MainComponent::executeCommand(int commandId)
             break;
         case commandAudioStatus:
             showAudioDeviceStatus();
+            break;
+        case commandVst3Manager:
+            showVst3InstrumentManager();
+            break;
+        case commandUseInternalSynth:
+            useInternalSynthForSelectedTrack();
+            break;
+        case commandSelectVst3Instrument:
+            selectVst3InstrumentForSelectedTrack();
+            break;
+        case commandOpenInstrumentEditor:
+            openSelectedInstrumentEditor();
             break;
         case commandUndo:
             runUndo();
@@ -1449,9 +1475,34 @@ juce::PopupMenu MainComponent::buildHermesMenu() const
 juce::PopupMenu MainComponent::buildTrackContextMenu() const
 {
     juce::PopupMenu menu;
+    const auto selected = selectedTrack();
+    const auto isMidi =
+        selected.has_value()
+        && selected->type == core::TrackType::midi;
     menu.addItem(
         commandImportMidiTrack,
         juce::String(command_labels::importMidiAsTrack.data()));
+    menu.addSeparator();
+    juce::PopupMenu instrumentMenu;
+    instrumentMenu.addItem(
+        commandUseInternalSynth,
+        "Use Internal Audition Synth",
+        isMidi,
+        isMidi
+            && selected->instrument.kind
+                == core::InstrumentKind::internalSynth);
+    instrumentMenu.addItem(
+        commandSelectVst3Instrument,
+        "Select VST3 Instrument...",
+        isMidi);
+    instrumentMenu.addItem(
+        commandOpenInstrumentEditor,
+        "Open Instrument Editor",
+        isMidi
+            && selected->instrument.kind
+                == core::InstrumentKind::vst3
+            && instrumentHost_.hasInstrument(selected->id));
+    menu.addSubMenu("Instrument", instrumentMenu, isMidi);
     menu.addSeparator();
     menu.addItem(
         commandDeleteSelectedTrack,
@@ -2126,6 +2177,7 @@ void MainComponent::deleteSelectedTrack()
 
     bool removedAny = false;
     for (auto it = selectedIds.rbegin(); it != selectedIds.rend(); ++it) {
+        instrumentHost_.useInternalSynth(*it);
         removedAny = projectController_.deleteTrackById(*it) || removedAny;
     }
 
@@ -2967,6 +3019,163 @@ void MainComponent::showAudioDeviceStatus()
         this);
 }
 
+void MainComponent::showVst3InstrumentManager()
+{
+    auto managerComponent =
+        std::make_unique<Vst3PluginManagerComponent>(
+            instrumentHost_,
+            [safe = juce::Component::SafePointer<
+                 MainComponent>(this)]() {
+                if (safe != nullptr
+                    && safe->midiAuditionEngine_.transportMode()
+                        != audio::TransportMode::stopped) {
+                    safe->stopMidiPlayback();
+                }
+            });
+    managerComponent->setSize(680, 520);
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(managerComponent.release());
+    options.dialogTitle = "VST3 Instrument Manager";
+    options.dialogBackgroundColour =
+        juce::Colour(0xff252b33);
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.launchAsync();
+    statusLabel_.setText(
+        "VST3 Instrument Manager opened. Scanning starts only when requested.",
+        juce::dontSendNotification);
+}
+
+void MainComponent::useInternalSynthForSelectedTrack()
+{
+    const auto selected = selectedTrack();
+    if (!selected.has_value()
+        || selected->type != core::TrackType::midi) {
+        return;
+    }
+    stopMidiPlayback();
+    instrumentHost_.useInternalSynth(selected->id);
+    projectModel_.setInstrumentAssignment(
+        selected->id,
+        {});
+    refreshTrackView();
+    statusLabel_.setText(
+        juce::String(selected->name)
+            + ": using Internal Audition Synth.",
+        juce::dontSendNotification);
+}
+
+void MainComponent::selectVst3InstrumentForSelectedTrack()
+{
+    const auto selected = selectedTrack();
+    if (!selected.has_value()
+        || selected->type != core::TrackType::midi) {
+        return;
+    }
+    const auto description = chooseVst3Instrument(
+        this,
+        instrumentHost_.catalog());
+    if (!description.has_value()) {
+        return;
+    }
+
+    stopMidiPlayback();
+    statusLabel_.setText(
+        "Preparing VST3 instrument: "
+            + description->name
+            + "...",
+        juce::dontSendNotification);
+    auto* host = &instrumentHost_;
+    const auto trackId = selected->id;
+    instrumentHost_.assignAsync(
+        trackId,
+        *description,
+        [safe = juce::Component::SafePointer<
+             MainComponent>(this),
+         host,
+         trackId](
+            bool ok,
+            juce::String error,
+            juce::PluginDescription ready) {
+            if (safe == nullptr) {
+                if (ok) {
+                    host->useInternalSynth(trackId);
+                }
+                return;
+            }
+            auto* track =
+                safe->projectModel_.findTrackById(trackId);
+            if (!ok || track == nullptr
+                || track->type != core::TrackType::midi) {
+                if (ok) {
+                    host->useInternalSynth(trackId);
+                }
+                safe->statusLabel_.setText(
+                    "VST3 assignment failed; the previous instrument remains active. "
+                        + error,
+                    juce::dontSendNotification);
+                return;
+            }
+
+            core::InstrumentAssignment assignment;
+            assignment.kind = core::InstrumentKind::vst3;
+            assignment.pluginIdentifier =
+                juceStringToUtf8(
+                    plugins::stableVst3Identifier(ready));
+            assignment.pluginName =
+                juceStringToUtf8(ready.name);
+            assignment.pluginManufacturer =
+                juceStringToUtf8(
+                    ready.manufacturerName);
+            assignment.pluginFileOrIdentifier =
+                juceStringToUtf8(
+                    ready.fileOrIdentifier);
+            if (!safe->projectModel_
+                     .setInstrumentAssignment(
+                         trackId,
+                         std::move(assignment))) {
+                host->useInternalSynth(trackId);
+                safe->statusLabel_.setText(
+                    "VST3 assignment could not be stored; using Internal Audition Synth.",
+                    juce::dontSendNotification);
+                return;
+            }
+            const auto trackName =
+                juce::String(track->name);
+            safe->refreshTrackView();
+            safe->statusLabel_.setText(
+                trackName
+                    + ": VST3 instrument ready - "
+                    + ready.name,
+                juce::dontSendNotification);
+        });
+}
+
+void MainComponent::openSelectedInstrumentEditor()
+{
+    const auto selected = selectedTrack();
+    if (!selected.has_value()
+        || selected->type != core::TrackType::midi) {
+        return;
+    }
+    juce::String error;
+    if (!instrumentHost_.openEditor(
+            selected->id,
+            error)) {
+        statusLabel_.setText(
+            error,
+            juce::dontSendNotification);
+        return;
+    }
+    statusLabel_.setText(
+        "Instrument editor opened for "
+            + juce::String(selected->name)
+            + ".",
+        juce::dontSendNotification);
+}
+
 void MainComponent::publishProjectRouting()
 {
     midiAuditionEngine_.setProjectRoutingState(
@@ -3335,6 +3544,8 @@ void MainComponent::updateTransportControlState()
 void MainComponent::timerCallback()
 {
     midiAuditionEngine_.collectRetiredSnapshots();
+    instrumentHost_.refreshLatencyLayoutIfNeeded();
+    instrumentHost_.collectRetiredRuntimes();
     processCompletedWavBpmAnalysis();
     const auto deviceGeneration =
         audioDeviceService_.statusGeneration();
@@ -3885,6 +4096,9 @@ void MainComponent::resetProject()
     }
 
     stopMidiPlayback();
+    for (const auto& track : projectModel_.tracks()) {
+        instrumentHost_.useInternalSynth(track.id);
+    }
     projectModel_.clear();
     projectController_.clearSelection();
     midiNoteSelectionState_.clear();
@@ -3905,7 +4119,7 @@ void MainComponent::showAbout()
     juce::AlertWindow::showMessageBox(
         juce::AlertWindow::InfoIcon,
         "About DAWHermes",
-        "DAWHermes Milestone 4.1\nCentral audio-device configuration, whole-project MIDI/WAV playback, Mute/Solo and Timeline Loop.\nAwaiting manual acceptance.");
+        "DAWHermes Milestone 5.1\nPer-track VST3 instruments integrated with whole-project MIDI/WAV playback.\nAwaiting manual user acceptance.");
 }
 
 }  // namespace dawhermes::ui

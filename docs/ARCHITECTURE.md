@@ -1,4 +1,4 @@
-# DAWHermes Architecture (Milestone 4.1)
+# DAWHermes Architecture (Milestone 5.1)
 
 ## Why a new Windows repository
 
@@ -21,6 +21,9 @@ The codebase is split into explicit layers:
 - `src/audio` - central application-lifetime device service, deterministic
   whole-project playback snapshots/timing, preloaded WAV stem data, safe
   source-rate conversion, internal synth/mixer, and callback loop handling.
+- `src/plugins` - persistent VST3 instrument catalog and crash recovery,
+  application-lifetime per-track plugin runtimes, JUCE playhead delivery,
+  editor windows, and bounded latency layout publication.
 - `src/midi` - testable MIDI file export utilities that transform project MIDI tracks into standard MIDI files without depending on UI dialogs.
 - `src/ui` - JUCE views, menu bar, context menus, timeline/piano-roll rendering, option dialogs, and MIDI/WAV import parsing utilities.
 - `src/hermes` - neutral Hermes contracts, command availability rules, option validation, embedded Python engine, and connector boundaries.
@@ -138,6 +141,29 @@ Milestone 4.1 replaces selection audition with central project playback:
 - snapshot, routing, and loop owners are retired on the message thread, never
   destructed by the realtime callback.
 
+Milestone 5.1 extends that one callback with VST3 instruments:
+
+- only the JUCE VST3 host format is compiled; VST2, AU, AAX, LV2 and LADSPA
+  hosting remain disabled;
+- the catalog loads from normal DAWHermes settings without scanning at startup,
+  and a deliberate background scanner publishes a replacement only after a
+  successful complete scan;
+- `Track` stores only an `InstrumentAssignment` descriptor while the
+  application-lifetime host owns processors and editor windows;
+- each MIDI track receives an independent plugin instance and only its own
+  channel-preserving MIDI events;
+- atomically published runtime registries keep creation, replacement and
+  destruction outside the callback;
+- plugin MIDI/audio scratch buffers and compensation delay lines are bounded
+  and prepared before callback use;
+- plugins receive sample, seconds, PPQ, BPM, time-signature, playing and loop
+  position through JUCE `AudioPlayHead`;
+- the maximum active plugin latency is published outside the callback, delaying
+  lower-latency plugins, WAV stems and the Internal Audition Synth to match;
+- plugin editor windows are message-thread owned and limited to one per track;
+- device restart reprepares existing instances without creating another audio
+  manager or project callback.
+
 Direct WAV import is a prepared batch operation:
 
 - the native File chooser supplies one or more source paths;
@@ -170,7 +196,7 @@ The install script deploys a runnable Release app to `%LOCALAPPDATA%\DAWHermes\a
 
 No PowerShell or terminal launcher is used for normal user launch.
 
-## Current limitations (Milestone 4.1)
+## Current limitations (Milestone 5.1)
 
 Milestone 2 functionality is complete.
 Milestone 3.1 visual functionality is accepted.
@@ -216,3 +242,6 @@ Additional Milestone 3.1 boundaries:
   whole-project playback, Mute/Solo, and looping, but no time stretching, beat
   warping, mixer, effects, recording, or production instrument hosting.
 - M4.1 is complete and manually accepted.
+- M5.1 VST3 instrument hosting is implemented and awaiting manual user
+  acceptance. It does not add effects, buses, automation, presets, project
+  persistence, freeze, bounce or recording.

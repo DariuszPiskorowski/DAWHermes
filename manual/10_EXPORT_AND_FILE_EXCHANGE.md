@@ -1,6 +1,6 @@
-# 9. Export and File Exchange
+# 10. Export and File Exchange
 
-[Previous: Audio Device Settings](08_AUDIO_DEVICE_SETTINGS.md) | [Back to contents](README.md) | [Next: Common Workflows](10_COMMON_WORKFLOWS.md)
+[Previous: Audio Device Settings](09_AUDIO_DEVICE_SETTINGS.md) | [Back to contents](README.md) | [Next: Common Workflows](11_COMMON_WORKFLOWS.md)
 
 ## Why export matters
 
@@ -206,7 +206,7 @@ ACE Studio 2.0 currently provides two important documented integration paths:
 
 ACE Bridge 2 is a VST3, AU and AAX plug-in installed with ACE Studio. It connects a compatible DAW to ACE Studio for MIDI and audio synchronization.
 
-DAWHermes does not host VST3 plug-ins yet, so direct ACE Bridge 2 use must wait until the VST3-hosting milestone or another deliberate bridge design is implemented.
+DAWHermes now hosts VST3 instruments for MIDI-track audition. ACE Bridge 2 has not been validated as a DAWHermes instrument workflow and remains outside the current accepted integration.
 
 ### ACE Studio MCP Server
 
@@ -327,4 +327,4 @@ Before exporting a MIDI track, confirm:
 
 ---
 
-[Previous: Audio Device Settings](08_AUDIO_DEVICE_SETTINGS.md) | [Back to contents](README.md) | [Next: Common Workflows](10_COMMON_WORKFLOWS.md)
+[Previous: Audio Device Settings](09_AUDIO_DEVICE_SETTINGS.md) | [Back to contents](README.md) | [Next: Common Workflows](11_COMMON_WORKFLOWS.md)

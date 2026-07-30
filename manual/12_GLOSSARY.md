@@ -1,10 +1,10 @@
-# 11. Glossary
+# 12. Glossary
 
-[Previous: Common Workflows](10_COMMON_WORKFLOWS.md) | [Back to contents](README.md)
+[Previous: Common Workflows](11_COMMON_WORKFLOWS.md) | [Back to contents](README.md)
 
 ## ACE Bridge 2
 
-A plug-in installed with ACE Studio that can connect a compatible DAW to ACE Studio for MIDI and audio synchronization. DAWHermes does not host VST3 plug-ins yet, so ACE Bridge 2 is not currently available inside DAWHermes.
+A plug-in installed with ACE Studio that can connect a compatible DAW to ACE Studio for MIDI and audio synchronization. DAWHermes can host VST3 instruments, but ACE Bridge 2 has not been validated as a supported DAWHermes integration.
 
 ## ACE-Step
 
