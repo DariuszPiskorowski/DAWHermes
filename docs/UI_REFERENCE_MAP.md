@@ -143,7 +143,7 @@ Completed and manually accepted Milestone 4.1 surfaces:
 - M4.1 itself added no Record, arming, monitoring, mixer, VST, or
   audio-edit controls.
 
-Implemented Milestone 5.1 surfaces awaiting manual user acceptance:
+Milestone 5.1 surfaces are complete and manually accepted:
 
 - top-level `Plugins -> VST3 Instrument Manager...`;
 - cached instrument list with filter, Scan, Rescan All, progress, current

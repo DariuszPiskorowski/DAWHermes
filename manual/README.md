@@ -5,7 +5,7 @@ Beginner-friendly guide to the currently implemented DAWHermes workflow.
 **Language:** English  
 **Accepted application baseline:** `main`, commit `d5eb2a75fd1a05f759a0f7757df3e72b12b5851a`
 
-**Milestone 5.1 status:** implemented and awaiting manual user acceptance
+**Milestone 5.1 status:** complete and manually accepted
 
 DAWHermes is developing quickly. This manual describes features that are present in the application now. Future workflows are clearly marked as **Planned** and must not be treated as available commands.
 

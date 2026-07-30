@@ -24,7 +24,7 @@ No network-delivery milestone is defined in this plan.
 
 ## Current milestone scope
 
-Milestone 5.1 is implemented and awaiting manual user acceptance:
+Milestone 5.1 is complete and manually accepted:
 
 - JUCE 8.0.13 VST3 host support only, with VST2, AU, AAX and other host
   formats explicitly disabled;

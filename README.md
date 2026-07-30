@@ -14,7 +14,7 @@ The manual is written in English for musicians rather than developers. It explai
 
 ## Current status
 
-The stable `main` application is complete, published and manually accepted through **Milestone 4.1**. **Milestone 5.1 is implemented on its milestone branch and awaiting manual user acceptance.**
+The stable `main` application is complete, published and manually accepted through **Milestone 4.1**. **Milestone 5.1 is complete and manually accepted on its milestone branch.**
 
 Current accepted milestones include:
 
@@ -24,9 +24,10 @@ Current accepted milestones include:
 - M3.2: MIDI note editing and selected-track MIDI export;
 - M3.3: functional MIDI audition;
 - M3.4: synchronized MIDI/WAV playback, transport and WAV BPM analysis;
-- M4.1: central audio-device configuration, whole-project playback, live hierarchical Mute/Solo and Timeline Loop work region.
+- M4.1: central audio-device configuration, whole-project playback, live hierarchical Mute/Solo and Timeline Loop work region;
+- M5.1: per-MIDI-track VST3 instrument hosting with deliberate scanning, independent instances, fallback, editors and latency compensation.
 
-Milestone 5.1 currently adds:
+Milestone 5.1 adds:
 
 - a persistent, deliberate-scan VST3 instrument catalog with crash recovery;
 - one independent VST3 instrument or the Internal Audition Synth per MIDI track;

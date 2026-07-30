@@ -91,7 +91,7 @@ They are useful for:
 - quickly repeating a phrase;
 - moving past a long intro;
 - checking the beginning of a transition;
-- locating a timing problem without dragging the playhead precisely.
+- locating a timing problem without needing a draggable playhead.
 
 The position is kept inside valid project or Loop limits.
 
@@ -126,6 +126,9 @@ The orange playhead appears in both the Timeline and Piano Roll.
 During playback, the shared horizontal viewport follows when the playhead approaches the edge of the visible region. The two workspaces remain aligned to the same musical time.
 
 Pause leaves the playhead visible. Stop hides it.
+
+The playhead line is a position indicator, not a draggable control. To seek,
+single-click the Timeline ruler or use `<<` and `>>` to move by five seconds.
 
 ## Master Volume
 

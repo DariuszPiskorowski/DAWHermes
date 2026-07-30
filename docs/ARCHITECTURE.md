@@ -242,6 +242,6 @@ Additional Milestone 3.1 boundaries:
   whole-project playback, Mute/Solo, and looping, but no time stretching, beat
   warping, mixer, effects, recording, or production instrument hosting.
 - M4.1 is complete and manually accepted.
-- M5.1 VST3 instrument hosting is implemented and awaiting manual user
-  acceptance. It does not add effects, buses, automation, presets, project
+- M5.1 VST3 instrument hosting is complete and manually accepted. It does not
+  add effects, buses, automation, presets, project
   persistence, freeze, bounce or recording.

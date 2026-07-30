@@ -1,6 +1,6 @@
 # Milestone 5.1: VST3 Instrument Hosting
 
-Status: M5.1 implemented and awaiting manual user acceptance.
+Status: M5.1 complete and manually accepted.
 
 ## Ownership and lifetime
 
@@ -86,3 +86,15 @@ Status: M5.1 implemented and awaiting manual user acceptance.
   successfully reprepared track assignments are preserved.
 - No plugin binary, preset, generated scan artifact, or user music asset is
   copied into or committed to the repository.
+
+## Accepted manual observations
+
+- Manual validation passed for real VST3 scanning, assignment, playback,
+  editors, independent instances, fallback, transport, device restart, and
+  the existing DAWHermes workflows.
+- Light audio crackles were heard while continuously resizing the lower Piano
+  Roll panel during playback. This is a known non-blocking UI/audio-performance
+  observation, not a VST3 functional failure.
+- Project save/load and cross-session plugin-state persistence are not
+  implemented. Tracks and plugin assignments therefore do not survive an
+  application restart.
