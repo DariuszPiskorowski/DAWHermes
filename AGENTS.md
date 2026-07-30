@@ -142,6 +142,20 @@ Never commit:
 - files from Downloads;
 - real user music assets.
 
+## Private network and endpoint safety
+
+The user's real machine and service addresses are private configuration data.
+
+- Never publish or commit the user's real LAN, VPN, Tailscale or other private-network IP addresses unless the user explicitly approves that exact disclosure.
+- Apply this rule to source documentation, the user manual, README files, technical notes, PR bodies, commit messages, issues, comments, reports, examples, screenshots and pasted logs.
+- `127.0.0.1`, `localhost` and `::1` are allowed when they accurately describe a service on the same machine.
+- For remote-host examples, prefer symbolic placeholders such as `<COMPOSER_ASSISTANT_HOST>`.
+- When a numeric example is required, use an address reserved for documentation, such as `192.0.2.42`, `198.51.100.42` or `203.0.113.42`, and label it clearly as non-working example data.
+- Never present a documentation-only address as the user's real endpoint or as an application default when that would be inaccurate.
+- Real endpoints belong in local user settings or another ignored local configuration store, not in public repository text.
+- Before publishing any branch or PR, search the complete changed text for private IP addresses and other endpoint details.
+- Removing a real endpoint from production code is a separate tested migration task. Do not replace a working hardcoded endpoint with a random example address and silently break connectivity.
+
 ## User asset safety
 
 The user's real validation assets live outside the repository and are read-only unless explicitly stated otherwise.
