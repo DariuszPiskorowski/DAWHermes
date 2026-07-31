@@ -22,6 +22,27 @@
 
 No network-delivery milestone is defined in this plan.
 
+## Infrastructure milestones
+
+### Infrastructure CI.1 - GitHub-hosted Windows x64 Release verification and downloadable artifact
+
+Status: **CI.1 implemented and awaiting manual workflow/artifact acceptance.**
+
+- one clean GitHub-hosted `windows-2022` x64 Release build tree;
+- exact Python 3.11 x64, Visual Studio 2022, JUCE 8.0.13 and pybind11 v3.0.4;
+- complete deterministic Release suite followed by the incremental Release
+  application build in the same tree;
+- single-worker CMake, MSBuild and compiler execution;
+- enforced `DAWHERMES_ENABLE_LTCG=OFF`, `/GL-`, normal Release optimization and
+  `/LTCG:OFF` verification;
+- deterministic AMD64 PE-header verification;
+- hash-verified downloadable runtime and separate diagnostic-log artifacts;
+- installation of the downloaded artifact without local compilation;
+- retained installed native smoke and user manual validation on the real music
+  computer;
+- no product feature, project persistence, commercial VST3, licence, private
+  endpoint or real user music asset added to hosted CI.
+
 ## Current milestone scope
 
 Milestone 5.1 is complete and manually accepted:

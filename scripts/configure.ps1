@@ -3,7 +3,10 @@ param(
     [string]$BuildDirectory = '',
 
     [ValidateSet('ON', 'OFF')]
-    [string]$EnableLtcg = 'OFF'
+    [string]$EnableLtcg = 'OFF',
+
+    [ValidateSet('', 'Debug', 'Release')]
+    [string]$Configuration = ''
 )
 
 Set-StrictMode -Version Latest
@@ -45,6 +48,10 @@ $configureArguments = @(
 )
 
 $configureArguments += "-DDAWHERMES_ENABLE_LTCG=$EnableLtcg"
+
+if (-not [string]::IsNullOrWhiteSpace($Configuration)) {
+    $configureArguments += "-DCMAKE_CONFIGURATION_TYPES=$Configuration"
+}
 
 & $cmake.Path @configureArguments
 if ($LASTEXITCODE -ne 0) {

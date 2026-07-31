@@ -219,6 +219,7 @@ function Write-GeneratedProjectFlagSnapshot {
 
     $projectNames = @(
         'dawhermes_core.vcxproj',
+        'dawhermes_plugins.vcxproj',
         'dawhermes_audio.vcxproj',
         'dawhermes_midi.vcxproj',
         'dawhermes_hermes.vcxproj',
@@ -534,13 +535,18 @@ try {
     )
 
     if ($effectiveParallelJobs -gt 0) {
-        $buildArguments += @('--parallel', $effectiveParallelJobs.ToString())
+        $buildArguments += @(
+            '--parallel',
+            $effectiveParallelJobs.ToString(),
+            '--',
+            "/m:$effectiveParallelJobs",
+            "/p:CL_MPCount=$effectiveParallelJobs",
+            '/p:UseMultiToolTask=false'
+        )
     }
 
     if ($Diagnostic) {
         $buildArguments += @(
-            '--',
-            "/p:CL_MPCount=$effectiveParallelJobs",
             "/bl:$binaryLogPath;ProjectImports=None",
             '/fl',
             "/flp:LogFile=$textLogPath;Verbosity=diagnostic",

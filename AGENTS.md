@@ -50,6 +50,9 @@ As of the latest accepted baseline, DAWHermes has:
 - single-transaction audio-import Undo/Redo;
 - embedded Hermes drums extraction, bass repair and MIDI/WAV synchronization;
 - Composer Assistant compatibility connector settings and explicit manual reachability probe, without music-generation integration.
+- deliberate VST3 instrument scanning and a persistent instrument-only catalog;
+- one independent VST3 instrument or Internal Audition Synth assignment per MIDI track;
+- synchronized VST3/Internal Synth/WAV playback, editor windows, transport playhead delivery and bounded latency compensation.
 
 The internal synth is intentionally basic and functional. It is for auditioning pitch, timing, duration and velocity, not final sound quality.
 
@@ -76,20 +79,43 @@ Work in coherent, end-to-end milestones.
 
 For normal feature/milestone work:
 
-1. Start from clean, up-to-date `main`.
-2. Create a local milestone branch named `wip/<milestone-topic>`.
-3. Implement the complete milestone from A to Z.
-4. Add deterministic automated tests.
-5. Run the required build/test/install checks.
-6. Install the app for manual user acceptance.
-7. Do not merge into `main` before the user manually accepts the installed workflow.
-8. After manual acceptance, push the milestone branch and open a Pull Request into `main`.
-9. Use the PR for review: inspect changed files, confirm tests/build/install results, confirm no generated or personal files are included, and verify the milestone boundaries.
-10. After PR review approval, squash merge the PR into `main` as one clean milestone commit.
-11. Pull the updated `main` locally and verify local `main` equals `origin/main`.
-12. Leave the local WIP branch in place unless the user asks to delete it.
+1. Read this complete `AGENTS.md` before repository inspection or changes.
+2. Start from clean, synchronized, up-to-date `main`.
+3. Create a local milestone branch named `wip/<milestone-topic>`.
+4. Implement the complete milestone from A to Z.
+5. Add deterministic automated tests.
+6. Run focused local checks when useful.
+7. Do not perform repeated full local Debug/Release/RelWithDebInfo build matrices.
+8. Create a clean, coherent local checkpoint.
+9. Push the WIP branch only when it is ready for GitHub-hosted CI.
+10. The WIP push is permitted solely for CI and does not equal manual acceptance.
+11. GitHub Actions performs the authoritative clean Windows x64 Release test, build and package workflow with LTCG disabled.
+12. Codex inspects the exact branch Action result and fixes failures normally on the branch.
+13. Download and install the successful artifact on the real Windows x64 music PC without local compilation.
+14. The user performs manual native validation on that installed artifact.
+15. After explicit user acceptance, update the acceptance documentation.
+16. Open the Pull Request into `main`.
+17. Review the PR diff and the successful CI result.
+18. Squash merge to `main` only after review approval.
+19. The resulting `main` push creates another clean Windows x64 Release artifact.
+20. Pull the updated `main` locally and verify local `main` equals `origin/main`.
 
-Large milestones may contain local WIP checkpoint commits on the WIP branch, especially before risky refactors, long-running agent sessions, or possible rate limits. These checkpoint commits may be pushed only when opening the accepted PR; they must not be merged into `main` one by one.
+Leave the local WIP branch in place unless the user asks to delete it.
+
+GitHub-hosted CI rules:
+
+- use GitHub-hosted runners only; never register or use the user's PC as a self-hosted runner;
+- the authoritative CI target is Windows x64 Release with `DAWHERMES_ENABLE_LTCG=OFF`;
+- final local compilation is not mandatory by default;
+- perform a local full build only when the user explicitly requests it or a focused diagnosis justifies it;
+- CI artifacts do not replace installed native manual testing;
+- CI must be green for the exact build-relevant branch commit before manual acceptance is requested;
+- hosted runners must never receive private endpoints, licences, commercial plug-ins, real music assets or user settings;
+- pushing for CI is allowed only when the branch is coherent and checkpointed; do not push every minor edit merely to experiment;
+- a CI-only WIP push does not authorize a PR, merge, auto-merge or acceptance claim;
+- never force-push or rewrite the published milestone branch.
+
+Large milestones may contain local WIP checkpoint commits on the WIP branch, especially before risky refactors, long-running agent sessions, or possible rate limits. Push only a coherent checkpoint that is ready for hosted CI or accepted PR publication; checkpoint commits must not be merged into `main` one by one.
 
 Prompts should not split one coherent milestone into many unrelated half-steps unless the user explicitly chooses that because of tool limits. The agent should continue through implementation, tests, installation and report without repeatedly asking for permission.
 
@@ -97,9 +123,9 @@ Small administrative documentation-only changes that the user explicitly request
 
 ## Pull Request workflow
 
-For accepted milestone branches:
+For manually accepted milestone branches:
 
-- Push the milestone branch only after local tests/build/install pass and the user manually accepts the installed workflow.
+- The branch may already be published solely for GitHub-hosted CI under the hybrid workflow above.
 - Open a PR from the milestone branch into `main`.
 - The PR title should match the milestone, for example `Complete Milestone 3.4 audio stem playback`.
 - The PR body must summarize the result, tests, install/native launch, manual acceptance status, known limitations, and safety checks.
@@ -107,14 +133,14 @@ For accepted milestone branches:
 - Do not merge if required tests fail, generated files are present, real user assets are present, or the milestone scope is unclear.
 - Prefer GitHub squash merge for the PR, producing one clean commit on `main`.
 - Do not rebase, force-push, or rewrite published PR branches unless the user explicitly approves it.
-- Do not push WIP branches that are not ready for accepted PR review.
+- Do not push WIP branches unless they are coherent checkpoints ready for GitHub-hosted CI or accepted PR review.
 
 ## Git safety
 
 - Never discard unrelated user changes.
 - Never use destructive `reset`, `clean`, forced checkout, branch deletion or force-push without explicit user permission.
 - Do not rewrite published history.
-- Do not push WIP branches unless they are being published for an accepted PR or the user explicitly asks.
+- Do not push WIP branches unless they are coherent and ready for the authorized GitHub-hosted CI workflow, accepted PR publication, or another explicit user request.
 - Do not commit or push when required tests fail.
 - Do not silently continue from a dirty or ambiguous working tree.
 - Use `git fetch origin --prune` and `git pull --ff-only origin main` for synchronization.
@@ -267,33 +293,33 @@ C:\Users\godhimself2u\AppData\Local\DAWHermes\app\DAWHermes.exe
 
 ## Build and verification
 
-For every behaviour change, run the relevant full verification sequence unless the user explicitly asks for a smaller diagnostic step.
+The authoritative final verification for milestone branches is the clean GitHub-hosted Windows x64 Release workflow in `.github/workflows/windows-x64-release.yml`.
 
 Local Release builds must use `DAWHERMES_ENABLE_LTCG=OFF`.
 Never run local `/GL` or `/LTCG` builds.
 LTCG experiments are allowed only in a dedicated future CI diagnostic workflow explicitly requested by the user.
 
-Standard local verification:
+Normal milestone verification:
 
-```powershell
-.\scripts\configure.ps1
-.\scripts\test.ps1
-.\scripts\build-release.ps1
-cmake --build build --config RelWithDebInfo --target DAWHermes
-.\scripts\install-local.ps1
-```
+1. Run focused local static, script or test checks when useful and safe.
+2. Push one coherent checkpoint for GitHub-hosted CI.
+3. Require the exact branch commit to pass deterministic Release tests, the incremental Release application build, LTCG-disabled checks, x64 PE verification and package verification.
+4. Download that run's hash-verified runtime artifact.
+5. Install the downloaded artifact without compiling locally.
+6. Perform bounded native smoke validation, then leave the installed app ready for the user's manual acceptance.
+
+Do not run repeated local full-configuration matrices. A full local compile requires explicit user instruction or a justified focused diagnosis. The permanent local LTCG prohibition remains in force.
 
 `cmake` must work through the normal user `Path`. If plain `cmake` fails, diagnose the active process `Path`; do not silently hide the issue by using an absolute path except as a temporary fallback.
 
-For UI changes:
+For UI changes after a successful hosted build:
 
-1. Build affected targets.
-2. Run automated tests.
-3. Build Release.
-4. Install locally.
-5. Launch the installed native Windows app.
-6. Verify the behaviour in a normal desktop window.
-7. Leave the app ready for user manual acceptance when needed.
+1. Confirm the exact branch commit passed hosted CI.
+2. Download and verify its Release artifact.
+3. Install from the artifact without compiling.
+4. Launch the installed native Windows app.
+5. Verify the behaviour in a normal desktop window.
+6. Leave the app ready for user manual acceptance when needed.
 
 Do not claim human/manual acceptance unless the user personally tested and accepted the installed app.
 
@@ -306,7 +332,7 @@ Documentation-only manual work must not run unrelated C++ builds or hardware-dep
 - Do not rely on real user music assets in automated tests.
 - Prefer synthetic temp files for MIDI/WAV round-trip tests.
 - Regression tests must protect accepted Hermes, MIDI editing, export and audition workflows.
-- GitHub Actions are optional and should be used only for checks that need a clean environment or would be too heavy locally.
+- GitHub Actions is the authoritative clean Windows x64 Release test/build/package environment. Keep deterministic tests independent of hosted-runner hardware and external commercial software.
 
 ## Reference repositories
 

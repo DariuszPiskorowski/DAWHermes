@@ -14,7 +14,12 @@ The manual is written in English for musicians rather than developers. It explai
 
 ## Current status
 
-The stable `main` application is complete, published and manually accepted through **Milestone 4.1**. **Milestone 5.1 is complete and manually accepted on its milestone branch.**
+The stable `main` application is complete, published and manually accepted through **Milestone 5.1**.
+
+Infrastructure CI.1 is implemented on its milestone branch and awaiting manual
+workflow/artifact acceptance. It adds the authoritative GitHub-hosted Windows
+x64 Release verification and downloadable runtime artifact without changing
+normal musical behaviour.
 
 Current accepted milestones include:
 
@@ -148,6 +153,11 @@ No terminal window should appear.
 
 ## Developer setup
 
+The authoritative complete deterministic test, Windows x64 Release build and
+runtime package are produced on a clean GitHub-hosted runner. See
+[CI.1 Windows x64 Release verification](docs/CI_WINDOWS_X64_RELEASE.md) for the
+workflow, artifact, download, verification and no-build installation process.
+
 Required:
 
 - Git;
@@ -162,58 +172,41 @@ For embedded Hermes processing, provide a local `midi-cleaner` clone by either:
 - setting environment variable `DAWHERMES_HERMES_REPO` to the clone path; or
 - keeping it at a discovered default path (`../midi-cleaner` from working dir, or `%USERPROFILE%\source\repos\midi-cleaner`).
 
-Configure:
-
-```powershell
-.\scripts\configure.ps1
-```
-
-Build Release:
-
-```powershell
-.\scripts\build-release.ps1
-```
-
-For a bounded diagnostic Release build with explicit single-job project and compiler parallelism plus persistent resource, text, transcript and MSBuild binary logs under the ignored `build\diagnostics` directory:
-
-```powershell
-.\scripts\build-release.ps1 -Diagnostic -ParallelJobs 1
-```
-
-Diagnostic mode builds only the `DAWHermes` Release target. It does not run tests, install files or launch the application.
-
-The `DAWHERMES_ENABLE_LTCG` CMake option defaults to `OFF`. The supported local scripts explicitly configure `OFF`, and `build-release.ps1` refuses to build unless the effective cache value is `DAWHERMES_ENABLE_LTCG=OFF`. This prevents the normal local build and install workflow from starting the `/GL`/`/LTCG` path that repeatedly froze Windows.
-
-After an already verified Release build, `install-local.ps1 -SkipBuild` installs that artifact without initiating another build and still verifies the no-LTCG cache setting. `-BuildDirectory` can select a fresh verified tree instead of reusing an older local Release tree.
-
-To use a fresh isolated no-LTCG diagnostic tree:
-
-```powershell
-.\scripts\configure.ps1 `
-    -BuildDirectory build\diagnostic-variants\no-ltcg `
-    -EnableLtcg OFF
-
-.\scripts\build-release.ps1 `
-    -Diagnostic `
-    -ParallelJobs 1 `
-    -BuildDirectory build\diagnostic-variants\no-ltcg
-```
-
-The no-LTCG configuration omits JUCE's recommended LTO flags, disables Release interprocedural optimization, compiles participating DAWHermes targets with `/GL-`, and links the final executable with `/LTCG:OFF`. Generated projects, outputs and logs remain under the ignored `build` directory.
-
-Never run a local `/GL` or `/LTCG` build. LTCG experiments are allowed only in a dedicated future CI diagnostic workflow explicitly requested by the user.
-
-Run tests:
+Focused local development remains supported. The default local test command
+continues to use Debug and skips the environment-dependent embedded Hermes
+integration:
 
 ```powershell
 .\scripts\test.ps1
 ```
 
-The standard test script skips the environment-dependent embedded Hermes integration test while running the deterministic suite. Run that integration explicitly only in a prepared Hermes environment:
+Run that integration explicitly only in a prepared Hermes environment:
 
 ```powershell
 .\scripts\test.ps1 -IncludeEmbeddedHermesIntegration
 ```
+
+Final local compilation is no longer mandatory by default. Run a full local
+build only when the user explicitly requests it or a focused diagnosis justifies
+it. Every local Release build must keep LTCG disabled. A permitted isolated
+diagnostic invocation is:
+
+```powershell
+.\scripts\configure.ps1 -EnableLtcg OFF
+.\scripts\build-release.ps1 -Diagnostic -ParallelJobs 1
+```
+
+Diagnostic mode builds only the `DAWHermes` Release target. It does not run tests, install files or launch the application.
+
+The `DAWHERMES_ENABLE_LTCG` CMake option defaults to `OFF`. The supported scripts
+explicitly configure `OFF`, and Release verification refuses a tree unless the
+effective cache value is exactly `DAWHERMES_ENABLE_LTCG=OFF`.
+
+After an already verified Release build, `install-local.ps1 -SkipBuild` installs that artifact without initiating another build and still verifies the no-LTCG cache setting. `-BuildDirectory` can select a fresh verified tree instead of reusing an older local Release tree.
+
+The no-LTCG configuration omits JUCE's recommended LTO flags, disables Release interprocedural optimization, compiles participating DAWHermes targets with `/GL-`, and links the final executable with `/LTCG:OFF`. Generated projects, outputs and logs remain under the ignored `build` directory.
+
+Never run a local `/GL` or `/LTCG` build. LTCG experiments are allowed only in a dedicated future CI diagnostic workflow explicitly requested by the user.
 
 Run opt-in Milestone 2 real-assets verification:
 
@@ -224,10 +217,11 @@ Run opt-in Milestone 2 real-assets verification:
     -SynthMidi <path> -SynthWav <path>
 ```
 
-Install locally:
+To install a successful downloaded CI artifact without compiling, extract it
+and run its root installer:
 
 ```powershell
-.\scripts\install-local.ps1
+.\Install-DAWHermes.ps1
 ```
 
 After installation, close the terminal and use the Desktop or Start Menu shortcut for normal launches.

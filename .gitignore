@@ -1,5 +1,10 @@
 # Build outputs
 /build/
+/build-ci/
+/ci-artifacts/
+/ci-logs/
+/ci-downloads/
+/.ci-cache/
 /.vs/
 
 # CMake generated files

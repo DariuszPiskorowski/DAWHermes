@@ -182,6 +182,33 @@ For successful bass and sync operations, temporary Hermes cache job directories 
 
 `StubHermesEngine` remains in the codebase for tests and for explicit placeholder behavior.
 
+## Build and distribution boundary (Infrastructure CI.1)
+
+The authoritative final build boundary is a clean GitHub-hosted
+`windows-2022` x64 runner, not the user's music PC and not a self-hosted runner.
+It configures one Release-only `build-ci` tree with Python 3.11 x64 and Visual
+Studio 2022, compiles and runs the deterministic tests first, then builds the
+application incrementally in the same tree with one worker.
+
+`DAWHERMES_ENABLE_LTCG=OFF` is a permanent safety constraint. Generated project
+inspection requires explicit `/GL-`, normal Release optimization and
+`/LTCG:OFF`, and rejects active `/GL` or `/LTCG`. The resulting executable is
+validated from its PE header as AMD64 without loading it.
+
+The hosted boundary packages only runnable application files plus safe build
+metadata, a complete SHA-256 manifest and a standalone installer. Runtime and
+diagnostic artifacts are separate. No source tree, compiler output, user data,
+private endpoints, plug-ins, licences, catalogs or settings cross into the
+runtime artifact. Dependency/build caching is deliberately absent from the
+clean CI.1 baseline.
+
+The artifact installer verifies metadata, hashes and x64 architecture before
+copying the precompiled runtime to `%LOCALAPPDATA%\DAWHermes\app`. It preserves
+settings stored outside that directory and creates direct native shortcuts.
+Hosted verification does not launch the GUI, exercise physical audio hardware
+or scan commercial VST3 instruments; installed native smoke and explicit user
+manual acceptance remain separate required boundaries.
+
 ## No HTTP/localhost architecture
 
 DAWHermes is intended to embed Hermes directly, not orchestrate it as a separate localhost service. This avoids dual-process UX, fragile transfer protocols, and duplicated project state.
