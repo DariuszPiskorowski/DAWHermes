@@ -17,6 +17,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -55,6 +56,8 @@
 #include "hermes/HermesValidation.h"
 #include "hermes/StubHermesEngine.h"
 #include "midi/MidiTrackExporter.h"
+#include "plugins/Vst3InstrumentHost.h"
+#include "plugins/Vst3PluginCatalog.h"
 #include "ui/MidiImportParser.h"
 #include "ui/CommandLabels.h"
 
@@ -96,6 +99,191 @@ using dawhermes::hermes::HermesOperationStatus;
 using dawhermes::hermes::HermesSyncOptions;
 using dawhermes::hermes::HermesSyncRole;
 using dawhermes::hermes::StubHermesEngine;
+
+struct FakePluginState {
+    int prepareCount { 0 };
+    int releaseCount { 0 };
+    int processCount { 0 };
+    int noteOnCount { 0 };
+    int noteOffCount { 0 };
+    int resetCount { 0 };
+    int lastChannel { 0 };
+    int lastVelocity { 0 };
+    bool active { false };
+    bool sawPlayHead { false };
+    double playHeadBpm { 0.0 };
+    double playHeadPpq { 0.0 };
+    bool playHeadLooping { false };
+    float outputLevel { 0.2f };
+    int throwOnPrepareCall { 0 };
+    bool outputWhenInactive { false };
+    std::vector<int> processBlockSizes;
+    std::vector<std::int64_t> playHeadSamplePositions;
+    std::vector<double> playHeadPpqs;
+    std::vector<int> noteOnOffsets;
+};
+
+struct TemporaryPluginSettings {
+    TemporaryPluginSettings()
+        : directory(
+              juce::File::getSpecialLocation(
+                  juce::File::tempDirectory)
+                  .getNonexistentChildFile(
+                      "dawhermes-vst3-test",
+                      {},
+                      false))
+    {
+        if (!directory.createDirectory()) {
+            throw std::runtime_error(
+                "Could not create temporary VST3 test settings directory.");
+        }
+        juce::PropertiesFile::Options options;
+        options.applicationName = "DAWHermesTests";
+        options.filenameSuffix = "settings";
+        options.storageFormat =
+            juce::PropertiesFile::storeAsXML;
+        settings = std::make_unique<juce::PropertiesFile>(
+            directory.getChildFile(
+                "DAWHermesTests.settings"),
+            options);
+    }
+
+    ~TemporaryPluginSettings()
+    {
+        settings.reset();
+        const auto tempRoot =
+            juce::File::getSpecialLocation(
+                juce::File::tempDirectory);
+        if (directory.getParentDirectory() == tempRoot
+            && directory.getFileName().startsWith(
+                "dawhermes-vst3-test")) {
+            directory.deleteRecursively();
+        }
+    }
+
+    juce::File directory;
+    std::unique_ptr<juce::PropertiesFile> settings;
+};
+
+class FakeInstrumentInstance final
+    : public juce::AudioPluginInstance {
+public:
+    FakeInstrumentInstance(
+        FakePluginState& state,
+        int latencySamples,
+        juce::String name = "Fake Instrument")
+        : juce::AudioPluginInstance(
+              juce::AudioProcessor::BusesProperties()
+                  .withOutput(
+                      "Output",
+                      juce::AudioChannelSet::stereo(),
+                      true)),
+          state_(state),
+          name_(std::move(name))
+    {
+        setLatencySamples(latencySamples);
+    }
+
+    const juce::String getName() const override { return name_; }
+    void prepareToPlay(double, int) override
+    {
+        ++state_.prepareCount;
+        if (state_.throwOnPrepareCall
+            == state_.prepareCount) {
+            throw std::runtime_error(
+                "Synthetic prepare failure");
+        }
+    }
+    void releaseResources() override { ++state_.releaseCount; }
+    bool isBusesLayoutSupported(
+        const BusesLayout& layouts) const override
+    {
+        return layouts.getMainOutputChannelSet()
+            == juce::AudioChannelSet::stereo();
+    }
+    void processBlock(
+        juce::AudioBuffer<float>& buffer,
+        juce::MidiBuffer& midi) override
+    {
+        ++state_.processCount;
+        state_.processBlockSizes.push_back(
+            buffer.getNumSamples());
+        if (const auto* currentPlayHead = getPlayHead();
+            currentPlayHead != nullptr) {
+            const auto position =
+                currentPlayHead->getPosition();
+            if (position.hasValue()) {
+                state_.sawPlayHead = true;
+                state_.playHeadBpm =
+                    position->getBpm().orFallback(0.0);
+                state_.playHeadPpq =
+                    position->getPpqPosition().orFallback(0.0);
+                state_.playHeadLooping =
+                    position->getIsLooping();
+                state_.playHeadSamplePositions.push_back(
+                    position->getTimeInSamples()
+                        .orFallback(0));
+                state_.playHeadPpqs.push_back(
+                    state_.playHeadPpq);
+            }
+        }
+        for (const auto metadata : midi) {
+            const auto message = metadata.getMessage();
+            if (message.isNoteOn()) {
+                ++state_.noteOnCount;
+                state_.lastChannel = message.getChannel();
+                state_.lastVelocity =
+                    message.getVelocity();
+                state_.active = true;
+                state_.noteOnOffsets.push_back(
+                    metadata.samplePosition);
+            } else if (message.isNoteOff()) {
+                ++state_.noteOffCount;
+                state_.active = false;
+            } else if (message.isAllNotesOff()
+                       || message.isAllSoundOff()) {
+                ++state_.resetCount;
+                state_.active = false;
+            }
+        }
+        buffer.clear();
+        if (state_.active
+            || state_.outputWhenInactive) {
+            for (int channel = 0;
+                 channel < buffer.getNumChannels();
+                 ++channel) {
+                juce::FloatVectorOperations::fill(
+                    buffer.getWritePointer(channel),
+                    state_.outputLevel,
+                    buffer.getNumSamples());
+            }
+        }
+    }
+    double getTailLengthSeconds() const override { return 0.0; }
+    bool acceptsMidi() const override { return true; }
+    bool producesMidi() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    bool hasEditor() const override { return false; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock&) override {}
+    void setStateInformation(const void*, int) override {}
+    void fillInPluginDescription(
+        juce::PluginDescription& description) const override
+    {
+        description.name = name_;
+        description.pluginFormatName = "VST3";
+        description.isInstrument = true;
+        description.numOutputChannels = 2;
+    }
+
+private:
+    FakePluginState& state_;
+    juce::String name_;
+};
 
 MidiNote makeMidiNote(int pitch, int velocity, double startBeat, double durationBeats, int channel = 10);
 HermesGeneratedMidiTrack makeGeneratedTrack(
@@ -6523,6 +6711,1066 @@ int runM2RealAssetsMode(int argc, char* argv[])
     return overallSuccess ? 0 : 6;
 }
 
+juce::PluginDescription makeFakePluginDescription(
+    juce::String name,
+    int uniqueId)
+{
+    juce::PluginDescription description;
+    description.name = std::move(name);
+    description.descriptiveName = description.name;
+    description.manufacturerName = "DAWHermes Tests";
+    description.pluginFormatName = "VST3";
+    description.category = "Instrument";
+    description.fileOrIdentifier =
+        "test://" + juce::String(uniqueId);
+    description.uniqueId = uniqueId;
+    description.isInstrument = true;
+    description.numInputChannels = 0;
+    description.numOutputChannels = 2;
+    return description;
+}
+
+bool testVst3InstrumentAssignmentModel()
+{
+    ProjectModel project;
+    const auto midiId =
+        project.addTrack(TrackType::midi, "MIDI").id;
+    const auto audioId =
+        project.addTrack(TrackType::audio, "Audio").id;
+
+    dawhermes::core::InstrumentAssignment assignment;
+    assignment.kind = dawhermes::core::InstrumentKind::vst3;
+    assignment.pluginIdentifier = "stable-id";
+    assignment.pluginName = "Instrument";
+    assignment.pluginManufacturer = "Maker";
+    EXPECT_TRUE(project.setInstrumentAssignment(
+        midiId,
+        assignment));
+    EXPECT_EQ(
+        project.findTrackById(midiId)->instrument,
+        assignment);
+    EXPECT_TRUE(!project.setInstrumentAssignment(
+        audioId,
+        assignment));
+
+    assignment.pluginIdentifier.clear();
+    EXPECT_TRUE(!project.setInstrumentAssignment(
+        midiId,
+        assignment));
+    EXPECT_TRUE(project.setInstrumentAssignment(
+        midiId,
+        {}));
+    EXPECT_EQ(
+        project.findTrackById(midiId)->instrument.kind,
+        dawhermes::core::InstrumentKind::internalSynth);
+    EXPECT_TRUE(
+        project.findTrackById(midiId)
+            ->instrument.pluginIdentifier.empty());
+    return true;
+}
+
+bool testVst3CatalogFilteringAndOrdering()
+{
+    juce::Array<juce::PluginDescription> input;
+    auto zebra = makeFakePluginDescription("Zebra", 30);
+    auto alpha = makeFakePluginDescription("Alpha", 10);
+    auto duplicate = alpha;
+    duplicate.fileOrIdentifier = "another-local-path";
+    auto effect = makeFakePluginDescription("Compressor", 20);
+    effect.isInstrument = false;
+    auto midiOnly = makeFakePluginDescription("MIDI Tool", 40);
+    midiOnly.numOutputChannels = 0;
+    auto vst2 = makeFakePluginDescription("Old", 50);
+    vst2.pluginFormatName = "VST";
+    input.add(zebra);
+    input.add(alpha);
+    input.add(duplicate);
+    input.add(effect);
+    input.add(midiOnly);
+    input.add(vst2);
+
+    const auto filtered =
+        dawhermes::plugins::filterAndSortVst3Instruments(
+            input);
+    EXPECT_EQ(filtered.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(filtered[0].name, juce::String("Alpha"));
+    EXPECT_EQ(filtered[1].name, juce::String("Zebra"));
+    return true;
+}
+
+bool testVst3CatalogStartupAndSettingsSafety()
+{
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3PluginCatalog catalog(
+        temporarySettings.settings.get());
+    EXPECT_TRUE(!catalog.scanStatus().running);
+    EXPECT_EQ(
+        catalog.formatManager().getNumFormats(),
+        1);
+    EXPECT_EQ(
+        catalog.formatManager().getFormat(0)->getName(),
+        juce::String("VST3"));
+    EXPECT_TRUE(
+        catalog.catalogFile().getFileName()
+        == juce::String("vst3-instruments.xml"));
+    EXPECT_TRUE(
+        catalog.deadMansPedalFile().getFileName()
+        == juce::String("vst3-scan-dead-man.txt"));
+    EXPECT_TRUE(
+        catalog.catalogFile().getParentDirectory()
+        == catalog.deadMansPedalFile()
+               .getParentDirectory());
+    const auto repository =
+        juce::File::getCurrentWorkingDirectory();
+    EXPECT_TRUE(!catalog.catalogFile().isAChildOf(repository));
+    EXPECT_TRUE(
+        catalog.catalogFile().isAChildOf(
+            temporarySettings.directory));
+    return true;
+}
+
+bool testVst3DeadManRecoveryPlanning()
+{
+    const juce::StringArray candidates {
+        "C:\\VST3\\Alpha.vst3",
+        "C:\\VST3\\Beta.vst3",
+        "C:\\VST3\\Gamma.vst3"
+    };
+    const juce::StringArray recoveryEntries {
+        "c:/vst3/BETA.vst3",
+        "C:\\VST3\\Beta.vst3",
+        "C:\\Removed\\Stale.vst3",
+        ""
+    };
+
+    const auto safeScan =
+        dawhermes::plugins::prepareVst3ScanRecoveryPlan(
+            candidates,
+            recoveryEntries,
+            false);
+    EXPECT_EQ(
+        safeScan.recoveredFailureCount,
+        1);
+    EXPECT_EQ(
+        safeScan.staleRecoveryCount,
+        1);
+    EXPECT_EQ(
+        safeScan.candidatesToScan.size(),
+        2);
+    EXPECT_TRUE(
+        safeScan.candidatesToScan.contains(
+            candidates[0]));
+    EXPECT_TRUE(
+        !safeScan.candidatesToScan.contains(
+            candidates[1]));
+    EXPECT_TRUE(
+        safeScan.candidatesToScan.contains(
+            candidates[2]));
+
+    const auto deliberateRetry =
+        dawhermes::plugins::prepareVst3ScanRecoveryPlan(
+            candidates,
+            recoveryEntries,
+            true);
+    EXPECT_EQ(
+        deliberateRetry.recoveredFailureCount,
+        1);
+    EXPECT_EQ(
+        deliberateRetry.staleRecoveryCount,
+        1);
+    EXPECT_EQ(
+        deliberateRetry.candidatesToScan,
+        candidates);
+    return true;
+}
+
+bool testVst3PluginPositionInfo()
+{
+    dawhermes::plugins::PluginTransportPosition source;
+    source.samplePosition = 48000;
+    source.seconds = 1.0;
+    source.ppqPosition = 2.5;
+    source.bpm = 140.0;
+    source.timeSignatureNumerator = 7;
+    source.timeSignatureDenominator = 8;
+    source.playing = true;
+    source.looping = true;
+    source.loopStartPpq = 2.0;
+    source.loopEndPpq = 6.0;
+    const auto info =
+        dawhermes::plugins::makePluginPositionInfo(source);
+    EXPECT_EQ(
+        info.getTimeInSamples().orFallback(0),
+        static_cast<std::int64_t>(48000));
+    EXPECT_TRUE(std::abs(
+        info.getTimeInSeconds().orFallback(0.0) - 1.0)
+        < 0.0001);
+    EXPECT_TRUE(std::abs(
+        info.getPpqPosition().orFallback(0.0) - 2.5)
+        < 0.0001);
+    EXPECT_TRUE(std::abs(
+        info.getBpm().orFallback(0.0) - 140.0)
+        < 0.0001);
+    EXPECT_TRUE(info.getIsPlaying());
+    EXPECT_TRUE(info.getIsLooping());
+    EXPECT_EQ(
+        info.getTimeSignature()->numerator,
+        7);
+    EXPECT_EQ(
+        info.getTimeSignature()->denominator,
+        8);
+    EXPECT_TRUE(std::abs(
+        info.getLoopPoints()->ppqStart - 2.0)
+        < 0.0001);
+    EXPECT_TRUE(std::abs(
+        info.getLoopPoints()->ppqEnd - 6.0)
+        < 0.0001);
+    return true;
+}
+
+bool testVst3IndependentRuntimeAndLatency()
+{
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
+    host.prepareDevice(48000.0, 64);
+    FakePluginState first;
+    FakePluginState second;
+    juce::String error;
+    const auto description =
+        makeFakePluginDescription("Independent", 101);
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        11,
+        std::make_unique<FakeInstrumentInstance>(
+            first,
+            0),
+        description,
+        error));
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        22,
+        std::make_unique<FakeInstrumentInstance>(
+            second,
+            5),
+        description,
+        error));
+    EXPECT_EQ(
+        host.activeInstanceCount(),
+        static_cast<std::size_t>(2));
+    EXPECT_EQ(host.maximumLatencySamples(), 5);
+    EXPECT_EQ(first.prepareCount, 1);
+    EXPECT_EQ(second.prepareCount, 1);
+
+    FakePluginState invalidReplacement;
+    auto invalidDescription =
+        makeFakePluginDescription("Not Instrument", 102);
+    invalidDescription.isInstrument = false;
+    EXPECT_TRUE(!host.installPreparedInstanceForTesting(
+        11,
+        std::make_unique<FakeInstrumentInstance>(
+            invalidReplacement,
+            0),
+        invalidDescription,
+        error));
+    EXPECT_TRUE(host.hasInstrument(11));
+    EXPECT_EQ(
+        host.activeInstanceCount(),
+        static_cast<std::size_t>(2));
+
+    FakePluginState failedPreparation;
+    failedPreparation.throwOnPrepareCall = 1;
+    EXPECT_TRUE(!host.installPreparedInstanceForTesting(
+        11,
+        std::make_unique<FakeInstrumentInstance>(
+            failedPreparation,
+            0,
+            "Broken Replacement"),
+        makeFakePluginDescription(
+            "Broken Replacement",
+            103),
+        error));
+    EXPECT_TRUE(host.hasInstrument(11));
+    EXPECT_EQ(
+        host.instrumentName(11),
+        juce::String("Independent"));
+
+    host.prepareDevice(44100.0, 32);
+    EXPECT_EQ(first.prepareCount, 2);
+    EXPECT_EQ(second.prepareCount, 2);
+    EXPECT_EQ(
+        host.instrumentName(11),
+        juce::String("Independent"));
+
+    dawhermes::plugins::PluginTransportPosition position;
+    position.playing = true;
+    position.bpm = 90.0;
+    position.ppqPosition = 4.0;
+    position.looping = true;
+    position.loopStartPpq = 2.0;
+    position.loopEndPpq = 6.0;
+    host.beginAudioBlock(32, position);
+    EXPECT_TRUE(host.addMidiEventFromAudioThread(
+        11, true, 3, 60, 0.5f, 0));
+    std::array<float, 32> left {};
+    std::array<float, 32> right {};
+    float* outputs[] { left.data(), right.data() };
+    host.processAudioBlock(outputs, 2, 32, 1.0f);
+    EXPECT_EQ(first.noteOnCount, 1);
+    EXPECT_EQ(first.lastChannel, 3);
+    EXPECT_EQ(first.lastVelocity, 64);
+    EXPECT_EQ(second.noteOnCount, 0);
+    EXPECT_TRUE(first.sawPlayHead);
+    EXPECT_TRUE(std::abs(first.playHeadBpm - 90.0) < 0.0001);
+    EXPECT_TRUE(first.playHeadLooping);
+    for (int sample = 0; sample < 5; ++sample) {
+        EXPECT_TRUE(std::abs(left[static_cast<std::size_t>(sample)])
+                    < 0.00001f);
+    }
+    EXPECT_TRUE(std::abs(left[5]) > 0.1f);
+
+    host.beginAudioBlock(8, position);
+    EXPECT_TRUE(host.addMidiEventFromAudioThread(
+        22, true, 7, 67, 1.0f, 0));
+    std::array<float, 8> shortLeft {};
+    std::array<float, 8> shortRight {};
+    float* shortOutputs[] {
+        shortLeft.data(),
+        shortRight.data()
+    };
+    host.processAudioBlock(shortOutputs, 2, 8, 1.0f);
+    EXPECT_EQ(second.noteOnCount, 1);
+    EXPECT_EQ(second.lastChannel, 7);
+    EXPECT_TRUE(first.active);
+    EXPECT_TRUE(second.active);
+
+    host.beginAudioBlock(8, position);
+    host.resetAllFromAudioThread();
+    host.processAudioBlock(
+        shortOutputs,
+        2,
+        8,
+        0.0f,
+        false);
+    EXPECT_TRUE(!first.active);
+    EXPECT_TRUE(!second.active);
+    EXPECT_TRUE(first.resetCount >= 16);
+    EXPECT_TRUE(second.resetCount >= 16);
+
+    const auto firstReleasesBeforeReplacement =
+        first.releaseCount;
+    FakePluginState replacement;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        11,
+        std::make_unique<FakeInstrumentInstance>(
+            replacement,
+            0,
+            "Replacement"),
+        makeFakePluginDescription(
+            "Replacement",
+            104),
+        error));
+    EXPECT_EQ(
+        host.instrumentName(11),
+        juce::String("Replacement"));
+    EXPECT_EQ(
+        host.activeInstanceCount(),
+        static_cast<std::size_t>(2));
+    host.beginAudioBlock(1, position);
+    host.collectRetiredRuntimes();
+    EXPECT_TRUE(
+        first.releaseCount
+        > firstReleasesBeforeReplacement);
+
+    host.useInternalSynth(11);
+    EXPECT_TRUE(!host.hasInstrument(11));
+    EXPECT_TRUE(host.hasInstrument(22));
+    EXPECT_EQ(
+        host.activeInstanceCount(),
+        static_cast<std::size_t>(1));
+    return true;
+}
+
+bool testVst3AudibilityAndExactBlockLengths()
+{
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
+    host.prepareDevice(48000.0, 512);
+
+    FakePluginState grouped;
+    grouped.outputWhenInactive = true;
+    grouped.outputLevel = 0.2f;
+    FakePluginState independent;
+    independent.outputWhenInactive = true;
+    independent.outputLevel = 0.1f;
+    juce::String error;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        2,
+        std::make_unique<FakeInstrumentInstance>(
+            grouped,
+            0,
+            "Grouped"),
+        makeFakePluginDescription("Grouped", 401),
+        error));
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        3,
+        std::make_unique<FakeInstrumentInstance>(
+            independent,
+            0,
+            "Independent"),
+        makeFakePluginDescription("Independent", 402),
+        error));
+
+    ProjectModel project;
+    const auto groupId =
+        project.addTrack(TrackType::group, "Group").id;
+    const auto groupedId =
+        project.addTrack(
+            TrackType::midi,
+            "Grouped",
+            groupId).id;
+    const auto independentId =
+        project.addTrack(
+            TrackType::midi,
+            "Independent").id;
+    EXPECT_EQ(groupedId, static_cast<std::uint64_t>(2));
+    EXPECT_EQ(independentId, static_cast<std::uint64_t>(3));
+    EXPECT_TRUE(project.setTrackMuted(groupId, true));
+    const auto groupRouting =
+        dawhermes::core::createProjectRoutingState(
+            project);
+
+    dawhermes::plugins::PluginTransportPosition position;
+    position.playing = true;
+    std::array<float, 8> left {};
+    std::array<float, 8> right {};
+    float* outputs[] { left.data(), right.data() };
+    EXPECT_TRUE(host.beginAudioBlock(
+        8,
+        position,
+        &groupRouting));
+    host.processAudioBlock(
+        outputs,
+        2,
+        8,
+        1.0f);
+    for (const auto sample : left) {
+        EXPECT_TRUE(std::abs(sample - 0.1f) < 0.00001f);
+    }
+    EXPECT_EQ(grouped.processCount, 1);
+    EXPECT_EQ(independent.processCount, 1);
+
+    EXPECT_TRUE(project.setTrackMuted(groupId, false));
+    EXPECT_TRUE(project.setTrackSoloed(groupedId, true));
+    const auto soloRouting =
+        dawhermes::core::createProjectRoutingState(
+            project);
+    left.fill(0.0f);
+    right.fill(0.0f);
+    EXPECT_TRUE(host.beginAudioBlock(
+        8,
+        position,
+        &soloRouting));
+    host.processAudioBlock(
+        outputs,
+        2,
+        8,
+        1.0f);
+    for (const auto sample : left) {
+        EXPECT_TRUE(std::abs(sample - 0.2f) < 0.00001f);
+    }
+
+    FakePluginState lengthRecorder;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        4,
+        std::make_unique<FakeInstrumentInstance>(
+            lengthRecorder,
+            0,
+            "Length Recorder"),
+        makeFakePluginDescription(
+            "Length Recorder",
+            403),
+        error));
+    const std::array<int, 5> lengths {
+        1, 17, 64, 255, 512
+    };
+    std::array<float, 513> longLeft {};
+    std::array<float, 513> longRight {};
+    float* longOutputs[] {
+        longLeft.data(),
+        longRight.data()
+    };
+    for (const auto length : lengths) {
+        EXPECT_TRUE(host.beginAudioBlock(
+            length,
+            position));
+        host.processAudioBlock(
+            longOutputs,
+            2,
+            length,
+            1.0f);
+    }
+    EXPECT_EQ(
+        lengthRecorder.processBlockSizes.size(),
+        lengths.size());
+    for (std::size_t index = 0;
+         index < lengths.size();
+         ++index) {
+        EXPECT_EQ(
+            lengthRecorder.processBlockSizes[index],
+            lengths[index]);
+    }
+    const auto processCountBeforeOversized =
+        lengthRecorder.processCount;
+    EXPECT_TRUE(!host.beginAudioBlock(
+        513,
+        position));
+    host.processAudioBlock(
+        longOutputs,
+        2,
+        513,
+        1.0f);
+    EXPECT_EQ(
+        lengthRecorder.processCount,
+        processCountBeforeOversized);
+    return true;
+}
+
+bool testVst3PluginDelayReset()
+{
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
+    host.prepareDevice(1000.0, 64);
+    FakePluginState delayed;
+    delayed.active = true;
+    delayed.outputLevel = 0.25f;
+    FakePluginState latencyAnchor;
+    latencyAnchor.outputLevel = 0.0f;
+    juce::String error;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        1,
+        std::make_unique<FakeInstrumentInstance>(
+            delayed,
+            0,
+            "Delayed"),
+        makeFakePluginDescription("Delayed", 411),
+        error));
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        2,
+        std::make_unique<FakeInstrumentInstance>(
+            latencyAnchor,
+            4,
+            "Latency Anchor"),
+        makeFakePluginDescription(
+            "Latency Anchor",
+            412),
+        error));
+    FakePluginState secondLatencyAnchor;
+    secondLatencyAnchor.outputLevel = 0.0f;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        4,
+        std::make_unique<FakeInstrumentInstance>(
+            secondLatencyAnchor,
+            4,
+            "Second Latency Anchor"),
+        makeFakePluginDescription(
+            "Second Latency Anchor",
+            414),
+        error));
+
+    dawhermes::plugins::PluginTransportPosition position;
+    position.playing = true;
+    std::array<float, 8> left {};
+    std::array<float, 8> right {};
+    float* outputs[] { left.data(), right.data() };
+    EXPECT_TRUE(host.beginAudioBlock(2, position));
+    host.processAudioBlock(outputs, 2, 2, 1.0f);
+    EXPECT_TRUE(std::abs(left[0]) < 0.00001f);
+    EXPECT_TRUE(std::abs(left[1]) < 0.00001f);
+
+    delayed.active = false;
+    left.fill(0.0f);
+    right.fill(0.0f);
+    EXPECT_TRUE(host.beginAudioBlock(4, position));
+    host.resetAllFromAudioThread();
+    host.processAudioBlock(outputs, 2, 4, 1.0f);
+    for (int sample = 0; sample < 4; ++sample) {
+        EXPECT_TRUE(std::abs(
+            left[static_cast<std::size_t>(sample)])
+            < 0.00001f);
+    }
+
+    delayed.active = true;
+    EXPECT_TRUE(host.beginAudioBlock(2, position));
+    host.processAudioBlock(outputs, 2, 2, 1.0f);
+    FakePluginState addedRuntime;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        3,
+        std::make_unique<FakeInstrumentInstance>(
+            addedRuntime,
+            0,
+            "Added Runtime"),
+        makeFakePluginDescription(
+            "Added Runtime",
+            413),
+        error));
+    delayed.active = false;
+    left.fill(0.0f);
+    right.fill(0.0f);
+    EXPECT_TRUE(host.beginAudioBlock(4, position));
+    host.processAudioBlock(outputs, 2, 4, 1.0f);
+    for (int sample = 0; sample < 4; ++sample) {
+        EXPECT_TRUE(std::abs(
+            left[static_cast<std::size_t>(sample)])
+            < 0.00001f);
+    }
+
+    delayed.active = true;
+    EXPECT_TRUE(host.beginAudioBlock(2, position));
+    host.processAudioBlock(outputs, 2, 2, 1.0f);
+    delayed.active = false;
+    host.useInternalSynth(2);
+    left.fill(0.0f);
+    right.fill(0.0f);
+    EXPECT_TRUE(host.beginAudioBlock(4, position));
+    host.processAudioBlock(outputs, 2, 4, 1.0f);
+    for (int sample = 0; sample < 4; ++sample) {
+        EXPECT_TRUE(std::abs(
+            left[static_cast<std::size_t>(sample)])
+            < 0.00001f);
+    }
+    return true;
+}
+
+bool testVst3LoopSegmentsAndPlayHead()
+{
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
+    FakePluginState instrument;
+    instrument.outputLevel = 0.2f;
+    FakePluginState latencyAnchor;
+    latencyAnchor.outputLevel = 0.0f;
+    juce::String error;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        1,
+        std::make_unique<FakeInstrumentInstance>(
+            instrument,
+            0,
+            "Loop Recorder"),
+        makeFakePluginDescription(
+            "Loop Recorder",
+            421),
+        error));
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        99,
+        std::make_unique<FakeInstrumentInstance>(
+            latencyAnchor,
+            4,
+            "Latency Anchor"),
+        makeFakePluginDescription(
+            "Latency Anchor",
+            422),
+        error));
+
+    ProjectModel project;
+    const auto trackId =
+        project.addTrack(
+            TrackType::midi,
+            "Loop MIDI").id;
+    project.findTrackById(trackId)->midiNotes = {
+        makeMidiNote(60, 100, 0.0, 1.0, 3)
+    };
+    auto snapshot =
+        dawhermes::audio::createProjectPlaybackSnapshot(
+            project);
+    EXPECT_TRUE(snapshot.ok);
+
+    dawhermes::audio::MidiAuditionEngine engine(&host);
+    engine.prepareForOfflineTesting(1000.0);
+    engine.setVolume(1.0f);
+    engine.setProjectRoutingState(
+        dawhermes::core::createProjectRoutingState(
+            project));
+    std::string playbackError;
+    EXPECT_TRUE(engine.startPlayback(
+        std::move(snapshot.snapshot),
+        0.01,
+        playbackError));
+    engine.setTimelineLoop(
+        dawhermes::core::TimelineLoopRange {
+            0.02,
+            0.04
+        },
+        true);
+
+    std::array<float, 25> left {};
+    std::array<float, 25> right {};
+    engine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        17);
+    EXPECT_EQ(instrument.processCount, 2);
+    EXPECT_EQ(
+        instrument.processBlockSizes,
+        std::vector<int>({ 10, 7 }));
+    EXPECT_EQ(
+        instrument.playHeadSamplePositions,
+        std::vector<std::int64_t>({ 10, 10 }));
+    EXPECT_EQ(
+        instrument.noteOnOffsets,
+        std::vector<int>({ 0, 0 }));
+    for (const auto ppq : instrument.playHeadPpqs) {
+        EXPECT_TRUE(std::abs(ppq - 0.02) < 0.0001);
+    }
+    for (int sample = 10; sample < 14; ++sample) {
+        EXPECT_TRUE(std::abs(
+            left[static_cast<std::size_t>(sample)])
+            < 0.00001f);
+    }
+    EXPECT_TRUE(std::abs(left[14]) > 0.01f);
+
+    instrument.processCount = 0;
+    instrument.processBlockSizes.clear();
+    instrument.playHeadSamplePositions.clear();
+    instrument.playHeadPpqs.clear();
+    instrument.noteOnOffsets.clear();
+    engine.seekTo(0.01);
+    left.fill(0.0f);
+    right.fill(0.0f);
+    engine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        25);
+    EXPECT_EQ(instrument.processCount, 3);
+    EXPECT_EQ(
+        instrument.processBlockSizes,
+        std::vector<int>({ 10, 10, 5 }));
+    EXPECT_EQ(
+        instrument.playHeadSamplePositions,
+        std::vector<std::int64_t>({ 10, 10, 10 }));
+    EXPECT_EQ(
+        instrument.noteOnOffsets,
+        std::vector<int>({ 0, 0, 0 }));
+    for (const auto ppq : instrument.playHeadPpqs) {
+        EXPECT_TRUE(std::abs(ppq - 0.02) < 0.0001);
+    }
+    for (const auto start :
+         std::array<int, 3> { 0, 10, 20 }) {
+        for (int sample = start;
+             sample < std::min(start + 4, 25);
+             ++sample) {
+            EXPECT_TRUE(std::abs(
+                left[static_cast<std::size_t>(sample)])
+                < 0.00001f);
+        }
+    }
+    EXPECT_TRUE(std::abs(left[4]) > 0.01f);
+    EXPECT_TRUE(std::abs(left[14]) > 0.01f);
+    EXPECT_TRUE(std::abs(left[24]) > 0.01f);
+    return true;
+}
+
+bool testVst3DryDelayDiscontinuities()
+{
+    const auto makePulseSnapshot = []() {
+        dawhermes::audio::SelectionPlaybackSnapshot snapshot;
+        dawhermes::audio::AudioStemPlaybackSnapshot stem;
+        stem.sourceTrackId = 1;
+        stem.sourceTrackName = "Pulse";
+        stem.sourceSampleRate = 1000.0;
+        stem.frameCount = 100;
+        stem.channels = {
+            std::vector<float>(100, 0.0f)
+        };
+        stem.channels[0][0] = 0.5f;
+        snapshot.audioStems.push_back(std::move(stem));
+        snapshot.durationSeconds = 0.1;
+        return snapshot;
+    };
+
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
+    FakePluginState latencyAnchor;
+    latencyAnchor.outputLevel = 0.0f;
+    juce::String error;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        99,
+        std::make_unique<FakeInstrumentInstance>(
+            latencyAnchor,
+            4,
+            "Latency Anchor"),
+        makeFakePluginDescription(
+            "Latency Anchor",
+            431),
+        error));
+    dawhermes::audio::MidiAuditionEngine engine(&host);
+    engine.prepareForOfflineTesting(1000.0);
+    engine.setVolume(1.0f);
+    dawhermes::core::ProjectRoutingState routing;
+    routing.audibleTrackIds = { 1 };
+    engine.setProjectRoutingState(std::move(routing));
+
+    std::array<float, 8> left {};
+    std::array<float, 8> right {};
+    std::string playbackError;
+    const auto expectSilent = [&]() {
+        for (int sample = 0; sample < 4; ++sample) {
+            if (std::abs(
+                    left[static_cast<std::size_t>(sample)])
+                >= 0.00001f) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    EXPECT_TRUE(engine.startPlayback(
+        makePulseSnapshot(),
+        playbackError));
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 2);
+    engine.stop();
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 1);
+    EXPECT_TRUE(engine.startPlayback(
+        makePulseSnapshot(),
+        playbackError));
+    left.fill(0.0f);
+    right.fill(0.0f);
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 4);
+    EXPECT_TRUE(expectSilent());
+
+    engine.stop();
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 1);
+    EXPECT_TRUE(engine.startPlayback(
+        makePulseSnapshot(),
+        playbackError));
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 2);
+    engine.seekTo(0.02);
+    left.fill(0.0f);
+    right.fill(0.0f);
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 4);
+    EXPECT_TRUE(expectSilent());
+
+    engine.stop();
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 1);
+    EXPECT_TRUE(engine.startPlayback(
+        makePulseSnapshot(),
+        playbackError));
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 2);
+    engine.pause();
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 1);
+    EXPECT_TRUE(engine.resume(playbackError));
+    left.fill(0.0f);
+    right.fill(0.0f);
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 4);
+    EXPECT_TRUE(expectSilent());
+
+    engine.stop();
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 1);
+    EXPECT_TRUE(engine.startPlayback(
+        makePulseSnapshot(),
+        playbackError));
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 2);
+    FakePluginState replacement;
+    replacement.outputLevel = 0.0f;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        99,
+        std::make_unique<FakeInstrumentInstance>(
+            replacement,
+            4,
+            "Replacement Anchor"),
+        makeFakePluginDescription(
+            "Replacement Anchor",
+            432),
+        error));
+    left.fill(0.0f);
+    right.fill(0.0f);
+    engine.renderOfflineForTesting(
+        left.data(), right.data(), 4);
+    EXPECT_TRUE(expectSilent());
+    return true;
+}
+
+bool testVst3DeviceReprepareFailureFallsBack()
+{
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
+    host.prepareDevice(48000.0, 64);
+
+    FakePluginState failing;
+    failing.throwOnPrepareCall = 2;
+    juce::String error;
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        42,
+        std::make_unique<FakeInstrumentInstance>(
+            failing,
+            0,
+            "Device Sensitive"),
+        makeFakePluginDescription(
+            "Device Sensitive",
+            301),
+        error));
+    EXPECT_TRUE(host.hasInstrument(42));
+
+    host.prepareDevice(44100.0, 128);
+    EXPECT_TRUE(!host.hasInstrument(42));
+    EXPECT_EQ(
+        host.activeInstanceCount(),
+        static_cast<std::size_t>(0));
+    const auto failures =
+        host.takeRuntimeFailures();
+    EXPECT_EQ(
+        failures.size(),
+        static_cast<std::size_t>(1));
+    EXPECT_EQ(
+        failures.front().trackId,
+        static_cast<std::uint64_t>(42));
+    EXPECT_EQ(
+        failures.front().instrumentName,
+        juce::String("Device Sensitive"));
+    EXPECT_TRUE(failures.front().reason.isNotEmpty());
+    EXPECT_TRUE(host.takeRuntimeFailures().empty());
+    return true;
+}
+
+bool testVst3WholeProjectRoutingAndFallback()
+{
+    TemporaryPluginSettings temporarySettings;
+    dawhermes::plugins::Vst3InstrumentHost host(
+        temporarySettings.settings.get());
+    FakePluginState pluginState;
+    juce::String error;
+    const auto description =
+        makeFakePluginDescription("Project Fake", 202);
+    EXPECT_TRUE(host.installPreparedInstanceForTesting(
+        1,
+        std::make_unique<FakeInstrumentInstance>(
+            pluginState,
+            0),
+        description,
+        error));
+
+    ProjectModel project;
+    const auto pluginTrackId =
+        project.addTrack(TrackType::midi, "Plugin").id;
+    const auto internalTrackId =
+        project.addTrack(TrackType::midi, "Internal").id;
+    EXPECT_EQ(pluginTrackId, static_cast<std::uint64_t>(1));
+    project.findTrackById(pluginTrackId)->midiNotes = {
+        makeMidiNote(60, 100, 0.0, 2.0, 3)
+    };
+    project.findTrackById(internalTrackId)->midiNotes = {
+        makeMidiNote(67, 90, 0.0, 2.0, 5)
+    };
+    dawhermes::core::InstrumentAssignment assignment;
+    assignment.kind = dawhermes::core::InstrumentKind::vst3;
+    assignment.pluginIdentifier =
+        description.createIdentifierString().toStdString();
+    assignment.pluginName = "Project Fake";
+    EXPECT_TRUE(project.setInstrumentAssignment(
+        pluginTrackId,
+        assignment));
+
+    auto snapshot =
+        dawhermes::audio::createProjectPlaybackSnapshot(
+            project);
+    EXPECT_TRUE(snapshot.ok);
+    dawhermes::audio::MidiAuditionEngine engine(&host);
+    engine.prepareForOfflineTesting(1000.0);
+    engine.setProjectRoutingState(
+        dawhermes::core::createProjectRoutingState(project));
+    std::string playbackError;
+    EXPECT_TRUE(engine.startPlayback(
+        std::move(snapshot.snapshot),
+        playbackError));
+    std::array<float, 64> left {};
+    std::array<float, 64> right {};
+    engine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        static_cast<int>(left.size()));
+    EXPECT_EQ(pluginState.noteOnCount, 1);
+    EXPECT_EQ(pluginState.lastChannel, 3);
+    EXPECT_EQ(
+        engine.activeVoiceCountForTesting(),
+        static_cast<std::size_t>(1));
+
+    EXPECT_TRUE(project.setTrackMuted(pluginTrackId, true));
+    engine.setProjectRoutingState(
+        dawhermes::core::createProjectRoutingState(project));
+    engine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        1);
+    EXPECT_TRUE(!pluginState.active);
+
+    EXPECT_TRUE(project.setTrackMuted(pluginTrackId, false));
+    engine.setProjectRoutingState(
+        dawhermes::core::createProjectRoutingState(project));
+    engine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        1);
+    EXPECT_TRUE(pluginState.active);
+
+    const auto resetsBeforeLoop =
+        pluginState.resetCount;
+    engine.setTimelineLoop(
+        dawhermes::core::TimelineLoopRange {
+            0.0,
+            0.1
+        },
+        true);
+    engine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        64);
+    EXPECT_TRUE(pluginState.resetCount > resetsBeforeLoop);
+
+    engine.pause();
+    engine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        1);
+    EXPECT_TRUE(!pluginState.active);
+
+    host.useInternalSynth(pluginTrackId);
+    auto fallbackSnapshot =
+        dawhermes::audio::createProjectPlaybackSnapshot(
+            project);
+    EXPECT_TRUE(fallbackSnapshot.ok);
+    engine.stop();
+    engine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        1);
+    EXPECT_TRUE(engine.startPlayback(
+        std::move(fallbackSnapshot.snapshot),
+        playbackError));
+    engine.renderOfflineForTesting(
+        left.data(),
+        right.data(),
+        1);
+    EXPECT_EQ(
+        engine.activeVoiceCountForTesting(),
+        static_cast<std::size_t>(2));
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[])
@@ -6595,6 +7843,18 @@ int main(int argc, char* argv[])
         { "Whole-project playback snapshot and tempo policy", testProjectPlaybackSnapshotAndTempoPolicy },
         { "Project Mute/Solo routing rules", testProjectMuteSoloRoutingRules },
         { "Timeline loop model and offline playback", testTimelineLoopModelAndOfflinePlayback },
+        { "VST3 instrument assignment model", testVst3InstrumentAssignmentModel },
+        { "VST3 catalog filtering and ordering", testVst3CatalogFilteringAndOrdering },
+        { "VST3 catalog startup and settings safety", testVst3CatalogStartupAndSettingsSafety },
+        { "VST3 dead-man recovery planning", testVst3DeadManRecoveryPlanning },
+        { "VST3 plugin position info", testVst3PluginPositionInfo },
+        { "VST3 independent runtime and latency", testVst3IndependentRuntimeAndLatency },
+        { "VST3 audibility and exact block lengths", testVst3AudibilityAndExactBlockLengths },
+        { "VST3 plugin delay reset", testVst3PluginDelayReset },
+        { "VST3 Loop segments and playhead", testVst3LoopSegmentsAndPlayHead },
+        { "VST3 dry delay discontinuities", testVst3DryDelayDiscontinuities },
+        { "VST3 device reprepare failure fallback", testVst3DeviceReprepareFailureFallsBack },
+        { "VST3 whole-project routing and fallback", testVst3WholeProjectRoutingAndFallback },
         { "WAV BPM octave candidate selection", testWavBpmOctaveCandidateSelection },
         { "WAV BPM detection and source safety", testWavBpmDetectionAndSourceSafety },
         { "WAV BPM cache reuse and invalidation", testWavBpmCacheReuseAndInvalidation },

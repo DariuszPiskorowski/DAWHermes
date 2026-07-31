@@ -485,6 +485,16 @@ SelectionPlaybackSnapshotResult createSelectionPlaybackSnapshot(
         midiTrack,
         options,
         result.snapshot.tempoSource);
+    if (midiTrack != nullptr
+        && midiTrack->midiSourceMetadata.has_value()) {
+        result.snapshot.playheadTimeSignatureMap =
+            midiTrack->midiSourceMetadata
+                ->timeSignatureMap;
+    }
+    if (result.snapshot.playheadTimeSignatureMap.empty()) {
+        result.snapshot.playheadTimeSignatureMap.push_back(
+            core::MidiTimeSignatureEvent {});
+    }
 
     if (midiTrack != nullptr) {
         auto midiResult = createMidiPlaybackSnapshot(
@@ -629,6 +639,21 @@ SelectionPlaybackSnapshotResult createProjectPlaybackSnapshot(
         options,
         result.snapshot.tempoSource,
         conflictingTempo);
+    for (const auto& track : project.tracks()) {
+        if (track.type == core::TrackType::midi
+            && track.midiSourceMetadata.has_value()
+            && !track.midiSourceMetadata
+                    ->timeSignatureMap.empty()) {
+            result.snapshot.playheadTimeSignatureMap =
+                track.midiSourceMetadata
+                    ->timeSignatureMap;
+            break;
+        }
+    }
+    if (result.snapshot.playheadTimeSignatureMap.empty()) {
+        result.snapshot.playheadTimeSignatureMap.push_back(
+            core::MidiTimeSignatureEvent {});
+    }
     for (const auto& track : project.tracks()) {
         result.snapshot.projectTrackRoutingIdentity.push_back({
             track.id,

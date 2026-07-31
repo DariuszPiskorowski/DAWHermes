@@ -115,7 +115,8 @@ MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(
             pitch,
             amplitude,
             instanceId,
-            track.id
+            track.id,
+            std::clamp(note.channel, 1, 16)
         });
         result.snapshot.events.push_back(MidiPlaybackEvent {
             midiBeatToSeconds(endBeat, result.snapshot.tempoMap),
@@ -123,7 +124,8 @@ MidiPlaybackSnapshotResult createMidiPlaybackSnapshot(
             pitch,
             0.0f,
             instanceId,
-            track.id
+            track.id,
+            std::clamp(note.channel, 1, 16)
         });
         ++instanceId;
     }

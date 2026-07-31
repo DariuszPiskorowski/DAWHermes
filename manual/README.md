@@ -3,8 +3,9 @@
 Beginner-friendly guide to the currently implemented DAWHermes workflow.
 
 **Language:** English  
-**Application baseline:** Milestone 4.1, commit `ff2b2118cd5bb88196c8a6ea02558c8bc536922a`  
-**Status:** draft for user review
+**Accepted application baseline:** `main`, commit `d5eb2a75fd1a05f759a0f7757df3e72b12b5851a`
+
+**Milestone 5.1 status:** complete and manually accepted
 
 DAWHermes is developing quickly. This manual describes features that are present in the application now. Future workflows are clearly marked as **Planned** and must not be treated as available commands.
 
@@ -18,15 +19,12 @@ The manual is intentionally separate from the developer documentation in `docs/`
 4. [Composer Assistant](04_COMPOSER_ASSISTANT.md)
 5. [BPM, Tempo and Timing](05_BPM_TEMPO_AND_TIMING.md)
 6. [MIDI Editor](06_MIDI_EDITOR.md)
-7. [Hermes Tools](07_HERMES_TOOLS.md)
-8. [Audio Device Settings](08_AUDIO_DEVICE_SETTINGS.md)
-9. [Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md)
-10. [Common Workflows](10_COMMON_WORKFLOWS.md)
-11. [Glossary](11_GLOSSARY.md)
-
-A troubleshooting chapter is deliberately not included yet. It will be added later, after more of the final workflow has been implemented and real user problems have been collected.
-
-A downloadable DOCX edition is also deliberately deferred. It will be generated when DAWHermes is complete or close to completion, so users do not receive a polished but quickly outdated document.
+7. [VST3 Instruments](07_VST3_INSTRUMENTS.md)
+8. [Hermes Tools](08_HERMES_TOOLS.md)
+9. [Audio Device Settings](09_AUDIO_DEVICE_SETTINGS.md)
+10. [Export and File Exchange](10_EXPORT_AND_FILE_EXCHANGE.md)
+11. [Common Workflows](11_COMMON_WORKFLOWS.md)
+12. [Glossary](12_GLOSSARY.md)
 
 ## Quick links
 
@@ -38,12 +36,13 @@ A downloadable DOCX edition is also deliberately deferred. It will be generated 
 - [Read about the planned ACE Studio MCP connection](04_COMPOSER_ASSISTANT.md#planned-ace-studio-connection)
 - [Understand where BPM comes from](05_BPM_TEMPO_AND_TIMING.md#how-dawhermes-chooses-project-tempo)
 - [Edit MIDI notes](06_MIDI_EDITOR.md)
-- [Create drum MIDI with Hermes](07_HERMES_TOOLS.md)
-- [Repair bass MIDI against audio](07_HERMES_TOOLS.md)
-- [Synchronize MIDI with WAV](07_HERMES_TOOLS.md)
-- [Configure the audio output](08_AUDIO_DEVICE_SETTINGS.md)
-- [Export corrected MIDI](09_EXPORT_AND_FILE_EXCHANGE.md)
-- [Read the complete planned DAWHermes–ACE Studio–Cubase workflow](10_COMMON_WORKFLOWS.md#15-use-the-planned-complete-dawhermesace-studiocubase-workflow)
+- [Use a VST3 instrument on a MIDI track](07_VST3_INSTRUMENTS.md)
+- [Create drum MIDI with Hermes](08_HERMES_TOOLS.md)
+- [Repair bass MIDI against audio](08_HERMES_TOOLS.md)
+- [Synchronize MIDI with WAV](08_HERMES_TOOLS.md)
+- [Configure the audio output](09_AUDIO_DEVICE_SETTINGS.md)
+- [Export corrected MIDI](10_EXPORT_AND_FILE_EXCHANGE.md)
+- [Read the complete planned DAWHermes–ACE Studio–Cubase workflow](11_COMMON_WORKFLOWS.md#15-use-the-planned-complete-dawhermesace-studiocubase-workflow)
 
 ## What DAWHermes currently does well
 
@@ -55,6 +54,7 @@ DAWHermes currently provides a focused preparation workspace for:
 - isolating tracks with Mute and Solo;
 - repeatedly auditioning a musical passage with Loop;
 - editing MIDI notes in the Piano Roll;
+- assigning independent VST3 instruments to MIDI tracks for audition;
 - converting drum audio into MIDI with Hermes;
 - repairing bass MIDI against a reference WAV;
 - synchronizing MIDI timing with a WAV reference;
@@ -74,7 +74,6 @@ The following are planned or outside the current application scope:
 
 - recording and input monitoring;
 - mixer faders, pan, effects, sends and buses;
-- VST3 instrument hosting;
 - full Composer Assistant music generation inside DAWHermes;
 - connection to the ACE Studio MCP Server;
 - Hermes Set / Fix BPM processing;

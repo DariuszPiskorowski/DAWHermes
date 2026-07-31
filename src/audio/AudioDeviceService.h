@@ -10,6 +10,7 @@
 #include <juce_data_structures/juce_data_structures.h>
 
 #include "audio/MidiAuditionEngine.h"
+#include "plugins/Vst3InstrumentHost.h"
 
 namespace dawhermes::audio {
 
@@ -80,6 +81,8 @@ public:
     MidiAuditionEngine& playbackEngine() noexcept;
     const MidiAuditionEngine& playbackEngine() const noexcept;
     juce::AudioDeviceManager& deviceManager() noexcept;
+    plugins::Vst3InstrumentHost& instrumentHost() noexcept;
+    const plugins::Vst3InstrumentHost& instrumentHost() const noexcept;
 
     AudioDeviceOpenResult initialize();
     AudioDeviceOpenResult restart();
@@ -103,6 +106,7 @@ private:
 
     juce::PropertiesFile* settings_ { nullptr };
     juce::AudioDeviceManager deviceManager_;
+    plugins::Vst3InstrumentHost instrumentHost_;
     MidiAuditionEngine playbackEngine_;
     bool callbackRegistered_ { false };
     bool initializeHardware_ { true };

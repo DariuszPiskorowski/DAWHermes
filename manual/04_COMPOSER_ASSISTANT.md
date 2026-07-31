@@ -46,7 +46,7 @@ Hermes currently performs tasks such as:
 
 Hermes works from evidence in existing audio and MIDI. Composer Assistant is intended to propose new musical content.
 
-See [Hermes Tools](07_HERMES_TOOLS.md) for the current Hermes workflow.
+See [Hermes Tools](08_HERMES_TOOLS.md) for the current Hermes workflow.
 
 ## Composer Assistant is not the internal MIDI sound
 
@@ -166,7 +166,7 @@ Before implementation, the ACE integration milestone must inspect the installed 
 
 The presence of the MCP switch confirms access, but it does not prove that every desired operation is already exposed.
 
-See [Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md#ace-studio-is-a-planned-first-class-integration) for the wider DAWHermes–ACE Studio–Cubase workflow.
+See [Export and File Exchange](10_EXPORT_AND_FILE_EXCHANGE.md#ace-studio-is-a-planned-first-class-integration) for the wider DAWHermes–ACE Studio–Cubase workflow.
 
 ## ACE Studio remains a separate application
 

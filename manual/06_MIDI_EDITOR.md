@@ -1,6 +1,6 @@
 # 6. MIDI Editor
 
-[Previous: BPM, Tempo and Timing](05_BPM_TEMPO_AND_TIMING.md) | [Back to contents](README.md) | [Next: Hermes Tools](07_HERMES_TOOLS.md)
+[Previous: BPM, Tempo and Timing](05_BPM_TEMPO_AND_TIMING.md) | [Back to contents](README.md) | [Next: VST3 Instruments](07_VST3_INSTRUMENTS.md)
 
 ## What the MIDI editor is
 
@@ -303,7 +303,7 @@ Large note edits may become audible after playback is prepared again. Mute/Solo 
 
 Export uses the edited notes currently held in DAWHermes. It does not re-read or overwrite the original MIDI file.
 
-More detail is available in [Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md).
+More detail is available in [Export and File Exchange](10_EXPORT_AND_FILE_EXCHANGE.md).
 
 ## Important limitations
 
@@ -324,4 +324,4 @@ The current styling is functional rather than final.
 
 ---
 
-[Previous: BPM, Tempo and Timing](05_BPM_TEMPO_AND_TIMING.md) | [Back to contents](README.md) | [Next: Hermes Tools](07_HERMES_TOOLS.md)
+[Previous: BPM, Tempo and Timing](05_BPM_TEMPO_AND_TIMING.md) | [Back to contents](README.md) | [Next: VST3 Instruments](07_VST3_INSTRUMENTS.md)

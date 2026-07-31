@@ -1,4 +1,4 @@
-# UI Reference Map (Milestones 3.1-4.1)
+# UI Reference Map (Milestones 3.1-5.1)
 
 This document captures the structural UI alignment and visual-analysis surfaces active in Milestone 3.1.
 
@@ -140,7 +140,19 @@ Completed and manually accepted Milestone 4.1 surfaces:
 - ruler click seeks, drag creates/resizes/moves, and right-click explicitly
   offers `Clear Loop Range`;
 - Loop remains visible when disabled and repeats inside the audio callback;
-- no Record, arming, monitoring, mixer, VST, or audio-edit controls.
+- M4.1 itself added no Record, arming, monitoring, mixer, VST, or
+  audio-edit controls.
+
+Milestone 5.1 surfaces are complete and manually accepted:
+
+- top-level `Plugins -> VST3 Instrument Manager...`;
+- cached instrument list with filter, Scan, Rescan All, progress, current
+  candidate, Cancel Scan and skipped/failed summary;
+- MIDI-track right-click `Instrument` submenu with `Use Internal Audition
+  Synth`, `Select VST3 Instrument...`, and `Open Instrument Editor`;
+- track-row instrument name;
+- one native or generic editor window per assigned track;
+- no automatic scan, dialog or editor opening from track selection.
 
 ## Compare mode
 

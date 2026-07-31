@@ -253,7 +253,7 @@ At present, BPM can be supplied by imported MIDI metadata, estimated from WAV or
 
 ## What to check when tempo seems surprising
 
-Without treating this as a complete troubleshooting guide, verify the musical context:
+To verify the musical context:
 
 - Is there a MIDI track with explicit tempo metadata?
 - Is it the first suitable MIDI track in project order?

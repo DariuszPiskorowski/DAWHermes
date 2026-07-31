@@ -1,6 +1,6 @@
-# 10. Common Workflows
+# 11. Common Workflows
 
-[Previous: Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md) | [Back to contents](README.md) | [Next: Glossary](11_GLOSSARY.md)
+[Previous: Export and File Exchange](10_EXPORT_AND_FILE_EXCHANGE.md) | [Back to contents](README.md) | [Next: Glossary](12_GLOSSARY.md)
 
 This chapter combines individual DAWHermes functions into complete musical tasks.
 
@@ -310,7 +310,7 @@ The following steps are not implemented yet:
 
 ACE Studio is a major planned integration but remains optional for each user. It is installed and licensed separately and must not become a hidden requirement for using the rest of DAWHermes.
 
-See [Composer Assistant](04_COMPOSER_ASSISTANT.md#planned-ace-studio-connection) and [Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md#ace-studio-is-a-planned-first-class-integration).
+See [Composer Assistant](04_COMPOSER_ASSISTANT.md#planned-ace-studio-connection) and [Export and File Exchange](10_EXPORT_AND_FILE_EXCHANGE.md#ace-studio-is-a-planned-first-class-integration).
 
 # Workflow principles
 
@@ -330,4 +330,4 @@ Across all workflows, remember:
 
 ---
 
-[Previous: Export and File Exchange](09_EXPORT_AND_FILE_EXCHANGE.md) | [Back to contents](README.md) | [Next: Glossary](11_GLOSSARY.md)
+[Previous: Export and File Exchange](10_EXPORT_AND_FILE_EXCHANGE.md) | [Back to contents](README.md) | [Next: Glossary](12_GLOSSARY.md)

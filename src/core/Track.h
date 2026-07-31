@@ -78,6 +78,20 @@ struct AudioSourceMetadata {
     bool operator==(const AudioSourceMetadata& other) const = default;
 };
 
+enum class InstrumentKind {
+    internalSynth,
+    vst3
+};
+
+struct InstrumentAssignment {
+    InstrumentKind kind { InstrumentKind::internalSynth };
+    std::string pluginIdentifier;
+    std::string pluginName;
+    std::string pluginManufacturer;
+
+    bool operator==(const InstrumentAssignment& other) const = default;
+};
+
 struct Track {
     std::uint64_t id{};
     std::string name;
@@ -89,6 +103,7 @@ struct Track {
     std::optional<AudioSourceMetadata> audioSourceMetadata;
     std::vector<MidiNote> midiNotes;
     std::optional<MidiSourceMetadata> midiSourceMetadata;
+    InstrumentAssignment instrument;
     std::string generatedGroupId;
 };
 

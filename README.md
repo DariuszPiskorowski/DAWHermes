@@ -14,7 +14,7 @@ The manual is written in English for musicians rather than developers. It explai
 
 ## Current status
 
-The stable application is complete, published and manually accepted through **Milestone 4.1**.
+The stable `main` application is complete, published and manually accepted through **Milestone 4.1**. **Milestone 5.1 is complete and manually accepted on its milestone branch.**
 
 Current accepted milestones include:
 
@@ -24,7 +24,15 @@ Current accepted milestones include:
 - M3.2: MIDI note editing and selected-track MIDI export;
 - M3.3: functional MIDI audition;
 - M3.4: synchronized MIDI/WAV playback, transport and WAV BPM analysis;
-- M4.1: central audio-device configuration, whole-project playback, live hierarchical Mute/Solo and Timeline Loop work region.
+- M4.1: central audio-device configuration, whole-project playback, live hierarchical Mute/Solo and Timeline Loop work region;
+- M5.1: per-MIDI-track VST3 instrument hosting with deliberate scanning, independent instances, fallback, editors and latency compensation.
+
+Milestone 5.1 adds:
+
+- a persistent, deliberate-scan VST3 instrument catalog with crash recovery;
+- one independent VST3 instrument or the Internal Audition Synth per MIDI track;
+- whole-project VST3 MIDI routing, transport playhead information and bounded latency compensation;
+- native or generic plugin editors and safe audio-device restart handling.
 
 Currently implemented:
 
@@ -45,6 +53,9 @@ Currently implemented:
 - Play, Pause/resume, Stop, five-second seeking, Master Volume, BPM, counter and shared Timeline/Piano Roll playheads;
 - live hierarchical track/group Mute and Solo;
 - visible beat-coordinate Timeline Loop creation, resize, move, clear and callback-level wrapping;
+- **Plugins -> VST3 Instrument Manager...** with cached, filtered, cancellable deliberate scans;
+- per-MIDI-track VST3 assignment and independent instrument instances;
+- synchronized VST3/Internal Synth/WAV playback with live routing and latency compensation;
 - Unicode-safe Windows WAV paths;
 - bounded WAV BPM estimation with half-time/double-time candidate handling and a 128-entry session cache;
 - 512 MiB aggregate decoded-audio limit per immutable playback snapshot;
@@ -63,7 +74,6 @@ Not implemented yet:
 - recording, input monitoring or track arming;
 - mixer faders, pan, effects, sends or buses;
 - Hermes Set / Fix BPM processing;
-- VST3 hosting;
 - full Composer Assistant music generation and MIDI insertion;
 - DAWHermes connection to the ACE Studio MCP Server;
 - project save/load format;
@@ -102,7 +112,7 @@ ACE Studio remains a separate commercial application. It is not bundled with DAW
 
 The open-source ACE-Step model is a separate project and is not a free edition of ACE Studio.
 
-See the [Composer Assistant chapter](manual/04_COMPOSER_ASSISTANT.md#planned-ace-studio-connection) and [Export and File Exchange](manual/09_EXPORT_AND_FILE_EXCHANGE.md#ace-studio-is-a-planned-first-class-integration).
+See the [Composer Assistant chapter](manual/04_COMPOSER_ASSISTANT.md#planned-ace-studio-connection) and [Export and File Exchange](manual/10_EXPORT_AND_FILE_EXCHANGE.md#ace-studio-is-a-planned-first-class-integration).
 
 ## Related projects
 
@@ -291,6 +301,7 @@ The application is divided into:
 - `app` - lifecycle and application wiring;
 - `core` - project and track models;
 - `audio` - central device ownership, immutable project playback preparation, WAV import/BPM analysis, live routing and callback transport rendering;
+- `plugins` - VST3 instrument catalog, scan recovery, application-lifetime runtime instances, playhead delivery, editor ownership and latency layout;
 - `midi` - testable selected-track MIDI export;
 - `ui` - JUCE desktop interface;
 - `hermes` - neutral integration contracts and embedded engine implementation;

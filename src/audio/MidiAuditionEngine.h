@@ -14,11 +14,16 @@
 #include "core/TimelineLoop.h"
 #include "core/TrackRouting.h"
 
+namespace dawhermes::plugins {
+class Vst3InstrumentHost;
+}
+
 namespace dawhermes::audio {
 
 class MidiAuditionEngine final : public juce::AudioIODeviceCallback {
 public:
-    MidiAuditionEngine() = default;
+    explicit MidiAuditionEngine(
+        plugins::Vst3InstrumentHost* instrumentHost = nullptr);
     ~MidiAuditionEngine() override;
 
     MidiAuditionEngine(const MidiAuditionEngine&) = delete;
@@ -108,13 +113,21 @@ private:
     bool isTrackAudible(std::uint64_t trackId) const noexcept;
     void reconstructVoices(
         const MidiPlaybackEvent* events,
-        std::size_t count) noexcept;
+        std::size_t count,
+        int sampleOffset = 0) noexcept;
     void clearVoices() noexcept;
     void startVoice(const MidiPlaybackEvent& event) noexcept;
     void releaseVoice(std::uint64_t noteInstanceId) noexcept;
     float renderVoices() noexcept;
     StereoSample renderAudioStems(double transportSeconds) const noexcept;
     bool hasActiveVoices() const noexcept;
+    void handleMidiEvent(
+        const MidiPlaybackEvent& event,
+        int sampleOffset) noexcept;
+    StereoSample delayDryMix(
+        StereoSample input,
+        int delaySamples) noexcept;
+    void resetDryDelay() noexcept;
 
     void audioDeviceIOCallbackWithContext(
         const float* const* inputChannelData,
@@ -160,6 +173,11 @@ private:
     double testTonePhase_ { 0.0 };
     float releaseMultiplier_ { 0.99f };
     std::array<Voice, 64> voices_ {};
+    plugins::Vst3InstrumentHost* instrumentHost_ { nullptr };
+    std::array<std::vector<float>, 2> dryDelay_;
+    std::size_t dryDelayWrite_ { 0 };
+    std::size_t dryDelayValidSamples_ { 0 };
+    std::uint64_t activeInstrumentGeneration_ { 0 };
 };
 
 }  // namespace dawhermes::audio

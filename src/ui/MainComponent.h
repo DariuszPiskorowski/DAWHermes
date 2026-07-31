@@ -74,6 +74,10 @@ private:
         commandAudioTestOutput,
         commandAudioRestart,
         commandAudioStatus,
+        commandVst3Manager,
+        commandUseInternalSynth,
+        commandSelectVst3Instrument,
+        commandOpenInstrumentEditor,
         commandAbout,
         commandHermesDrumsMakeMidi,
         commandHermesDrumMapping,
@@ -152,6 +156,10 @@ private:
     void testAudioOutput();
     void restartAudioDevice();
     void showAudioDeviceStatus();
+    void showVst3InstrumentManager();
+    void useInternalSynthForSelectedTrack();
+    void selectVst3InstrumentForSelectedTrack();
+    void openSelectedInstrumentEditor();
     void publishProjectRouting();
     void setLoopRange(
         std::optional<core::TimelineLoopRange> range);
@@ -229,6 +237,7 @@ private:
 
     juce::ApplicationProperties& applicationProperties_;
     audio::AudioDeviceService& audioDeviceService_;
+    plugins::Vst3InstrumentHost& instrumentHost_;
     std::unique_ptr<hermes::HermesJobRunner> hermesJobRunner_;
     hermes::ComposerAssistantConnector composerConnector_;
     hermes::ComposerAssistantSettings composerSettings_;

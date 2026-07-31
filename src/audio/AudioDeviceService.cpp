@@ -178,6 +178,8 @@ AudioDeviceService::AudioDeviceService(
     juce::PropertiesFile* settings,
     bool initializeHardware)
     : settings_(settings),
+      instrumentHost_(settings),
+      playbackEngine_(&instrumentHost_),
       initializeHardware_(initializeHardware)
 {
     deviceManager_.addChangeListener(this);
@@ -216,6 +218,18 @@ juce::AudioDeviceManager&
 AudioDeviceService::deviceManager() noexcept
 {
     return deviceManager_;
+}
+
+plugins::Vst3InstrumentHost&
+AudioDeviceService::instrumentHost() noexcept
+{
+    return instrumentHost_;
+}
+
+const plugins::Vst3InstrumentHost&
+AudioDeviceService::instrumentHost() const noexcept
+{
+    return instrumentHost_;
 }
 
 AudioDeviceOpenResult AudioDeviceService::initialize()

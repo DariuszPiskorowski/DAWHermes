@@ -171,6 +171,26 @@ bool ProjectModel::setTrackSoloed(std::uint64_t id, bool soloed)
     return true;
 }
 
+bool ProjectModel::setInstrumentAssignment(
+    std::uint64_t id,
+    InstrumentAssignment assignment)
+{
+    auto* track = findTrackById(id);
+    if (track == nullptr || track->type != TrackType::midi) {
+        return false;
+    }
+    if (assignment.kind == InstrumentKind::vst3
+        && (assignment.pluginIdentifier.empty()
+            || assignment.pluginName.empty())) {
+        return false;
+    }
+    if (assignment.kind == InstrumentKind::internalSynth) {
+        assignment = {};
+    }
+    track->instrument = std::move(assignment);
+    return true;
+}
+
 std::uint64_t ProjectModel::allocateMidiNoteId()
 {
     while (nextMidiNoteId_ == 0 || isMidiNoteIdInUse(nextMidiNoteId_)) {

@@ -25,6 +25,9 @@ public:
     bool setGeneratedGroupId(std::uint64_t id, std::string groupId);
     bool setTrackMuted(std::uint64_t id, bool muted);
     bool setTrackSoloed(std::uint64_t id, bool soloed);
+    bool setInstrumentAssignment(
+        std::uint64_t id,
+        InstrumentAssignment assignment);
 
     std::uint64_t allocateMidiNoteId();
     bool repairMidiNoteIds(std::uint64_t trackId);

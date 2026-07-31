@@ -1,6 +1,6 @@
-# 7. Hermes Tools
+# 8. Hermes Tools
 
-[Previous: MIDI Editor](06_MIDI_EDITOR.md) | [Back to contents](README.md) | [Next: Audio Device Settings](08_AUDIO_DEVICE_SETTINGS.md)
+[Previous: VST3 Instruments](07_VST3_INSTRUMENTS.md) | [Back to contents](README.md) | [Next: Audio Device Settings](09_AUDIO_DEVICE_SETTINGS.md)
 
 ## What Hermes is
 
@@ -414,4 +414,4 @@ They create new project MIDI results and do not overwrite the selected WAV or so
 
 ---
 
-[Previous: MIDI Editor](06_MIDI_EDITOR.md) | [Back to contents](README.md) | [Next: Audio Device Settings](08_AUDIO_DEVICE_SETTINGS.md)
+[Previous: VST3 Instruments](07_VST3_INSTRUMENTS.md) | [Back to contents](README.md) | [Next: Audio Device Settings](09_AUDIO_DEVICE_SETTINGS.md)

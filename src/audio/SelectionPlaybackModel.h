@@ -56,6 +56,8 @@ struct SelectionPlaybackSnapshot {
     std::vector<ProjectPlaybackTrackIdentity>
         projectTrackRoutingIdentity;
     std::vector<core::MidiTempoEvent> playheadTempoMap;
+    std::vector<core::MidiTimeSignatureEvent>
+        playheadTimeSignatureMap;
     PlaybackTempoSource tempoSource { PlaybackTempoSource::fallback };
     double durationSeconds { 0.0 };
 
