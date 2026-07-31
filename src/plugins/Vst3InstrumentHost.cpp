@@ -4,6 +4,8 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "core/TrackRouting.h"
+
 namespace dawhermes::plugins {
 
 namespace {
@@ -113,7 +115,8 @@ public:
                     + blockSize + 1),
                 0.0f);
         }
-        delayWrite_ = 0;
+        preparedCapacity_ = blockSize;
+        resetDelay();
 
         instance_->prepareToPlay(
             std::max(1.0, sampleRate),
@@ -139,20 +142,44 @@ public:
         }
     }
 
-    void beginBlock(
+    bool beginBlock(
         int numSamples,
-        const juce::AudioPlayHead::PositionInfo& position) noexcept
+        const juce::AudioPlayHead::PositionInfo& position,
+        bool audible,
+        bool resetLatency) noexcept
     {
-        const auto samples =
-            std::clamp(numSamples, 0, scratch_.getNumSamples());
-        scratch_.clear(0, samples);
         midi_.clear();
         midiEventCount_ = 0;
         playHead_.setPosition(position);
+        const auto audibilityChanged = audible_ != audible;
+        audible_ = audible;
+        if (resetLatency || audibilityChanged) {
+            resetDelay();
+        }
+        if (numSamples < 0
+            || numSamples > preparedCapacity_) {
+            blockValid_ = false;
+            currentBlockSamples_ = 0;
+            return false;
+        }
+        scratch_.setSize(
+            outputChannels_,
+            numSamples,
+            false,
+            true,
+            true);
+        scratch_.clear();
+        currentBlockSamples_ = numSamples;
+        blockValid_ = true;
+        if (audibilityChanged) {
+            reset(0);
+        }
+        return true;
     }
 
     void reset(int sampleOffset) noexcept
     {
+        resetDelay();
         for (int channel = 1; channel <= 16; ++channel) {
             if (midiEventCount_ + 2
                 > kMaximumMidiEventsPerPluginBlock) {
@@ -160,10 +187,10 @@ public:
             }
             midi_.addEvent(
                 juce::MidiMessage::allNotesOff(channel),
-                sampleOffset);
+                safeSampleOffset(sampleOffset));
             midi_.addEvent(
                 juce::MidiMessage::allSoundOff(channel),
-                sampleOffset);
+                safeSampleOffset(sampleOffset));
             midiEventCount_ += 2;
         }
     }
@@ -191,7 +218,7 @@ public:
                 : juce::MidiMessage::noteOff(
                       safeChannel,
                       safePitch),
-            sampleOffset);
+            safeSampleOffset(sampleOffset));
         ++midiEventCount_;
     }
 
@@ -201,12 +228,20 @@ public:
         int numSamples,
         int maximumLatency,
         float masterGain,
-        bool addToOutput) noexcept
+        bool addToOutput,
+        int outputOffset) noexcept
     {
-        const auto samples =
-            std::clamp(numSamples, 0, scratch_.getNumSamples());
+        if (!blockValid_
+            || numSamples != currentBlockSamples_
+            || numSamples < 0
+            || numSamples > preparedCapacity_) {
+            resetDelay();
+            return;
+        }
+        const auto samples = numSamples;
         instance_->processBlock(scratch_, midi_);
-        if (!addToOutput) {
+        if (!addToOutput || !audible_) {
+            resetDelay();
             return;
         }
         const auto compensation = std::clamp(
@@ -233,12 +268,28 @@ public:
                             outputChannels_ - 1),
                         sample);
                 if (outputs[channel] != nullptr) {
-                    outputs[channel][sample] +=
-                        delay[read] * masterGain;
+                    const auto delayed =
+                        compensation == 0
+                            || delayValidSamples_
+                                   >= static_cast<std::size_t>(
+                                       compensation)
+                        ? delay[read]
+                        : 0.0f;
+                    outputs[channel][outputOffset + sample] +=
+                        delayed * masterGain;
                 }
             }
             delayWrite_ = (delayWrite_ + 1U) % size;
+            delayValidSamples_ = std::min(
+                delayValidSamples_ + 1U,
+                size);
         }
+    }
+
+    void resetDelay() noexcept
+    {
+        delayWrite_ = 0;
+        delayValidSamples_ = 0;
     }
 
     std::uint64_t trackId() const noexcept { return trackId_; }
@@ -262,6 +313,16 @@ public:
     juce::AudioPluginInstance& instance() noexcept { return *instance_; }
 
 private:
+    int safeSampleOffset(int sampleOffset) const noexcept
+    {
+        return currentBlockSamples_ <= 0
+            ? 0
+            : std::clamp(
+                  sampleOffset,
+                  0,
+                  currentBlockSamples_ - 1);
+    }
+
     std::uint64_t trackId_ { 0 };
     std::unique_ptr<juce::AudioPluginInstance> instance_;
     juce::PluginDescription description_;
@@ -271,9 +332,14 @@ private:
     std::size_t midiEventCount_ { 0 };
     std::array<std::vector<float>, 2> delay_;
     std::size_t delayWrite_ { 0 };
+    std::size_t delayValidSamples_ { 0 };
     std::atomic<int> latencySamples_ { 0 };
+    int preparedCapacity_ { 0 };
+    int currentBlockSamples_ { 0 };
     int outputChannels_ { 2 };
     bool prepared_ { false };
+    bool blockValid_ { false };
+    bool audible_ { true };
 };
 
 class Vst3InstrumentHost::EditorWindow final
@@ -538,19 +604,39 @@ void Vst3InstrumentHost::closeAllEditors()
     editorWindows_.clear();
 }
 
-void Vst3InstrumentHost::beginAudioBlock(
+bool Vst3InstrumentHost::beginAudioBlock(
     int numSamples,
-    const PluginTransportPosition& position) noexcept
+    const PluginTransportPosition& position,
+    const core::ProjectRoutingState* routing,
+    bool resetLatency) noexcept
 {
     const auto requested =
         requestedRegistry_.load(std::memory_order_acquire);
+    const auto generation =
+        requestedGeneration_.load(std::memory_order_acquire);
+    const auto registryChanged =
+        requested != activeRegistry_
+        || generation != activeGeneration_;
     if (requested != activeRegistry_) {
         activeRegistry_ = requested;
     }
-    const auto info = makePluginPositionInfo(position);
-    for (const auto& runtime : activeRegistry_->runtimes) {
-        runtime->beginBlock(numSamples, info);
+    activeGeneration_ = generation;
+    if (activeRegistry_ == nullptr) {
+        return false;
     }
+    const auto info = makePluginPositionInfo(position);
+    auto valid = true;
+    for (const auto& runtime : activeRegistry_->runtimes) {
+        const auto audible = routing == nullptr
+            || routing->isAudible(runtime->trackId());
+        valid = runtime->beginBlock(
+                    numSamples,
+                    info,
+                    audible,
+                    resetLatency || registryChanged)
+            && valid;
+    }
+    return valid;
 }
 
 void Vst3InstrumentHost::resetAllFromAudioThread(
@@ -558,6 +644,16 @@ void Vst3InstrumentHost::resetAllFromAudioThread(
 {
     for (const auto& runtime : activeRegistry_->runtimes) {
         runtime->reset(sampleOffset);
+    }
+}
+
+void Vst3InstrumentHost::resetLatencyFromAudioThread() noexcept
+{
+    if (activeRegistry_ == nullptr) {
+        return;
+    }
+    for (const auto& runtime : activeRegistry_->runtimes) {
+        runtime->resetDelay();
     }
 }
 
@@ -588,8 +684,12 @@ void Vst3InstrumentHost::processAudioBlock(
     int numOutputChannels,
     int numSamples,
     float masterGain,
-    bool addToOutput) noexcept
+    bool addToOutput,
+    int outputOffset) noexcept
 {
+    if (activeRegistry_ == nullptr) {
+        return;
+    }
     const auto maximumLatency =
         activeRegistry_->maximumLatencySamples;
     for (const auto& runtime : activeRegistry_->runtimes) {
@@ -599,13 +699,21 @@ void Vst3InstrumentHost::processAudioBlock(
             numSamples,
             maximumLatency,
             masterGain,
-            addToOutput);
+            addToOutput,
+            std::max(0, outputOffset));
     }
 }
 
 int Vst3InstrumentHost::maximumLatencySamples() const noexcept
 {
     return requestedMaximumLatency_.load(
+        std::memory_order_acquire);
+}
+
+std::uint64_t
+Vst3InstrumentHost::runtimeGeneration() const noexcept
+{
+    return requestedGeneration_.load(
         std::memory_order_acquire);
 }
 
@@ -795,7 +903,9 @@ void Vst3InstrumentHost::publishRegistry(
     requestedRegistry_.store(
         std::move(registry),
         std::memory_order_release);
-    ++requestedGeneration_;
+    requestedGeneration_.fetch_add(
+        1,
+        std::memory_order_release);
 }
 
 }  // namespace dawhermes::plugins

@@ -127,6 +127,7 @@ private:
     StereoSample delayDryMix(
         StereoSample input,
         int delaySamples) noexcept;
+    void resetDryDelay() noexcept;
 
     void audioDeviceIOCallbackWithContext(
         const float* const* inputChannelData,
@@ -175,6 +176,8 @@ private:
     plugins::Vst3InstrumentHost* instrumentHost_ { nullptr };
     std::array<std::vector<float>, 2> dryDelay_;
     std::size_t dryDelayWrite_ { 0 };
+    std::size_t dryDelayValidSamples_ { 0 };
+    std::uint64_t activeInstrumentGeneration_ { 0 };
 };
 
 }  // namespace dawhermes::audio

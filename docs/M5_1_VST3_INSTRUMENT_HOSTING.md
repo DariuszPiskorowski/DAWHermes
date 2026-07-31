@@ -34,6 +34,9 @@ Status: M5.1 complete and manually accepted.
 - Runtime replacement is transactional: the previous playable assignment
   remains active until the replacement instance has been created and prepared.
   Playback is stopped before an assignment changes.
+- Each plugin receives exactly the current contiguous processing-segment
+  length while retaining maximum-capacity scratch storage prepared outside the
+  callback. Oversized segments are rejected without advancing plugin state.
 
 ## MIDI and transport
 
@@ -45,9 +48,15 @@ Status: M5.1 complete and manually accepted.
 - Mute, Solo, Pause, Stop, seek, loop wrap, device restart, assignment changes,
   and shutdown clear or reconstruct plugin notes at the same transport
   boundaries used by the internal synth.
+- Immutable routing state controls each runtime independently. Muted and
+  Solo-excluded instruments may continue processing reset MIDI, but their
+  output is discarded and cannot contribute delayed samples to the master.
 - Each plugin receives a JUCE `AudioPlayHead` position containing play/record
   state, sample and second positions, PPQ position, BPM, time signature, and
   active loop range where available.
+- A callback containing one or more Loop wraps is split into contiguous plugin
+  segments. MIDI offsets are segment-relative and every segment receives the
+  sample, seconds, PPQ, tempo, time-signature, and Loop position at its start.
 
 ## Latency compensation
 
@@ -56,6 +65,10 @@ Status: M5.1 complete and manually accepted.
   are delayed to that maximum.
 - Delay lines are bounded and preallocated. A latency change triggers an
   outside-callback runtime rebuild before a new layout is published.
+- Plugin and dry Internal Synth/WAV delay state is logically cleared without
+  allocation at Stop, Panic, Pause/resume reconstruction, seek, Loop wrap,
+  routing changes, assignment/runtime changes, device reprepare, fallback, and
+  project reset so stale delayed audio cannot reappear.
 
 ## Catalog and crash recovery
 

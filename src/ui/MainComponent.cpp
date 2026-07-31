@@ -4143,7 +4143,7 @@ void MainComponent::showAbout()
     juce::AlertWindow::showMessageBox(
         juce::AlertWindow::InfoIcon,
         "About DAWHermes",
-        "DAWHermes Milestone 5.1\nPer-track VST3 instruments integrated with whole-project MIDI/WAV playback.\nAwaiting manual user acceptance.");
+        "DAWHermes Milestone 5.1\nPer-track VST3 instruments integrated with whole-project MIDI/WAV playback.\nMilestone 5.1 complete and manually accepted.");
 }
 
 }  // namespace dawhermes::ui

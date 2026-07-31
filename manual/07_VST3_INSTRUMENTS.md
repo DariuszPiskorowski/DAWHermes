@@ -79,13 +79,15 @@ VST3 instruments participate in the existing whole-project transport:
 - Play and Pause/resume use the same project clock as MIDI, WAV, Timeline, and
   Piano Roll.
 - Stop, seek, loop wrap, device restart, assignment changes, and shutdown clear
-  or reconstruct held notes.
+  held notes and delayed audio before reconstructing where playback continues.
 - Mute and Solo apply live to plugin tracks using the same hierarchy as other
-  tracks.
+  tracks. An inaudible plugin contributes no sound, including a lingering
+  release or tail, while other audible tracks continue normally.
 - Master Volume controls internal synth, VST3 instruments, and imported WAV
   stems.
 - Plugins receive play state, sample and second position, PPQ position, BPM,
-  time signature, and loop information.
+  time signature, and loop information. A Loop boundary inside an audio block
+  starts a new plugin processing segment at the Loop start.
 - DAWHermes compensates the internal synth, WAV stems, and lower-latency
   instruments to the largest active instrument latency within a bounded
   safeguard.

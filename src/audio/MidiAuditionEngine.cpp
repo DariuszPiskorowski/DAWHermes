@@ -373,11 +373,13 @@ void MidiAuditionEngine::prepareForOfflineTesting(double sampleRate)
                 + offlineBlockSize + 1),
             0.0f);
     }
-    dryDelayWrite_ = 0;
+    resetDryDelay();
     if (instrumentHost_ != nullptr) {
         instrumentHost_->prepareDevice(
             sampleRate_,
             offlineBlockSize);
+        activeInstrumentGeneration_ =
+            instrumentHost_->runtimeGeneration();
     }
     deviceReady_.store(true, std::memory_order_release);
 }
@@ -503,11 +505,26 @@ MidiAuditionEngine::delayDryMix(
     const auto read =
         (dryDelayWrite_ + size - safeDelay) % size;
     const StereoSample result {
-        dryDelay_[0][read],
-        dryDelay_[1][read]
+        safeDelay == 0
+                || dryDelayValidSamples_ >= safeDelay
+            ? dryDelay_[0][read]
+            : 0.0f,
+        safeDelay == 0
+                || dryDelayValidSamples_ >= safeDelay
+            ? dryDelay_[1][read]
+            : 0.0f
     };
     dryDelayWrite_ = (dryDelayWrite_ + 1U) % size;
+    dryDelayValidSamples_ = std::min(
+        dryDelayValidSamples_ + 1U,
+        size);
     return result;
+}
+
+void MidiAuditionEngine::resetDryDelay() noexcept
+{
+    dryDelayWrite_ = 0;
+    dryDelayValidSamples_ = 0;
 }
 
 void MidiAuditionEngine::clearVoices() noexcept
@@ -625,73 +642,143 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
     int numSamples,
     const juce::AudioIODeviceCallbackContext&)
 {
+    if (numSamples <= 0) {
+        return;
+    }
     for (int channel = 0; channel < numOutputChannels; ++channel) {
         if (outputChannelData[channel] != nullptr) {
             juce::FloatVectorOperations::clear(outputChannelData[channel], numSamples);
         }
     }
 
-    plugins::PluginTransportPosition pluginPosition;
-    auto pluginPositionSamples = playbackSamplePosition_;
-    const auto pendingGeneration =
-        requestedGeneration_.load(std::memory_order_acquire);
-    if (pendingGeneration != activeGeneration_) {
-        const auto pendingCursor =
-            requestedCursor_.load(std::memory_order_acquire);
-        if (pendingCursor != nullptr
-            && pendingCursor->snapshot != nullptr) {
-            pluginPositionSamples =
-                static_cast<std::uint64_t>(std::llround(
-                    pendingCursor->startSeconds
-                    * std::max(1.0, sampleRate_)));
-        }
+    auto discontinuity = false;
+    auto routingChanged = false;
+    const auto requestedRoutingGeneration =
+        requestedRoutingGeneration_.load(
+            std::memory_order_acquire);
+    if (requestedRoutingGeneration
+        != activeRoutingGeneration_) {
+        activeRouting_ =
+            requestedRouting_.load(
+                std::memory_order_acquire);
+        activeRoutingGeneration_ =
+            requestedRoutingGeneration;
+        routingChanged = true;
+        discontinuity = true;
     }
-    pluginPosition.samplePosition =
-        static_cast<std::int64_t>(pluginPositionSamples);
-    pluginPosition.seconds =
-        static_cast<double>(pluginPositionSamples)
-        / std::max(1.0, sampleRate_);
-    pluginPosition.playing = transportState_.isPlaying();
-    if (const auto snapshot = transportState_.snapshot();
-        snapshot != nullptr) {
-        pluginPosition.ppqPosition = midiSecondsToBeat(
-            pluginPosition.seconds,
-            snapshot->playheadTempoMap);
-        pluginPosition.bpm = selectionPlaybackBpm(
-            pluginPosition.seconds,
-            *snapshot);
-        for (const auto& timeSignature :
-             snapshot->playheadTimeSignatureMap) {
-            if (timeSignature.beatPosition
-                > pluginPosition.ppqPosition + 1.0e-9) {
-                break;
-            }
-            pluginPosition.timeSignatureNumerator =
-                std::max(1, timeSignature.numerator);
-            pluginPosition.timeSignatureDenominator =
-                std::max(1, timeSignature.denominator);
-        }
+
+    const auto requestedLoopGeneration =
+        requestedLoopGeneration_.load(
+            std::memory_order_acquire);
+    if (requestedLoopGeneration
+        != activeLoopGeneration_) {
+        activeLoop_ =
+            requestedLoop_.load(
+                std::memory_order_acquire);
+        activeLoopGeneration_ = requestedLoopGeneration;
     }
-    const auto pluginLoop =
-        requestedLoop_.load(std::memory_order_acquire);
-    if (pluginLoop != nullptr && pluginLoop->enabled) {
-        pluginPosition.looping = true;
-        pluginPosition.loopStartPpq =
-            pluginLoop->beats.startBeat;
-        pluginPosition.loopEndPpq =
-            pluginLoop->beats.endBeat;
-    }
+
     if (instrumentHost_ != nullptr) {
-        instrumentHost_->beginAudioBlock(
-            numSamples,
-            pluginPosition);
+        const auto generation =
+            instrumentHost_->runtimeGeneration();
+        if (generation != activeInstrumentGeneration_) {
+            activeInstrumentGeneration_ = generation;
+            discontinuity = true;
+        }
     }
+
+    std::shared_ptr<const PlaybackCursor>
+        reconstructionCursor;
+    const auto requestedGeneration =
+        requestedGeneration_.load(
+            std::memory_order_acquire);
+    if (requestedGeneration != activeGeneration_) {
+        reconstructionCursor =
+            requestedCursor_.load(
+                std::memory_order_acquire);
+        activeGeneration_ = requestedGeneration;
+        clearVoices();
+        discontinuity = true;
+        if (reconstructionCursor == nullptr
+            || reconstructionCursor->snapshot == nullptr) {
+            activeSnapshot_.reset();
+            nextEventIndex_ = 0;
+            playbackSamplePosition_ = 0;
+        } else {
+            activeSnapshot_ =
+                reconstructionCursor->snapshot;
+            nextEventIndex_ =
+                reconstructionCursor->nextEventIndex;
+            playbackSamplePosition_ =
+                static_cast<std::uint64_t>(
+                    std::llround(
+                        reconstructionCursor->startSeconds
+                        * std::max(1.0, sampleRate_)));
+        }
+    } else if (routingChanged) {
+        clearVoices();
+    }
+
+    const auto makePluginPosition =
+        [this](std::uint64_t samplePosition) {
+            plugins::PluginTransportPosition position;
+            position.samplePosition =
+                static_cast<std::int64_t>(
+                    samplePosition);
+            position.seconds =
+                static_cast<double>(samplePosition)
+                / std::max(1.0, sampleRate_);
+            position.playing =
+                transportState_.isPlaying();
+            const auto snapshot = activeSnapshot_ != nullptr
+                ? activeSnapshot_
+                : transportState_.snapshot();
+            if (snapshot != nullptr) {
+                position.ppqPosition = midiSecondsToBeat(
+                    position.seconds,
+                    snapshot->playheadTempoMap);
+                position.bpm = selectionPlaybackBpm(
+                    position.seconds,
+                    *snapshot);
+                for (const auto& timeSignature :
+                     snapshot->playheadTimeSignatureMap) {
+                    if (timeSignature.beatPosition
+                        > position.ppqPosition + 1.0e-9) {
+                        break;
+                    }
+                    position.timeSignatureNumerator =
+                        std::max(
+                            1,
+                            timeSignature.numerator);
+                    position.timeSignatureDenominator =
+                        std::max(
+                            1,
+                            timeSignature.denominator);
+                }
+            }
+            if (activeLoop_ != nullptr
+                && activeLoop_->enabled) {
+                position.looping = true;
+                position.loopStartPpq =
+                    activeLoop_->beats.startBeat;
+                position.loopEndPpq =
+                    activeLoop_->beats.endBeat;
+            }
+            return position;
+        };
 
     if (stopRequested_.exchange(false, std::memory_order_acq_rel)
         || panicRequested_.exchange(false, std::memory_order_acq_rel)) {
         clearVoices();
+        resetDryDelay();
         if (instrumentHost_ != nullptr) {
-            instrumentHost_->resetAllFromAudioThread();
+            instrumentHost_->beginAudioBlock(
+                numSamples,
+                makePluginPosition(
+                    playbackSamplePosition_),
+                activeRouting_.get(),
+                true);
+            instrumentHost_->resetAllFromAudioThread(0);
             instrumentHost_->processAudioBlock(
                 outputChannelData,
                 numOutputChannels,
@@ -714,8 +801,15 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
                 / std::max(1.0, sampleRate_));
         }
         clearVoices();
+        resetDryDelay();
         if (instrumentHost_ != nullptr) {
-            instrumentHost_->resetAllFromAudioThread();
+            instrumentHost_->beginAudioBlock(
+                numSamples,
+                makePluginPosition(
+                    playbackSamplePosition_),
+                activeRouting_.get(),
+                true);
+            instrumentHost_->resetAllFromAudioThread(0);
             instrumentHost_->processAudioBlock(
                 outputChannelData,
                 numOutputChannels,
@@ -726,51 +820,13 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
         return;
     }
 
-    const auto requestedRoutingGeneration =
-        requestedRoutingGeneration_.load(std::memory_order_acquire);
-    if (requestedRoutingGeneration != activeRoutingGeneration_) {
-        activeRouting_ =
-            requestedRouting_.load(std::memory_order_acquire);
-        activeRoutingGeneration_ = requestedRoutingGeneration;
-    }
-
-    const auto requestedLoopGeneration =
-        requestedLoopGeneration_.load(std::memory_order_acquire);
-    if (requestedLoopGeneration != activeLoopGeneration_) {
-        activeLoop_ = requestedLoop_.load(std::memory_order_acquire);
-        activeLoopGeneration_ = requestedLoopGeneration;
-    }
-
-    const auto requestedGeneration = requestedGeneration_.load(std::memory_order_acquire);
-    if (requestedGeneration != activeGeneration_) {
-        const auto cursor = requestedCursor_.load(std::memory_order_acquire);
-        activeGeneration_ = requestedGeneration;
-        clearVoices();
-        if (instrumentHost_ != nullptr) {
-            instrumentHost_->resetAllFromAudioThread();
-        }
-        if (cursor == nullptr || cursor->snapshot == nullptr) {
-            activeSnapshot_.reset();
-            nextEventIndex_ = 0;
-            playbackSamplePosition_ = 0;
-        } else {
-            activeSnapshot_ = cursor->snapshot;
-            nextEventIndex_ = cursor->nextEventIndex;
-            playbackSamplePosition_ = static_cast<std::uint64_t>(std::llround(
-                cursor->startSeconds * std::max(1.0, sampleRate_)));
-            if (transportState_.isPlaying()) {
-                reconstructVoices(
-                    cursor->activeNoteOns.data(),
-                    cursor->activeNoteCount,
-                    0);
-            }
-        }
-    }
-
     const auto renderProject =
         transportState_.isPlaying() && activeSnapshot_ != nullptr;
     if (!renderProject
         && testToneSamplesRemaining_.load(std::memory_order_acquire) <= 0) {
+        if (discontinuity) {
+            resetDryDelay();
+        }
         return;
     }
 
@@ -778,100 +834,192 @@ void MidiAuditionEngine::audioDeviceIOCallbackWithContext(
         instrumentHost_ == nullptr
         ? 0
         : instrumentHost_->maximumLatencySamples();
-    for (int sampleIndex = 0; sampleIndex < numSamples; ++sampleIndex) {
-        auto currentSeconds =
-            static_cast<double>(playbackSamplePosition_)
-            / std::max(1.0, sampleRate_);
-        if (renderProject
-            && activeLoop_ != nullptr
-            && activeLoop_->enabled
-            && currentSeconds
-                >= activeLoop_->endSeconds - 1.0e-9) {
+
+    const auto loopStartSample =
+        activeLoop_ != nullptr && activeLoop_->enabled
+        ? static_cast<std::uint64_t>(std::llround(
+              activeLoop_->startSeconds
+              * std::max(1.0, sampleRate_)))
+        : 0;
+    const auto loopEndSample =
+        activeLoop_ != nullptr && activeLoop_->enabled
+        ? static_cast<std::uint64_t>(std::llround(
+              activeLoop_->endSeconds
+              * std::max(1.0, sampleRate_)))
+        : 0;
+    const auto segmentedLoop =
+        renderProject
+        && activeLoop_ != nullptr
+        && activeLoop_->enabled
+        && loopEndSample > loopStartSample;
+
+    const MidiPlaybackEvent* reconstructionEvents =
+        reconstructionCursor == nullptr
+        ? nullptr
+        : reconstructionCursor->activeNoteOns.data();
+    auto reconstructionEventCount =
+        reconstructionCursor == nullptr
+        ? std::size_t { 0 }
+        : reconstructionCursor->activeNoteCount;
+    auto resetAtSegmentStart = discontinuity;
+    auto outputOffset = 0;
+    while (outputOffset < numSamples) {
+        if (segmentedLoop
+            && playbackSamplePosition_
+                >= loopEndSample) {
             clearVoices();
-            if (instrumentHost_ != nullptr) {
-                instrumentHost_->resetAllFromAudioThread(
-                    sampleIndex);
-            }
-            playbackSamplePosition_ =
-                static_cast<std::uint64_t>(std::llround(
-                    activeLoop_->startSeconds
-                    * std::max(1.0, sampleRate_)));
+            resetDryDelay();
+            playbackSamplePosition_ = loopStartSample;
             nextEventIndex_ = activeLoop_->nextEventIndex;
+            reconstructionEvents =
+                activeLoop_->activeNoteOns.data();
+            reconstructionEventCount =
+                activeLoop_->activeNoteCount;
+            resetAtSegmentStart = true;
+        }
+
+        auto segmentSamples = numSamples - outputOffset;
+        if (segmentedLoop
+            && playbackSamplePosition_ < loopEndSample) {
+            segmentSamples = std::min(
+                segmentSamples,
+                static_cast<int>(
+                    loopEndSample
+                    - playbackSamplePosition_));
+        }
+        segmentSamples = std::max(1, segmentSamples);
+
+        if (resetAtSegmentStart) {
+            resetDryDelay();
+        }
+        if (renderProject && instrumentHost_ != nullptr) {
+            instrumentHost_->beginAudioBlock(
+                segmentSamples,
+                makePluginPosition(
+                    playbackSamplePosition_),
+                activeRouting_.get(),
+                resetAtSegmentStart);
+            if (resetAtSegmentStart) {
+                instrumentHost_->
+                    resetAllFromAudioThread(0);
+            }
+        }
+        if (renderProject
+            && resetAtSegmentStart
+            && reconstructionEvents != nullptr) {
             reconstructVoices(
-                activeLoop_->activeNoteOns.data(),
-                activeLoop_->activeNoteCount,
-                sampleIndex);
-            currentSeconds = activeLoop_->startSeconds;
-        }
-        if (renderProject && activeSnapshot_->midi.has_value()) {
-            while (nextEventIndex_ < activeSnapshot_->midi->events.size()
-                   && activeSnapshot_->midi->events[nextEventIndex_].timeSeconds <= currentSeconds + 1.0e-9) {
-                const auto& event = activeSnapshot_->midi->events[nextEventIndex_];
-                if (event.kind == MidiPlaybackEventKind::noteOff
-                    || isTrackAudible(event.sourceTrackId)) {
-                    handleMidiEvent(event, sampleIndex);
-                }
-                ++nextEventIndex_;
-            }
+                reconstructionEvents,
+                reconstructionEventCount,
+                0);
         }
 
-        const auto synthSample = renderProject ? renderVoices() : 0.0f;
-        const auto stemSample = renderProject
-            ? renderAudioStems(currentSeconds)
-            : StereoSample {};
-        float testToneSample = 0.0f;
-        auto toneSamples = testToneSamplesRemaining_.load(
-            std::memory_order_relaxed);
-        if (toneSamples > 0) {
-            testToneSample = static_cast<float>(
-                std::sin(testTonePhase_)) * kTestToneGain;
-            testTonePhase_ += kTwoPi
-                * kTestToneFrequency
+        for (int segmentSample = 0;
+             segmentSample < segmentSamples;
+             ++segmentSample) {
+            const auto currentSeconds =
+                static_cast<double>(
+                    playbackSamplePosition_)
                 / std::max(1.0, sampleRate_);
-            if (testTonePhase_ >= kTwoPi) {
-                testTonePhase_ -= kTwoPi;
+            if (renderProject
+                && activeSnapshot_->midi.has_value()) {
+                while (nextEventIndex_
+                           < activeSnapshot_->midi
+                                 ->events.size()
+                       && activeSnapshot_->midi
+                                  ->events[nextEventIndex_]
+                                  .timeSeconds
+                           <= currentSeconds + 1.0e-9) {
+                    const auto& event =
+                        activeSnapshot_->midi
+                            ->events[nextEventIndex_];
+                    if (event.kind
+                            == MidiPlaybackEventKind::noteOff
+                        || isTrackAudible(
+                            event.sourceTrackId)) {
+                        handleMidiEvent(
+                            event,
+                            segmentSample);
+                    }
+                    ++nextEventIndex_;
+                }
             }
-            testToneSamplesRemaining_.store(
-                toneSamples - 1,
-                std::memory_order_relaxed);
-        }
-        const auto dry = delayDryMix(
-            {
-                synthSample + stemSample.left,
-                synthSample + stemSample.right
-            },
-            dryLatencySamples);
-        const auto masterGain =
-            volume_.load(std::memory_order_relaxed);
-        const auto leftSample = std::clamp(
-            (dry.left * masterGain)
-                + testToneSample,
-            -0.95f,
-            0.95f);
-        const auto rightSample = std::clamp(
-            (dry.right * masterGain)
-                + testToneSample,
-            -0.95f,
-            0.95f);
-        for (int channel = 0; channel < numOutputChannels; ++channel) {
-            if (outputChannelData[channel] != nullptr) {
-                outputChannelData[channel][sampleIndex] = channel == 0
-                    ? leftSample
-                    : rightSample;
+
+            const auto synthSample =
+                renderProject ? renderVoices() : 0.0f;
+            const auto stemSample = renderProject
+                ? renderAudioStems(currentSeconds)
+                : StereoSample {};
+            float testToneSample = 0.0f;
+            auto toneSamples =
+                testToneSamplesRemaining_.load(
+                    std::memory_order_relaxed);
+            if (toneSamples > 0) {
+                testToneSample = static_cast<float>(
+                    std::sin(testTonePhase_))
+                    * kTestToneGain;
+                testTonePhase_ += kTwoPi
+                    * kTestToneFrequency
+                    / std::max(1.0, sampleRate_);
+                if (testTonePhase_ >= kTwoPi) {
+                    testTonePhase_ -= kTwoPi;
+                }
+                testToneSamplesRemaining_.store(
+                    toneSamples - 1,
+                    std::memory_order_relaxed);
+            }
+            const auto dry = delayDryMix(
+                {
+                    synthSample + stemSample.left,
+                    synthSample + stemSample.right
+                },
+                dryLatencySamples);
+            const auto masterGain =
+                volume_.load(std::memory_order_relaxed);
+            const auto leftSample = std::clamp(
+                (dry.left * masterGain)
+                    + testToneSample,
+                -0.95f,
+                0.95f);
+            const auto rightSample = std::clamp(
+                (dry.right * masterGain)
+                    + testToneSample,
+                -0.95f,
+                0.95f);
+            const auto outputSample =
+                outputOffset + segmentSample;
+            for (int channel = 0;
+                 channel < numOutputChannels;
+                 ++channel) {
+                if (outputChannelData[channel] != nullptr) {
+                    outputChannelData[channel][outputSample] =
+                        channel == 0
+                        ? leftSample
+                        : rightSample;
+                }
+            }
+
+            if (renderProject) {
+                ++playbackSamplePosition_;
             }
         }
 
-        if (renderProject) {
-            ++playbackSamplePosition_;
+        if (renderProject && instrumentHost_ != nullptr) {
+            instrumentHost_->processAudioBlock(
+                outputChannelData,
+                numOutputChannels,
+                segmentSamples,
+                volume_.load(
+                    std::memory_order_relaxed),
+                true,
+                outputOffset);
         }
+        outputOffset += segmentSamples;
+        resetAtSegmentStart = false;
+        reconstructionEvents = nullptr;
+        reconstructionEventCount = 0;
     }
 
     if (renderProject && instrumentHost_ != nullptr) {
-        instrumentHost_->processAudioBlock(
-            outputChannelData,
-            numOutputChannels,
-            numSamples,
-            volume_.load(std::memory_order_relaxed));
         for (int channel = 0;
              channel < numOutputChannels;
              ++channel) {
@@ -930,11 +1078,13 @@ void MidiAuditionEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
                 + maximumBlockSize + 1),
             0.0f);
     }
-    dryDelayWrite_ = 0;
+    resetDryDelay();
     if (instrumentHost_ != nullptr) {
         instrumentHost_->prepareDevice(
             sampleRate_,
             maximumBlockSize);
+        activeInstrumentGeneration_ =
+            instrumentHost_->runtimeGeneration();
     }
     testTonePhase_ = 0.0;
     deviceReady_.store(device != nullptr, std::memory_order_release);
@@ -943,6 +1093,10 @@ void MidiAuditionEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
 void MidiAuditionEngine::audioDeviceStopped()
 {
     clearVoices();
+    resetDryDelay();
+    if (instrumentHost_ != nullptr) {
+        instrumentHost_->resetLatencyFromAudioThread();
+    }
     testToneSamplesRemaining_.store(0, std::memory_order_release);
     transportState_.stop();
     deviceReady_.store(false, std::memory_order_release);

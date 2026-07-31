@@ -13,6 +13,10 @@
 
 #include "plugins/Vst3PluginCatalog.h"
 
+namespace dawhermes::core {
+struct ProjectRoutingState;
+}
+
 namespace dawhermes::plugins {
 
 constexpr int kMaximumHostedInstrumentLatencySamples = 131072;
@@ -72,10 +76,13 @@ public:
     void closeEditor(std::uint64_t trackId);
     void closeAllEditors();
 
-    void beginAudioBlock(
+    bool beginAudioBlock(
         int numSamples,
-        const PluginTransportPosition& position) noexcept;
+        const PluginTransportPosition& position,
+        const core::ProjectRoutingState* routing = nullptr,
+        bool resetLatency = false) noexcept;
     void resetAllFromAudioThread(int sampleOffset = 0) noexcept;
+    void resetLatencyFromAudioThread() noexcept;
     bool addMidiEventFromAudioThread(
         std::uint64_t trackId,
         bool noteOn,
@@ -88,9 +95,11 @@ public:
         int numOutputChannels,
         int numSamples,
         float masterGain,
-        bool addToOutput = true) noexcept;
+        bool addToOutput = true,
+        int outputOffset = 0) noexcept;
 
     int maximumLatencySamples() const noexcept;
+    std::uint64_t runtimeGeneration() const noexcept;
     bool refreshLatencyLayoutIfNeeded();
     std::size_t activeInstanceCount() const noexcept;
     void collectRetiredRuntimes();
@@ -131,7 +140,7 @@ private:
     std::atomic<int> requestedMaximumLatency_ { 0 };
     std::atomic<std::shared_ptr<const Registry>> requestedRegistry_;
     std::shared_ptr<const Registry> activeRegistry_;
-    std::uint64_t requestedGeneration_ { 0 };
+    std::atomic<std::uint64_t> requestedGeneration_ { 0 };
     std::uint64_t activeGeneration_ { 0 };
     mutable std::mutex messageMutex_;
     std::vector<std::shared_ptr<const Registry>> retainedRegistries_;
