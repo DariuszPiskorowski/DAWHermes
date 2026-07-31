@@ -4,7 +4,13 @@ param(
 
     [switch]$ValidateOnly,
 
-    [switch]$SkipShortcuts
+    [switch]$SkipShortcuts,
+
+    [string]$TestInstallDirectory = '',
+
+    [string]$TestSafetyRoot = '',
+
+    [switch]$ForceInPlaceFallbackForTest
 )
 
 Set-StrictMode -Version Latest
@@ -219,13 +225,37 @@ if (@(Get-Process -Name 'DAWHermes' -ErrorAction SilentlyContinue).Count -gt 0) 
 }
 
 $defaultInstallDirectory = Join-Path $env:LOCALAPPDATA 'DAWHermes\app'
-$appInstallDirectory = [System.IO.Path]::GetFullPath($defaultInstallDirectory)
+$isTestInstall = -not [string]::IsNullOrWhiteSpace($TestInstallDirectory)
+if ($isTestInstall) {
+    if ([string]::IsNullOrWhiteSpace($TestSafetyRoot) -or -not $SkipShortcuts) {
+        throw 'A test installation requires TestSafetyRoot and SkipShortcuts.'
+    }
+    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
+    $testRoot = [System.IO.Path]::GetFullPath($TestSafetyRoot).TrimEnd('\', '/')
+    $tempPrefix = $tempRoot + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $testRoot.StartsWith($tempPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "TestSafetyRoot must be below the operating-system temp directory: $testRoot"
+    }
+    $appInstallDirectory = [System.IO.Path]::GetFullPath($TestInstallDirectory).TrimEnd('\', '/')
+    $testPrefix = $testRoot + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $appInstallDirectory.StartsWith(
+            $testPrefix,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "TestInstallDirectory must be below TestSafetyRoot: $appInstallDirectory"
+    }
+} else {
+    if ($ForceInPlaceFallbackForTest) {
+        throw 'ForceInPlaceFallbackForTest is allowed only with a safe test installation.'
+    }
+    $appInstallDirectory = [System.IO.Path]::GetFullPath($defaultInstallDirectory)
+}
 $installParent = Split-Path -Parent $appInstallDirectory
 New-Item -ItemType Directory -Path $installParent -Force | Out-Null
 
 $stagingDirectory = Join-Path $installParent ('app.installing-' + [guid]::NewGuid().ToString('N'))
 $previousDirectory = Join-Path $installParent ('app.previous-' + [guid]::NewGuid().ToString('N'))
 $installed = $false
+$usedInPlaceFallback = $false
 try {
     New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
     Copy-Item -Path (Join-Path $appSource '*') -Destination $stagingDirectory -Recurse -Force
@@ -241,18 +271,122 @@ try {
     Assert-ArtifactX64Pe -Path (Join-Path $stagingDirectory 'DAWHermes.exe')
 
     if (Test-Path -LiteralPath $appInstallDirectory) {
-        Move-Item -LiteralPath $appInstallDirectory -Destination $previousDirectory
+        $renamedExistingDirectory = $false
+        $lastMoveError = $null
+        if (-not $ForceInPlaceFallbackForTest) {
+            foreach ($attempt in 1..5) {
+                try {
+                    Move-Item -LiteralPath $appInstallDirectory -Destination $previousDirectory
+                    $renamedExistingDirectory = $true
+                    break
+                } catch {
+                    $lastMoveError = $_
+                    if ($attempt -lt 5) {
+                        Start-Sleep -Milliseconds 750
+                    }
+                }
+            }
+        }
+
+        if (-not $renamedExistingDirectory) {
+            $usedInPlaceFallback = $true
+            $reason = if ($ForceInPlaceFallbackForTest) {
+                'forced by isolated installer test'
+            } else {
+                $lastMoveError.Exception.Message
+            }
+            Write-Warning (
+                "Existing app directory could not be renamed ($reason). " +
+                'Using verified in-place replacement with a rollback copy.')
+
+            if (-not $isTestInstall -and
+                @(Get-Process -Name 'DAWHermes' -ErrorAction SilentlyContinue).Count -gt 0) {
+                throw 'DAWHermes started during installation. Close it and run the installer again.'
+            }
+
+            New-Item -ItemType Directory -Path $previousDirectory | Out-Null
+            Copy-Item -Path (Join-Path $appInstallDirectory '*') `
+                -Destination $previousDirectory `
+                -Recurse `
+                -Force
+
+            $expectedRelativePaths = @{}
+            foreach ($entry in $hashEntries.GetEnumerator()) {
+                $relativeWithinApp = $entry.Key.Substring(4).Replace('/', '\')
+                $expectedRelativePaths[$relativeWithinApp] = $entry.Value
+            }
+
+            $existingFiles = @(Get-ChildItem -LiteralPath $appInstallDirectory -Recurse -File)
+            foreach ($existingFile in $existingFiles) {
+                $relative = Get-ArtifactRelativePath `
+                    -Path $existingFile.FullName `
+                    -Root $appInstallDirectory
+                if (-not $expectedRelativePaths.ContainsKey($relative)) {
+                    Remove-Item -LiteralPath $existingFile.FullName -Force
+                }
+            }
+
+            $stagedFiles = @(Get-ChildItem -LiteralPath $stagingDirectory -Recurse -File)
+            foreach ($stagedFile in $stagedFiles) {
+                $relative = Get-ArtifactRelativePath `
+                    -Path $stagedFile.FullName `
+                    -Root $stagingDirectory
+                $destination = Join-Path $appInstallDirectory $relative
+                New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+                Copy-Item -LiteralPath $stagedFile.FullName -Destination $destination -Force
+            }
+
+            foreach ($relative in $expectedRelativePaths.Keys) {
+                $installedFile = Join-Path $appInstallDirectory $relative
+                if (-not (Test-Path -LiteralPath $installedFile -PathType Leaf)) {
+                    throw "Installed runtime file missing after in-place replacement: $relative"
+                }
+                $installedHash = (
+                    Get-FileHash -LiteralPath $installedFile -Algorithm SHA256
+                ).Hash.ToLowerInvariant()
+                if ($installedHash -ne $expectedRelativePaths[$relative]) {
+                    throw "Installed runtime hash mismatch after in-place replacement: $relative"
+                }
+            }
+            $installedFileCount = @(
+                Get-ChildItem -LiteralPath $appInstallDirectory -Recurse -File
+            ).Count
+            if ($installedFileCount -ne $expectedRelativePaths.Count) {
+                throw 'Installed runtime contains files not covered by SHA256SUMS.txt.'
+            }
+            Assert-ArtifactX64Pe -Path (Join-Path $appInstallDirectory 'DAWHermes.exe')
+            $installed = $true
+        }
     }
-    Move-Item -LiteralPath $stagingDirectory -Destination $appInstallDirectory
-    $installed = $true
+
+    if (-not $usedInPlaceFallback) {
+        Move-Item -LiteralPath $stagingDirectory -Destination $appInstallDirectory
+        $installed = $true
+    }
+
     if (Test-Path -LiteralPath $previousDirectory) {
         Remove-Item -LiteralPath $previousDirectory -Recurse -Force
     }
 } catch {
-    if (-not $installed -and
-        -not (Test-Path -LiteralPath $appInstallDirectory) -and
-        (Test-Path -LiteralPath $previousDirectory)) {
-        Move-Item -LiteralPath $previousDirectory -Destination $appInstallDirectory
+    if (-not $installed -and (Test-Path -LiteralPath $previousDirectory)) {
+        if (-not (Test-Path -LiteralPath $appInstallDirectory)) {
+            Move-Item -LiteralPath $previousDirectory -Destination $appInstallDirectory
+        } elseif ($usedInPlaceFallback) {
+            try {
+                Get-ChildItem -LiteralPath $appInstallDirectory -Recurse -File |
+                    Remove-Item -Force
+                Copy-Item -Path (Join-Path $previousDirectory '*') `
+                    -Destination $appInstallDirectory `
+                    -Recurse `
+                    -Force
+                Remove-Item -LiteralPath $previousDirectory -Recurse -Force
+                Write-Warning 'Installation failed; the previous runtime was restored.'
+            } catch {
+                Write-Warning (
+                    'Automatic rollback was also blocked. The recovery copy remains at ' +
+                    $previousDirectory)
+            }
+        }
     }
     throw
 } finally {

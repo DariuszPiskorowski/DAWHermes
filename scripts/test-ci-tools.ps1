@@ -205,6 +205,25 @@ try {
         -SourceDirectory $packagedArtifact `
         -ValidateOnly
 
+    $testInstallDirectory = Join-Path $testRoot 'installer-test\app'
+    New-Item -ItemType Directory -Path $testInstallDirectory -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $testInstallDirectory 'stale-runtime.dat') `
+        -Value 'stale' `
+        -Encoding UTF8
+    & (Join-Path $packagedArtifact 'Install-DAWHermes.ps1') `
+        -SourceDirectory $packagedArtifact `
+        -TestInstallDirectory $testInstallDirectory `
+        -TestSafetyRoot $testRoot `
+        -SkipShortcuts `
+        -ForceInPlaceFallbackForTest
+    Assert-WindowsX64Pe -Path (Join-Path $testInstallDirectory 'DAWHermes.exe') | Out-Null
+    Assert-Condition `
+        (-not (Test-Path -LiteralPath (Join-Path $testInstallDirectory 'stale-runtime.dat'))) `
+        'The installer in-place fallback retained an unmanifested stale runtime file.'
+    Assert-Condition `
+        (@(Get-ChildItem -LiteralPath $testInstallDirectory -Recurse -File).Count -eq 1) `
+        'The installer in-place fallback produced an unexpected runtime payload.'
+
     $artifactRoot = Join-Path $testRoot 'artifact'
     $appRoot = Join-Path $artifactRoot 'app'
     New-Item -ItemType Directory -Path $appRoot -Force | Out-Null
